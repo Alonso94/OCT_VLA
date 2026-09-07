@@ -1,8 +1,10 @@
 # Architecture and contracts
 
-This document specifies the intended architecture. Commits 1–3 implement the
+This document specifies the intended architecture. Commits 1–4 implement the
 package boundary, geometry, frame-labelled poses/transforms, canonical EEF state,
-and 14-D actions, plus external path configuration and `doctor` discovery.
+14-D actions, external path configuration, `doctor` discovery, the canonical
+`RobotObservation`/`RobotBackend` contract, and a RoboTwin backend that converts
+world-frame measurements to the workcell frame with checked dual-arm planning.
 Other interfaces and operations below remain design contracts.
 
 ## Research scope

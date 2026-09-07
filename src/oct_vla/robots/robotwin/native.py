@@ -1,0 +1,210 @@
+"""Concrete NativePort: every RoboTwin/SAPIEN/cuRobo dependency stops here.
+
+This module only imports successfully inside RoboTwin's own Python 3.10
+environment. ``RoboTwinBackend`` (backend.py) never imports it directly; a
+launcher process constructs a ``RoboTwinNativePort`` and hands it to
+``RoboTwinBackend`` there.
+"""
+
+from __future__ import annotations
+
+import importlib
+import os
+import sys
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any
+
+from oct_vla.core.observation import RGBFrame
+from oct_vla.robots.robotwin.backend import ArmReading, Reading, Trajectory
+from oct_vla.robots.robotwin.task_config import build_dual_franka_setup
+
+CAMERA_NAMES = ("head_camera", "left_camera", "right_camera")
+
+
+class NativePortError(RuntimeError):
+    """RoboTwin planning or execution failure; callers must not swallow this."""
+
+
+def _prepare_import_path(root: Path) -> None:
+    """Give our own cuRobo/RoboTwin paths priority over a stale editable install.
+
+    cuRobo is installed editable against wherever RoboTwin lived when that
+    install ran. Relocating the checkout (as happened here) leaves the venv's
+    ``.pth`` pointing at a path that no longer exists; repairing the venv
+    itself is out of scope; sys.path in our own process is not.
+    """
+    for candidate in (str(root / "envs" / "curobo" / "src"), str(root)):
+        if candidate not in sys.path:
+            sys.path.insert(0, candidate)
+
+
+@contextmanager
+def _chdir(path: Path):
+    """RoboTwin task modules resolve asset paths relative to the checkout root."""
+    previous = Path.cwd()
+    os.chdir(path)
+    try:
+        yield
+    finally:
+        os.chdir(previous)
+
+
+def _load_task_class(task_name: str) -> Any:
+    try:
+        module = importlib.import_module(f"envs.{task_name}")
+        return getattr(module, task_name)
+    except (ImportError, AttributeError) as error:
+        raise NativePortError(
+            f"Could not load RoboTwin task envs.{task_name}.{task_name}"
+        ) from error
+
+
+def _rgb_frame(raw: dict, camera_name: str) -> RGBFrame:
+    import numpy as np
+
+    try:
+        image = raw["observation"][camera_name]["rgb"]
+    except (KeyError, TypeError) as error:
+        raise NativePortError(f"RoboTwin observation is missing {camera_name}/rgb") from error
+    array = np.asarray(image)
+    if array.ndim != 3 or array.shape[-1] != 3:
+        raise NativePortError(f"{camera_name}/rgb must have shape [H, W, 3]; got {array.shape}")
+    array = np.ascontiguousarray(array, dtype=np.uint8)
+    height, width = array.shape[:2]
+    return RGBFrame(width, height, array.tobytes())
+
+
+class RoboTwinNativePort:
+    """Drive one RoboTwin task instance behind the canonical NativePort seam.
+
+    Bypasses RoboTwin's own ``take_action``: that helper silently falls back
+    to a fixed-length no-op trajectory when a plan fails, which would hide
+    planning failures from the canonical backend. This port raises instead.
+    """
+
+    dt = 1.0 / 250.0
+
+    def __init__(
+        self, robotwin_root: Path, *, task_name: str, task_config: str = "demo_clean"
+    ) -> None:
+        self.root = Path(robotwin_root).expanduser().resolve()
+        self.task_name = task_name
+        self.task_config = task_config
+        self._task: Any | None = None
+        self._episode = 0
+
+    def reset(self, seed: int) -> None:
+        _prepare_import_path(self.root)
+        setup = build_dual_franka_setup(
+            self.root, task_name=self.task_name, task_config=self.task_config
+        )
+        with _chdir(self.root):
+            if self._task is not None:
+                self._safe_close()
+            self._task = _load_task_class(self.task_name)()
+            self._task.setup_demo(now_ep_num=self._episode, seed=seed, is_test=True, **setup)
+        actual_dt = float(self._task.scene.get_timestep())
+        if abs(actual_dt - self.dt) > 1e-9:
+            raise NativePortError(
+                f"RoboTwin scene timestep is {actual_dt}s; expected {self.dt}s. "
+                "Update RoboTwinNativePort.dt to match the configured task_config."
+            )
+        self._episode += 1
+
+    def read(self) -> Reading:
+        self._require_task()
+        with _chdir(self.root):
+            raw = self._task.get_obs()
+            left = self._arm_reading("left")
+            right = self._arm_reading("right")
+        cameras = tuple(_rgb_frame(raw, name) for name in CAMERA_NAMES)
+        return Reading(left, right, cameras)
+
+    def plan(self, side: str, pose_wxyz: tuple[float, ...]) -> Trajectory:
+        self._require_task()
+        plan_path = self._plan_path_fn(side)
+        with _chdir(self.root):
+            result = plan_path(list(pose_wxyz))
+        if result.get("status") != "Success":
+            raise NativePortError(f"{side} arm global plan failed: {result.get('status')!r}")
+        position = tuple(tuple(float(v) for v in row) for row in result["position"])
+        velocity = tuple(tuple(float(v) for v in row) for row in result["velocity"])
+        return Trajectory(position, velocity)
+
+    def command(
+        self, side: str, q: tuple[float, ...], qdot: tuple[float, ...], gripper: float
+    ) -> None:
+        self._require_task()
+        with _chdir(self.root):
+            self._task.robot.set_arm_joints(list(q), list(qdot), side)
+            self._task.robot.set_gripper(gripper, side)
+
+    def tick(self) -> None:
+        self._require_task()
+        self._task.scene.step()
+
+    def hold(self) -> None:
+        """Freeze both arms at their measured position with zero velocity."""
+        self._require_task()
+        with _chdir(self.root):
+            for side in ("left", "right"):
+                q = self._measured_arm_qpos(side)
+                self._task.robot.set_arm_joints(list(q), [0.0] * len(q), side)
+                self._task.robot.set_gripper(self._measured_gripper(side), side)
+
+    def close(self) -> None:
+        if self._task is None:
+            return
+        self._safe_close()
+        self._task = None
+
+    # -- internal --
+
+    def _require_task(self) -> None:
+        if self._task is None:
+            raise NativePortError("RoboTwinNativePort.reset() has not been called")
+
+    def _safe_close(self) -> None:
+        with _chdir(self.root):
+            close = getattr(self._task, "close_env", None) or getattr(self._task, "close", None)
+            if close is not None:
+                close()
+
+    def _plan_path_fn(self, side: str):
+        if side not in ("left", "right"):
+            raise ValueError(f"side must be 'left' or 'right'; got {side!r}")
+        return (
+            self._task.robot.left_plan_path if side == "left" else self._task.robot.right_plan_path
+        )
+
+    def _arm_reading(self, side: str) -> ArmReading:
+        robot = self._task.robot
+        pose = robot.get_left_ee_pose() if side == "left" else robot.get_right_ee_pose()
+        return ArmReading(
+            tuple(float(v) for v in pose),
+            self._measured_gripper(side),
+            self._measured_arm_qpos(side),
+        )
+
+    def _measured_gripper(self, side: str) -> float:
+        """Physical joint position, not the drive target ``get_*_gripper_val`` returns."""
+        robot = self._task.robot
+        entity = robot.left_entity if side == "left" else robot.right_entity
+        joints = robot.left_gripper if side == "left" else robot.right_gripper
+        scale = robot.left_gripper_scale if side == "left" else robot.right_gripper_scale
+        if not joints or None in joints:
+            return 0.0
+        active = entity.get_active_joints()
+        qpos = entity.get_qpos()
+        value = (qpos[active.index(joints[0][0])] - scale[0]) / (scale[1] - scale[0])
+        return float(min(1.0, max(0.0, value)))
+
+    def _measured_arm_qpos(self, side: str) -> tuple[float, ...]:
+        """Physical joint qpos, not the drive target ``get_*_arm_jointState`` returns."""
+        robot = self._task.robot
+        entity = robot.left_entity if side == "left" else robot.right_entity
+        arm_joints = robot.left_arm_joints if side == "left" else robot.right_arm_joints
+        active = entity.get_active_joints()
+        qpos = entity.get_qpos()
+        return tuple(float(qpos[active.index(joint)]) for joint in arm_joints)
