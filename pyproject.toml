@@ -10,6 +10,9 @@ readme = "README.md"
 requires-python = ">=3.10,<3.13"
 dependencies = []
 
+[project.scripts]
+octvla = "oct_vla.cli:main"
+
 [project.optional-dependencies]
 dev = ["pytest>=8.3,<9", "ruff>=0.14,<1"]
 

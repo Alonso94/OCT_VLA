@@ -12,10 +12,11 @@ remain represented throughout the action sequence.
 
 ## Current status
 
-Commits 1–2 establish packaging, canonical EEF states, 14-D Cartesian actions,
-and frame-labelled geometry with deterministic tests. Robot control,
-perception, collection, training, evaluation, and the `octvla` CLI are **planned,
-not implemented**. No simulator or policy dependency is imported by the package.
+Commits 1–3 establish packaging, canonical EEF states, 14-D Cartesian actions,
+frame-labelled geometry, and read-only external dependency discovery through
+`octvla doctor`. Robot control, perception, collection, training, and evaluation
+are **planned, not implemented**. No simulator or policy dependency is imported
+by the package.
 See [architecture](docs/architecture.md) for boundaries, conventions, and gates.
 See [coordinate frames](docs/coordinate_frames.md) and
 [canonical actions](docs/canonical_action.md) for the implemented core API.
@@ -39,20 +40,21 @@ The dependency-free package targets Python 3.10–3.12 so shared contracts can r
 in both the existing Python 3.10 simulator and Python 3.12 policy processes.
 This does not imply that their dependency stacks can share one environment.
 Wheel builds use Hatchling; development tools are declared in the `dev` extra.
-Full fresh-install instructions and verified third-party revisions follow with
-dependency discovery in Commit 3.
+See [setup](docs/setup.md) for manual fresh-install guidance, observed dependency
+revisions, path configuration, and the limits of current validation.
 
 ## External resources
 
 RoboTwin, SAPIEN, cuRobo, policy dependencies, assets, and datasets remain external.
 Use [.env.example](.env.example) as a local path template; `.env` is ignored.
-Path loading and the read-only `octvla doctor` command arrive in Commit 3.
+Load it explicitly with `octvla doctor --env-file .env`. Without installing the
+package, use `PYTHONPATH=src /path/to/environment/bin/python -B -m oct_vla doctor`.
 Normal commands must never silently install dependencies or download resources.
 
 Existing environments moved with a repository can contain stale executable
-shebangs and editable source paths. Future launchers must verify the interpreter
-and resolved module locations before reuse. Do not copy or repair external
-environments as part of this skeleton.
+shebangs and editable source paths. Doctor reports missing plain-path editable
+targets and resolved dependency locations without repairing them. See
+[setup and troubleshooting](docs/setup.md) before reusing an environment.
 
 ## Development workflow
 

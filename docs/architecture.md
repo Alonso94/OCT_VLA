@@ -1,8 +1,9 @@
 # Architecture and contracts
 
-This document specifies the intended architecture. Commits 1–2 implement the
+This document specifies the intended architecture. Commits 1–3 implement the
 package boundary, geometry, frame-labelled poses/transforms, canonical EEF state,
-and 14-D actions. Other interfaces and operations below remain design contracts.
+and 14-D actions, plus external path configuration and `doctor` discovery.
+Other interfaces and operations below remain design contracts.
 
 ## Research scope
 
@@ -104,9 +105,10 @@ robot service should expose Reset, Observe, Step, Stop, Health, and an explicit
 GetPrivilegedState operation. Avoid the old opaque `Call(pickle(...))` robot API.
 Any unavoidable temporary compatibility transport must be documented and bounded.
 
-External paths are configured locally. Planned precedence is CLI arguments over
-environment variables over configuration defaults. `doctor` checks dependencies,
-source resolution, assets, and GPU availability without installing anything.
+External paths are configured locally. Precedence is CLI arguments over process
+environment over an explicit env file over JSON configuration and derived defaults.
+`doctor` checks dependency metadata, source resolution, directory presence, and GPU
+driver visibility without installing anything. It does not verify runtime GPU use.
 Existing environments are reused without modification; stale editable paths must
 be handled explicitly at launch. Fresh-install documentation is separate from
 normal execution.
