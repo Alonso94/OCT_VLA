@@ -1,12 +1,14 @@
 # Architecture and contracts
 
-This document specifies the intended architecture. Commits 1–5 implement the
+This document specifies the intended architecture. Commits 1–6 implement the
 package boundary, geometry, frame-labelled poses/transforms, canonical EEF state,
 14-D actions, external path configuration, `doctor` discovery, the canonical
 `RobotObservation`/`RobotBackend` contract, a RoboTwin backend that converts
 world-frame measurements to the workcell frame with checked dual-arm planning,
-and the canonical object-scene schema with a RoboTwin ground-truth estimator.
-Other interfaces and operations below remain design contracts.
+the canonical object-scene schema with a RoboTwin ground-truth estimator, and
+the shelf-restocking task's pure specification, geometry, success check, and
+repeat-until-empty manager. Other interfaces below remain design contracts;
+notably, no RoboTwin scene actually builds this task yet (see below).
 
 ## Research scope
 
@@ -61,6 +63,39 @@ has no RoboTwin dependency itself. `RoboTwinObjectEvidenceSource` is the one
 piece that touches SAPIEN actors directly, reading measured poses (never a
 segmentation ID or asset name) into that evidence contract. A future
 `VisionObjectStateEstimator` produces the same `ObjectScene` from RGB instead.
+
+## Shelf-restocking task specification
+
+`tasks/shelf_restock/spec.py` defines the task purely: `ShelfRegion` (an
+axis-aligned box in the workcell frame, one shelf level's deck), `ObjectVariation`
+(uniform per-episode position/yaw/size sampling ranges), and `ShelfRestockSpec`
+(both regions, the variation, a compaction-distance threshold, and the fixed
+task instruction). None of this imports RoboTwin or SAPIEN; a scene builder
+(not yet implemented) will instantiate a live scene from this spec. The default
+geometry offsets the upper shelf in y from the lower shelf/source region
+specifically because the old reference implementation's single shelf sat inside
+the arm's straight-line base-to-source approach corridor and failed 0/545
+collection attempts for exactly that reason; this offset is not yet confirmed
+against a real planner and scene.
+
+`tasks/shelf_restock/geometry.py` and `success.py` compute placement/compaction
+success purely from an `ObjectScene` and the spec: horizontal (xy-only) distance
+between target and previous neighbor, and shelf-region membership by position.
+This checks geometry only; contacts, collisions, and grasp quality are
+simulation-privileged diagnostics for the oracle/evaluator, not derivable from
+the canonical object schema. `tasks/shelf_restock/manager.py`'s
+`ShelfRestockManager` is the thin, stateful, deterministic loop from the
+research plan: it selects the next lower-shelf target and reports the
+previously-placed object as the neighbor, tracking placement order itself
+since `ObjectScene` carries no per-object placement timestamp. It executes no
+manipulation skill; the policy or oracle performs each restock and calls
+`record_placement` back into it.
+
+No RoboTwin task class (`load_actors`/`play_once`/`check_success`) exists yet
+for this task -- building one requires selecting real object assets and
+placing shelf geometry that a real planner has been confirmed not to collide
+with, which is deferred to the commit that builds the oracle against a live
+scene.
 
 ## Action, frame, and timing contracts
 
