@@ -1,8 +1,8 @@
 # Architecture and contracts
 
-This document specifies the intended architecture. Commit 1 implements only the
-package boundary and its import test; the types and operations below are design
-contracts, not available APIs.
+This document specifies the intended architecture. Commits 1–2 implement the
+package boundary, geometry, frame-labelled poses/transforms, canonical EEF state,
+and 14-D actions. Other interfaces and operations below remain design contracts.
 
 ## Research scope
 
@@ -74,8 +74,8 @@ R_next = Exp(dr) R_t
 The rotation increment is therefore expressed in the workcell frame and composed
 on the left. `T_A_B` maps coordinates from frame B to frame A. Backend adapters
 convert simulator world or robot base to/from workcell; the workcell origin and
-axis alignment require explicit scene calibration. Commit 2 will implement and
-test composition, quaternion sign equivalence, near-pi behavior, and transforms.
+axis alignment require explicit scene calibration. Commit 2 implements and tests
+composition, quaternion sign equivalence, near-pi behavior, and transforms.
 
 The 16 values needed to store two absolute EEF poses and grippers are an
 observation representation, not a second learned action contract. Joint q/qdot
@@ -154,7 +154,7 @@ Report appearance, geometry, and composition generalization separately.
 
 ## Incremental delivery and acceptance gates
 
-1. Package skeleton and architecture (this step).
+1. Package skeleton and architecture.
 2. Canonical geometry/actions with deterministic unit tests.
 3. External path discovery, doctor, and fresh-install documentation.
 4. RoboTwin backend with measured translation, rotation, gripper, and hold tests.

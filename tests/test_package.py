@@ -19,6 +19,7 @@ def test_package_import_is_dependency_free(tmp_path: Path):
             "import pathlib, sys; "
             "sys.path.insert(0, sys.argv[1]); "
             "import oct_vla; "
+            "import oct_vla.core.action, oct_vla.core.frames, oct_vla.core.state; "
             "assert pathlib.Path(oct_vla.__file__).resolve() == "
             "pathlib.Path(sys.argv[1]) / 'oct_vla' / '__init__.py'",
             str(source),

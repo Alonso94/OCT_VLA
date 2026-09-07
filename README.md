@@ -12,10 +12,13 @@ remain represented throughout the action sequence.
 
 ## Current status
 
-Commit 1 establishes packaging and architectural contracts. Robot control,
+Commits 1–2 establish packaging, canonical EEF states, 14-D Cartesian actions,
+and frame-labelled geometry with deterministic tests. Robot control,
 perception, collection, training, evaluation, and the `octvla` CLI are **planned,
 not implemented**. No simulator or policy dependency is imported by the package.
 See [architecture](docs/architecture.md) for boundaries, conventions, and gates.
+See [coordinate frames](docs/coordinate_frames.md) and
+[canonical actions](docs/canonical_action.md) for the implemented core API.
 
 ## Check this skeleton
 
