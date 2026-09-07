@@ -1,10 +1,11 @@
 # Architecture and contracts
 
-This document specifies the intended architecture. Commits 1–4 implement the
+This document specifies the intended architecture. Commits 1–5 implement the
 package boundary, geometry, frame-labelled poses/transforms, canonical EEF state,
 14-D actions, external path configuration, `doctor` discovery, the canonical
-`RobotObservation`/`RobotBackend` contract, and a RoboTwin backend that converts
-world-frame measurements to the workcell frame with checked dual-arm planning.
+`RobotObservation`/`RobotBackend` contract, a RoboTwin backend that converts
+world-frame measurements to the workcell frame with checked dual-arm planning,
+and the canonical object-scene schema with a RoboTwin ground-truth estimator.
 Other interfaces and operations below remain design contracts.
 
 ## Research scope
@@ -42,12 +43,24 @@ collision geometry, and planner metadata. Only the oracle, evaluator, diagnostic
 and explicitly selected GT estimator may consume it. It is not an implicit field
 of policy observations.
 
-`ObjectScene` uses episode-local tracking IDs, metric center/orientation/size,
-visibility, confidence, support surface, and optional masks or visual features.
-`TaskContext` supplies instruction, target ID, and optional previous-neighbor ID.
-TARGET, PREVIOUS_NEIGHBOR, and OTHER describe roles independently of identity.
-Asset IDs and permanent semantic identities must not leak into generalization
-experiments. GT and future vision estimators produce the same object schema.
+`ObjectState` uses episode-local tracking IDs and a workcell `Pose` (reusing the
+same type as EEF states, rather than separate center/orientation fields) plus
+own-frame `size_xyz`, visibility, confidence, support surface, and optional
+masks or visual features. `TaskContext` supplies instruction, target ID, and
+optional previous-neighbor ID; `role_of(context, track_id)` derives TARGET,
+PREVIOUS_NEIGHBOR, or OTHER on demand and is never stored on `ObjectState`
+itself. Asset IDs and permanent semantic identities must not leak into
+generalization experiments; RoboTwin's own `create_actor` gives every instance
+of one asset the identical name, so track_id assignment is always the caller's
+responsibility, never derived from a simulator-native identifier.
+
+`ObjectStateEstimator.estimate(observation) -> ObjectScene` is the shared
+output contract; `GroundTruthObjectStateEstimator` trusts an injected
+`ObjectEvidenceSource` completely and only performs frame conversion, so it
+has no RoboTwin dependency itself. `RoboTwinObjectEvidenceSource` is the one
+piece that touches SAPIEN actors directly, reading measured poses (never a
+segmentation ID or asset name) into that evidence contract. A future
+`VisionObjectStateEstimator` produces the same `ObjectScene` from RGB instead.
 
 ## Action, frame, and timing contracts
 
