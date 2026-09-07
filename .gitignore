@@ -1,0 +1,32 @@
+# Local configuration and agent metadata
+.env
+.env.*
+!.env.example
+.agents/
+.codex/
+
+# Python and build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv*/
+build/
+dist/
+
+# External dependencies and experiment artifacts
+RoboTwin/
+data/
+datasets/
+assets/
+outputs/
+logs/
+*.log
+
+# Git history replaces manual backups
+*.orig
+* copy.py
+*_backup.py
