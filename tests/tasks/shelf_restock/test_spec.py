@@ -30,14 +30,26 @@ def test_shelf_region_top_z_is_center_plus_half_extent():
 @pytest.mark.parametrize(
     "position,expected",
     [
-        ((0.0, -0.15, 0.74), True),
-        ((0.19, -0.15, 0.74), True),
-        ((0.21, -0.15, 0.74), False),
-        ((0.0, -0.15, 0.76), False),
+        ((0.0, -0.15, 0.75), True),  # exactly at the deck surface (top_z)
+        ((0.19, -0.15, 0.80), True),  # in-footprint, resting above the deck
+        ((0.0, -0.15, 0.899), True),  # just inside the occupancy volume
+        ((0.21, -0.15, 0.75), False),  # outside the x footprint
+        ((0.0, -0.15, 0.70), False),  # below the deck, not resting on it
+        ((0.0, -0.15, 0.91), False),  # above the occupancy volume
     ],
 )
 def test_shelf_region_contains(position, expected):
     assert region().contains(position) is expected
+
+
+def test_shelf_region_rejects_nonpositive_occupancy_height():
+    with pytest.raises(ValueError):
+        ShelfRegion("a", (0, 0, 0), (0.1, 0.1, 0.1), occupancy_height=0.0)
+
+
+def test_shelf_region_rejects_negative_occupancy_tolerance():
+    with pytest.raises(ValueError):
+        ShelfRegion("a", (0, 0, 0), (0.1, 0.1, 0.1), occupancy_tolerance=-0.01)
 
 
 def test_shelf_region_rejects_empty_name():

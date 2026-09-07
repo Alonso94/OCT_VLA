@@ -35,11 +35,21 @@ def _positive(value: float, name: str) -> float:
 
 @dataclass(frozen=True)
 class ShelfRegion:
-    """An axis-aligned box in the workcell frame: one shelf level's usable deck."""
+    """One shelf level: a thin physical deck plus the occupancy volume above it.
+
+    ``half_extent_xyz`` describes the deck's own geometry (thin in z; used to
+    build its collision/visual box and to compute ``top_z``). ``contains()``
+    answers a different question -- "is this position resting on this
+    shelf?" -- so it checks the deck's xy footprint but a taller z band above
+    the deck surface, since a real object's *center* sits above the deck by
+    roughly half its own height, not inside the deck's own thin body.
+    """
 
     name: str
     center_xyz: tuple[float, float, float]
     half_extent_xyz: tuple[float, float, float]
+    occupancy_height: float = 0.15
+    occupancy_tolerance: float = 0.02
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name.strip():
@@ -49,6 +59,13 @@ class ShelfRegion:
         if not all(v > 0 for v in half_extent):
             raise ValueError("half_extent_xyz must be finite and positive")
         object.__setattr__(self, "half_extent_xyz", half_extent)
+        object.__setattr__(
+            self, "occupancy_height", _positive(self.occupancy_height, "occupancy_height")
+        )
+        (tolerance,) = finite_values((self.occupancy_tolerance,), 1)
+        if tolerance < 0:
+            raise ValueError("occupancy_tolerance must be finite and nonnegative")
+        object.__setattr__(self, "occupancy_tolerance", tolerance)
 
     @property
     def top_z(self) -> float:
@@ -56,11 +73,12 @@ class ShelfRegion:
         return self.center_xyz[2] + self.half_extent_xyz[2]
 
     def contains(self, position_xyz: tuple[float, float, float]) -> bool:
-        position = finite_values(position_xyz, 3)
-        return all(
-            abs(p - c) <= h
-            for p, c, h in zip(position, self.center_xyz, self.half_extent_xyz, strict=True)
-        )
+        x, y, z = finite_values(position_xyz, 3)
+        cx, cy, _ = self.center_xyz
+        hx, hy, _ = self.half_extent_xyz
+        if abs(x - cx) > hx or abs(y - cy) > hy:
+            return False
+        return self.top_z - self.occupancy_tolerance <= z <= self.top_z + self.occupancy_height
 
 
 @dataclass(frozen=True)

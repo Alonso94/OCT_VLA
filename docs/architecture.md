@@ -7,8 +7,8 @@ package boundary, geometry, frame-labelled poses/transforms, canonical EEF state
 world-frame measurements to the workcell frame with checked dual-arm planning,
 the canonical object-scene schema with a RoboTwin ground-truth estimator, and
 the shelf-restocking task's pure specification, geometry, success check, and
-repeat-until-empty manager. Other interfaces below remain design contracts;
-notably, no RoboTwin scene actually builds this task yet (see below).
+repeat-until-empty manager, and a RoboTwin scene that builds this task live
+(spawned objects, no oracle). Other interfaces below remain design contracts.
 
 ## Research scope
 
@@ -91,11 +91,38 @@ since `ObjectScene` carries no per-object placement timestamp. It executes no
 manipulation skill; the policy or oracle performs each restock and calls
 `record_placement` back into it.
 
-No RoboTwin task class (`load_actors`/`play_once`/`check_success`) exists yet
-for this task -- building one requires selecting real object assets and
-placing shelf geometry that a real planner has been confirmed not to collide
-with, which is deferred to the commit that builds the oracle against a live
-scene.
+`tasks/shelf_restock/robotwin_env.py`'s `ShelfRestockTask` builds this scene
+in RoboTwin: a static upper-shelf box plus randomly placed box objects on the
+lower shelf/table, loaded as an external task entrypoint
+(`module:ClassName`, resolved by `RoboTwinNativePort._load_task_class`
+without copying anything into the RoboTwin checkout, reusing the mechanism
+the old repo already proved out). `play_once` is intentionally
+`NotImplementedError`; there is no oracle yet.
+
+Live verification against real SAPIEN/cuRobo confirmed the object/GT-estimator
+pipeline works against genuinely spawned objects, and surfaced one real bug
+along the way: `ShelfRegion.contains()` originally checked whether a position
+fell inside the deck's own thin physical slab, so no real object (whose
+center sits above the deck by roughly half its height) ever registered as
+"on" either shelf. Fixed by separating deck geometry from an "occupancy"
+z-band above the deck surface.
+
+It also surfaced an important scoping fact for the oracle commit: cuRobo's
+collision world is built once, in `CuroboPlanner.__init__` (called during
+`load_robot()`, before this task's `load_actors()` ever runs), from a single
+hardcoded generic table cuboid -- it has no knowledge of this shelf or any
+spawned object. A live reach toward a spawned lower-shelf object succeeded
+in 29 incremental steps with no planning failure; a reach toward the upper
+shelf failed cuRobo's global planner at a pose above and behind the shelf.
+Because the shelf is invisible to cuRobo's collision world, **neither result
+is evidence about physical shelf collision** -- the failure is more likely an
+IK/orientation difficulty (the test held a fixed orientation from reset
+throughout, which the oracle would not), and the success does not yet
+guarantee the arm didn't clip the shelf on the way. Registering this task's
+actual shelf/object geometry into cuRobo's world config (extending or
+replacing that hardcoded table cuboid, the way the old repo's abandoned v1
+draft did for held/other objects) is required oracle-commit work, not
+something this task specification can resolve on its own.
 
 ## Action, frame, and timing contracts
 

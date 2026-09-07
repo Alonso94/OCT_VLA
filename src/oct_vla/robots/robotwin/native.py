@@ -51,6 +51,18 @@ def _chdir(path: Path):
 
 
 def _load_task_class(task_name: str) -> Any:
+    """Load a RoboTwin-native task (``"stack_blocks_three"``) or an external
+    one owned outside the checkout (``"pkg.module:ClassName"``). External
+    task classes still subclass RoboTwin's own Base_Task directly; only the
+    module's own location is external, since ``envs`` is importable once
+    _prepare_import_path/_chdir have run (see e.g. tasks/shelf_restock).
+    """
+    if ":" in task_name:
+        module_name, class_name = task_name.split(":", maxsplit=1)
+        try:
+            return getattr(importlib.import_module(module_name), class_name)
+        except (ImportError, AttributeError) as error:
+            raise NativePortError(f"Could not load external task {task_name!r}") from error
     try:
         module = importlib.import_module(f"envs.{task_name}")
         return getattr(module, task_name)
