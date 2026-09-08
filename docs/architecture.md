@@ -8,9 +8,10 @@ world-frame measurements to the workcell frame with checked dual-arm planning,
 the canonical object-scene schema with a RoboTwin ground-truth estimator, and
 the shelf-restocking task's pure specification, geometry, success check, and
 repeat-until-empty manager, a RoboTwin scene that builds this task live
-(spawned objects, no oracle), and the oracle's world-model registration (the
-first oracle piece: cuRobo's planner is now genuinely aware of this task's
-shelf and objects). Other interfaces below remain design contracts.
+(spawned objects, no oracle), and the first two oracle pieces: world-model
+registration (cuRobo's planner is now genuinely aware of this task's shelf
+and objects) and top-down grasp-candidate generation. Other interfaces below
+remain design contracts.
 
 ## Research scope
 
@@ -138,12 +139,53 @@ steps; the upper-shelf reach still failed cuRobo's global planner at the same
 pose as before the patch. That the failure point didn't move is itself
 informative: it means the earlier failure was never a shelf-collision issue
 (cuRobo could not have avoided what it could not see, so a *different*
-failure point after the patch would have been the sign of one) -- it is more
-likely an IK/orientation difficulty, since the probe held a fixed orientation
-from reset throughout, which a real oracle would not do. The pickup-side
-success is now real evidence the shelf doesn't block that approach; grasp and
-placement pose selection (candidate generation, not a fixed test orientation)
-is the next oracle piece, not yet built.
+failure point after the patch would have been the sign of one). The
+pickup-side success is now real evidence the shelf doesn't block that
+approach.
+
+## Oracle: grasp candidates
+
+`tasks/shelf_restock/oracle/grasps.py`'s `generate_top_down_grasps` is the
+first candidate-generation piece (section 21 of the research plan: never
+hard-code one grasp pose). It derives top-down grasp poses directly rather
+than reading RoboTwin's own box "contact points": for a procedural
+`create_box` actor those carry only orientation (translation is always
+`(0, 0, 0)` regardless of object size, unlike a real scanned asset), so
+reusing them buys nothing a direct derivation doesn't already give. Two
+90-degree-apart candidates are generated per object (matching that RoboTwin's
+own 4 box contact points reduce to the same 2 unique top-down orientations
+plus 180-degree duplicates), filtered by whether the object's corresponding
+horizontal dimension fits the gripper's opening. The canonical "pointing
+straight down" quaternion is verified equal, up to the usual double-cover
+sign, to RoboTwin's own `GRASP_DIRECTION_DIC["top_down"]` constant; composing
+a yaw rotation about the workcell z-axis on its *left* preserves "pointing
+down" while spinning the wrist, which is how per-object and per-candidate
+yaw are both applied. This is pure and unit-tested; it has no SAPIEN
+dependency, matching the generic/pure-first pattern used throughout (backend,
+ground-truth estimator, world-model registration).
+
+Live verification against a real spawned lower-shelf object: both candidates'
+`closing_width` matched the object's real size along the expected axis, and
+walking the arm to the pregrasp pose completed 40 incremental steps with zero
+planning failures -- meaningfully stronger evidence than the earlier
+fixed-orientation probe, since this used the actual candidate orientation
+this task would use.
+
+This also refines, rather than confirms, the earlier IK/orientation
+hypothesis for the upper-shelf failure: reaching the *same* upper-shelf point
+with a proper top-down orientation (not the earlier arbitrary fixed one)
+**still failed** with the identical `'Fail'` status. A correct orientation
+not fixing it means the earlier hypothesis was wrong -- this now looks like a
+genuine reachability limit of `DEFAULT_SPEC.upper_shelf`'s position for the
+left arm, not an artifact of the diagnostic script's orientation choice.
+Adjusting that position (a `spec.py` change) is the right next fix, ahead of
+further placement-motion work; it has not been made yet. Separately, a
+follow-on descent from pregrasp to the grasp pose in the same probe made
+little further progress toward the target over 40 more steps without ever
+raising a planning failure -- not yet diagnosed, and possibly a limitation of
+the diagnostic script's own naive re-plan-from-scratch-every-step approach
+rather than the task geometry; a real oracle's local interaction motion
+(section 20) would not descend this way.
 
 ## Action, frame, and timing contracts
 
