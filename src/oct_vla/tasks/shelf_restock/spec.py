@@ -1,15 +1,22 @@
 """Shelf-restocking task specification: geometry and per-episode variation ranges.
 
-Pure data -- no SAPIEN, no RoboTwin. A scene builder (a later commit)
-instantiates a live scene FROM this spec; nothing here depends on it.
+Pure data -- no SAPIEN, no RoboTwin. A scene builder instantiates a live
+scene FROM this spec; nothing here depends on it.
 
-Geometry defaults below are a starting point, not yet validated against a real
-SAPIEN scene. The old reference implementation's shelf sat inside the arm's
-straight-line base-to-source approach corridor and failed 0/545 collection
-attempts for exactly that reason (docs/shelf_restock_grasp_investigation.md in
-the old repo); the upper shelf here is deliberately offset in y from the
-lower shelf/source region to avoid repeating that failure, but this must
-still be confirmed once a real scene exists to plan motions against.
+`upper_shelf`'s position was corrected by live reachability sweeps against
+the real scene (docs/architecture.md), not derived analytically. The first
+choice -- center (0.0, 0.10, 1.05), i.e. y=0.10, top_z=1.065 -- failed a
+top-down global plan for *both* arms at every height/standoff tried, even
+though it was deliberately offset in y from the lower shelf/source region to
+avoid the old reference implementation's corridor-collision failure (0/545
+demo collection attempts; docs/shelf_restock_grasp_investigation.md in the
+old repo). A position/arm sweep found the actual limiting factor was height
+and forward (+y) reach, not which arm or x-position: targets around
+z=0.90-1.00, y=-0.05 to 0.00 landed within 5-10mm of the requested pose for
+both arms, including at x=0.0 dead center, while y=0.10 at any height from
+1.065-1.185 failed or landed 0.12-0.27m off target regardless of arm. The
+values below reflect that evidence, not the original corridor-avoidance
+reasoning alone.
 """
 
 import random
@@ -138,7 +145,7 @@ class ShelfRestockSpec:
 
 DEFAULT_SPEC = ShelfRestockSpec(
     lower_shelf=ShelfRegion("lower_shelf", (0.0, -0.15, 0.74), (0.22, 0.10, 0.01)),
-    upper_shelf=ShelfRegion("upper_shelf", (0.0, 0.10, 1.05), (0.20, 0.10, 0.015)),
+    upper_shelf=ShelfRegion("upper_shelf", (0.0, -0.05, 0.92), (0.20, 0.08, 0.015)),
     object_variation=ObjectVariation(
         position_x_range=(-0.18, 0.18),
         position_y_range=(-0.20, -0.10),

@@ -171,21 +171,41 @@ planning failures -- meaningfully stronger evidence than the earlier
 fixed-orientation probe, since this used the actual candidate orientation
 this task would use.
 
-This also refines, rather than confirms, the earlier IK/orientation
+This also refined, rather than confirmed, the earlier IK/orientation
 hypothesis for the upper-shelf failure: reaching the *same* upper-shelf point
 with a proper top-down orientation (not the earlier arbitrary fixed one)
-**still failed** with the identical `'Fail'` status. A correct orientation
-not fixing it means the earlier hypothesis was wrong -- this now looks like a
-genuine reachability limit of `DEFAULT_SPEC.upper_shelf`'s position for the
-left arm, not an artifact of the diagnostic script's orientation choice.
-Adjusting that position (a `spec.py` change) is the right next fix, ahead of
-further placement-motion work; it has not been made yet. Separately, a
-follow-on descent from pregrasp to the grasp pose in the same probe made
-little further progress toward the target over 40 more steps without ever
-raising a planning failure -- not yet diagnosed, and possibly a limitation of
-the diagnostic script's own naive re-plan-from-scratch-every-step approach
-rather than the task geometry; a real oracle's local interaction motion
-(section 20) would not descend this way.
+still failed with the identical `'Fail'` status. A correct orientation not
+fixing it meant the earlier hypothesis was wrong. A follow-up position/arm
+sweep tested both arms against a grid of positions and found `y=0.10` at any
+height from 1.065-1.185 consistently failed or landed 0.12-0.27m from the
+requested pose for *both* arms, while targets around `z=0.90-1.00, y=-0.05
+to 0.00` -- including `x=0.0`, dead center between the two arm bases --
+landed within 5-10mm in several individual trials. `DEFAULT_SPEC.upper_shelf`
+now reflects that evidence: center `(0.0, -0.05, 0.92)`, `top_z=0.935`
+(previously `(0.0, 0.10, 1.05)`, `top_z=1.065`), still comfortably clear of
+`lower_shelf`'s `top_z=0.75`.
+
+That evidence is real but weaker than first reported, and the honest
+correction matters: a later, more careful test (decoupling rotation from
+translation, small-stepping each separately, rather than one large combined
+jump) reproduced clean single-step convergence for some reaches near the new
+position and an outright planning failure partway through others covering
+the *same* journey, with no pattern tied to position, arm, or step size. The
+common factor is RoboTwin's own planner configuration
+(`envs/robot/planner.py`): `MotionGenConfig.load_from_robot_config(...,
+num_trajopt_seeds=1)`. A single-seed nonconvex trajectory optimizer can fail
+or converge loosely on an individual call for reasons unrelated to whether
+the target is geometrically reasonable, and repeated re-planning (every
+naive per-step re-plan-from-scratch test in this session, including the
+"single-shot sweep" above) will eventually hit a bad seed regardless of
+target position. This means **the corrected position is a real, evidence-based
+improvement over the old one** (which failed *every* height/y tried, for
+*both* arms, with no exceptions at all) **but is not proven reliably
+reachable** -- that requires retry-on-failure or multiple trajopt seeds, which
+is oracle motion-planning infrastructure (section 21: "reliability is more
+important than minimum planning latency" for an offline expert), not
+something a diagnostic script should paper over. Tracked as follow-up oracle
+work, not yet implemented.
 
 ## Action, frame, and timing contracts
 
