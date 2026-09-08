@@ -8,10 +8,11 @@ world-frame measurements to the workcell frame with checked dual-arm planning,
 the canonical object-scene schema with a RoboTwin ground-truth estimator, and
 the shelf-restocking task's pure specification, geometry, success check, and
 repeat-until-empty manager, a RoboTwin scene that builds this task live
-(spawned objects, no oracle), and the first three oracle pieces: world-model
+(spawned objects, no oracle), and the first four oracle pieces: world-model
 registration (cuRobo's planner is now genuinely aware of this task's shelf
-and objects), top-down grasp-candidate generation, and side-aware arm
-selection. Other interfaces below remain design contracts.
+and objects), top-down grasp-candidate generation, side-aware arm selection,
+and plan-once motion primitives. Other interfaces below remain design
+contracts.
 
 ## Research scope
 
@@ -73,13 +74,11 @@ segmentation ID or asset name) into that evidence contract. A future
 axis-aligned box in the workcell frame, one shelf level's deck), `ObjectVariation`
 (uniform per-episode position/yaw/size sampling ranges), and `ShelfRestockSpec`
 (both regions, the variation, a compaction-distance threshold, and the fixed
-task instruction). None of this imports RoboTwin or SAPIEN; a scene builder
-(not yet implemented) will instantiate a live scene from this spec. The default
-geometry offsets the upper shelf in y from the lower shelf/source region
-specifically because the old reference implementation's single shelf sat inside
-the arm's straight-line base-to-source approach corridor and failed 0/545
-collection attempts for exactly that reason; this offset is not yet confirmed
-against a real planner and scene.
+task instruction). None of this imports RoboTwin or SAPIEN; `robotwin_env.py`
+instantiates a live scene from this spec. The geometry has since been
+corrected twice against live measurement -- see the reachability findings and
+the overhang problem below -- so treat the values in `spec.py` as measured
+settings with a recorded rationale, not as free parameters.
 
 `tasks/shelf_restock/geometry.py` and `success.py` compute placement/compaction
 success purely from an `ObjectScene` and the spec: horizontal (xy-only) distance
@@ -247,6 +246,52 @@ Arm choice deliberately does not appear in `TaskContext`: the canonical
 action carries both arms every step and the policy learns which to move
 (the stationary arm holds), so which arm the *expert* used is an oracle
 implementation detail, not policy-facing state.
+
+## Oracle: motion primitives
+
+`tasks/shelf_restock/oracle/motion.py` provides `move_to` (plan once with
+cuRobo, execute that trajectory's rows, then settle on the final row) and
+`set_gripper` (ramp one gripper while both arms hold). The other arm holds at
+its pre-motion joint positions with zero velocity for every tick, matching
+the canonical backend's hold semantics. Both are written against the
+`NativePort` protocol rather than SAPIEN, so they are unit-tested with a fake
+port -- including the property that matters most, that planning happens
+exactly once for a whole motion.
+
+They deliberately do not route through `RobotBackend.step()`. That interface
+takes bounded per-step Cartesian deltas because a *policy* emits them, and
+re-plans every step; driving a long motion through it is the "dense waypoint
+IK used as trajectory planning" anti-pattern, and it demonstrably drove the
+arm into configurations whose next waypoint could not be planned.
+
+### Three findings from live verification, none yet fixed
+
+Executing these primitives against the real scene surfaced problems that the
+planning-only queries above could not have caught, because they only checked
+plan *status*:
+
+1. **A cuRobo `Success` does not mean the trajectory is collision-free.**
+   Executing a `Success` plan left the arm in sustained contact:
+   `panda_link6 <-> upper_shelf` (impulse 0.52), `panda_link7 <-> upper_shelf`
+   (0.26), `panda_rightfinger <-> table` (0.40). The arm jams against the
+   shelf and holds a ~0.147 rad steady-state joint error that does not decay
+   even after 2000 settle ticks. Collision avoidance in trajopt is a soft
+   cost, exactly as the old repo's investigation documented. **Every
+   reachability conclusion in this document that rests on plan status alone
+   is therefore weaker than it reads**, and the oracle needs an explicit
+   post-hoc contact check; `NativePort` does not expose contacts yet.
+2. **The upper shelf overhangs the object spawn zone.** The deck spans
+   `y in [-0.13, 0.03]` while objects spawn at `y in [-0.20, -0.10]`, so an
+   object at `y=-0.124` sits directly beneath it and cannot be grasped
+   top-down -- the wrist links occupy the deck's volume. This hypothesis was
+   raised earlier and wrongly dismissed when planning-only queries returned
+   `Success`; they did so precisely because collision is a soft cost.
+3. **`grasps.py` does not account for the TCP-to-fingertip offset.** Measured
+   directly: the pose `get_*_ee_pose()` reports sits 0.0976m above the finger
+   link origins and 0.0397m above `panda_hand`, so with Franka's 0.1034m
+   hand-to-TCP offset the grasp point is ~0.143m *below* the commanded pose.
+   `generate_top_down_grasps` puts the commanded TCP at the object's centre,
+   which drives the fingers ~0.14m below it, into the table.
 
 What remains genuinely unexplained is narrower than previously claimed: a
 greedy stepping loop (recompute the full remaining delta, clamp it, re-plan
