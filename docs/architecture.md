@@ -8,10 +8,10 @@ world-frame measurements to the workcell frame with checked dual-arm planning,
 the canonical object-scene schema with a RoboTwin ground-truth estimator, and
 the shelf-restocking task's pure specification, geometry, success check, and
 repeat-until-empty manager, a RoboTwin scene that builds this task live
-(spawned objects, no oracle), and the first two oracle pieces: world-model
+(spawned objects, no oracle), and the first three oracle pieces: world-model
 registration (cuRobo's planner is now genuinely aware of this task's shelf
-and objects) and top-down grasp-candidate generation. Other interfaces below
-remain design contracts.
+and objects), top-down grasp-candidate generation, and side-aware arm
+selection. Other interfaces below remain design contracts.
 
 ## Research scope
 
@@ -226,6 +226,27 @@ assign an arbitrary arm to an arbitrary object or placement slot; each arm
 must handle its own side of the workcell, and the shelf's usable x-span per
 arm is bounded by this limit. Every diagnostic in this session that used the
 left arm for a positive-x target was fighting this constraint.
+
+## Oracle: arm selection
+
+`tasks/shelf_restock/oracle/arms.py` encodes that finding. `select_arm`
+applies a same-side rule (ties on the `x=0` centreline go left,
+deterministically), which by construction never produces a pairing inside the
+measured dead zone. `is_cross_body_limited` reports whether a given
+arm/target pairing falls in it, so code that picks an arm for other reasons
+fails with a kinematic explanation rather than an opaque planner `Fail`.
+
+The constants record where failure was *observed*, not an interpolated
+boundary: the true edge lies somewhere between the sampled points (in `y`
+between -0.10, which planned, and -0.05, which did not; in `x` between 0.0
+and 0.15). A unit test replays the full 90-pose grid and asserts the module
+agrees with every recorded planner result, so this stays pinned to
+measurement rather than to reasoning about it.
+
+Arm choice deliberately does not appear in `TaskContext`: the canonical
+action carries both arms every step and the policy learns which to move
+(the stationary arm holds), so which arm the *expert* used is an oracle
+implementation detail, not policy-facing state.
 
 What remains genuinely unexplained is narrower than previously claimed: a
 greedy stepping loop (recompute the full remaining delta, clamp it, re-plan
