@@ -19,6 +19,7 @@ from envs._base_task import Base_Task
 from envs.utils import create_box
 
 from oct_vla.robots.robotwin.backend import encode_pose
+from oct_vla.tasks.shelf_restock.oracle.world import install_world_patch, register_objects
 from oct_vla.tasks.shelf_restock.spec import DEFAULT_SPEC, ShelfRestockSpec
 
 MIN_OBJECT_SEPARATION = 0.08
@@ -41,11 +42,15 @@ class ShelfRestockTask(Base_Task):
 
     def setup_demo(self, **kwargs: Any) -> None:
         self._episode_seed = kwargs.get("seed", 0)
+        # Must run before _init_task_env_ -> load_robot -> CuroboPlanner.__init__,
+        # which is where RoboTwin sizes and loads cuRobo's obstacle cache.
+        install_world_patch(self.spec, max_objects=self.object_count)
         super()._init_task_env_(**kwargs)
 
     def load_actors(self) -> None:
         self._load_upper_shelf()
         self._load_objects()
+        register_objects(self, self.tracked_objects)
 
     def _load_upper_shelf(self) -> None:
         shelf = self.spec.upper_shelf

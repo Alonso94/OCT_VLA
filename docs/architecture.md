@@ -7,8 +7,10 @@ package boundary, geometry, frame-labelled poses/transforms, canonical EEF state
 world-frame measurements to the workcell frame with checked dual-arm planning,
 the canonical object-scene schema with a RoboTwin ground-truth estimator, and
 the shelf-restocking task's pure specification, geometry, success check, and
-repeat-until-empty manager, and a RoboTwin scene that builds this task live
-(spawned objects, no oracle). Other interfaces below remain design contracts.
+repeat-until-empty manager, a RoboTwin scene that builds this task live
+(spawned objects, no oracle), and the oracle's world-model registration (the
+first oracle piece: cuRobo's planner is now genuinely aware of this task's
+shelf and objects). Other interfaces below remain design contracts.
 
 ## Research scope
 
@@ -107,22 +109,41 @@ center sits above the deck by roughly half its height) ever registered as
 "on" either shelf. Fixed by separating deck geometry from an "occupancy"
 z-band above the deck surface.
 
-It also surfaced an important scoping fact for the oracle commit: cuRobo's
-collision world is built once, in `CuroboPlanner.__init__` (called during
-`load_robot()`, before this task's `load_actors()` ever runs), from a single
-hardcoded generic table cuboid -- it has no knowledge of this shelf or any
-spawned object. A live reach toward a spawned lower-shelf object succeeded
-in 29 incremental steps with no planning failure; a reach toward the upper
-shelf failed cuRobo's global planner at a pose above and behind the shelf.
-Because the shelf is invisible to cuRobo's collision world, **neither result
-is evidence about physical shelf collision** -- the failure is more likely an
-IK/orientation difficulty (the test held a fixed orientation from reset
-throughout, which the oracle would not), and the success does not yet
-guarantee the arm didn't clip the shelf on the way. Registering this task's
-actual shelf/object geometry into cuRobo's world config (extending or
-replacing that hardcoded table cuboid, the way the old repo's abandoned v1
-draft did for held/other objects) is required oracle-commit work, not
-something this task specification can resolve on its own.
+It also surfaced an important scoping fact: cuRobo's collision world is built
+once, in `CuroboPlanner.__init__` (called during `load_robot()`, before this
+task's `load_actors()` ever runs), from a single hardcoded generic table
+cuboid -- by default it has no knowledge of this shelf or any spawned object.
+
+## Oracle: world model
+
+`tasks/shelf_restock/oracle/world.py` closes that gap. `MotionGen.update_world`
+can only ever replace obstacles up to the collision cache size fixed at
+`MotionGenConfig` construction time -- a hard cuRobo limit under CUDA graphs,
+which RoboTwin uses by default -- so that headroom must be reserved *before*
+`CuroboPlanner.__init__` runs, before this task's objects even exist.
+`install_world_patch` patches `MotionGenConfig.load_from_robot_config` in this
+process only (nothing on disk, inside the RoboTwin checkout or otherwise, is
+modified) to reserve capacity for the upper shelf plus every object this task
+could spawn, and to inject the upper shelf's real geometry into the initial
+world model. `ShelfRestockTask.setup_demo` installs this before calling
+`_init_task_env_`. Once real objects exist, `register_objects` (called at the
+end of `load_actors`) pushes their actual poses/sizes into both arms'
+`MotionGen`/`MotionGen_batch` planners via `update_world` -- no placeholder or
+parked dummy obstacles needed, unlike the old repo's abandoned v1 draft,
+because `collision_cache={"obb": N}` reserves the headroom cleanly instead.
+
+Live verification repeated the reachability probe above with the shelf now a
+real obstacle. The lower-shelf-object reach still succeeded in the same 29
+steps; the upper-shelf reach still failed cuRobo's global planner at the same
+pose as before the patch. That the failure point didn't move is itself
+informative: it means the earlier failure was never a shelf-collision issue
+(cuRobo could not have avoided what it could not see, so a *different*
+failure point after the patch would have been the sign of one) -- it is more
+likely an IK/orientation difficulty, since the probe held a fixed orientation
+from reset throughout, which a real oracle would not do. The pickup-side
+success is now real evidence the shelf doesn't block that approach; grasp and
+placement pose selection (candidate generation, not a fixed test orientation)
+is the next oracle piece, not yet built.
 
 ## Action, frame, and timing contracts
 
