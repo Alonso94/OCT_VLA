@@ -185,27 +185,59 @@ now reflects that evidence: center `(0.0, -0.05, 0.92)`, `top_z=0.935`
 (previously `(0.0, 0.10, 1.05)`, `top_z=1.065`), still comfortably clear of
 `lower_shelf`'s `top_z=0.75`.
 
-That evidence is real but weaker than first reported, and the honest
-correction matters: a later, more careful test (decoupling rotation from
-translation, small-stepping each separately, rather than one large combined
-jump) reproduced clean single-step convergence for some reaches near the new
-position and an outright planning failure partway through others covering
-the *same* journey, with no pattern tied to position, arm, or step size. The
-common factor is RoboTwin's own planner configuration
-(`envs/robot/planner.py`): `MotionGenConfig.load_from_robot_config(...,
-num_trajopt_seeds=1)`. A single-seed nonconvex trajectory optimizer can fail
-or converge loosely on an individual call for reasons unrelated to whether
-the target is geometrically reasonable, and repeated re-planning (every
-naive per-step re-plan-from-scratch test in this session, including the
-"single-shot sweep" above) will eventually hit a bad seed regardless of
-target position. This means **the corrected position is a real, evidence-based
-improvement over the old one** (which failed *every* height/y tried, for
-*both* arms, with no exceptions at all) **but is not proven reliably
-reachable** -- that requires retry-on-failure or multiple trajopt seeds, which
-is oracle motion-planning infrastructure (section 21: "reliability is more
-important than minimum planning latency" for an offline expert), not
-something a diagnostic script should paper over. Tracked as follow-up oracle
-work, not yet implemented.
+Those first sweeps measured *execution* (plan, then run the trajectory, then
+compare the achieved pose), which conflates three things: whether a pose is
+plannable, whether the plan is followed accurately, and whether the stepping
+strategy leaves the arm in a good configuration for the next request. Asking
+the planner directly instead -- `robot.left_plan_path(...)` with nothing
+executed, so every query starts from the same joint configuration -- is a far
+cleaner instrument, and it corrected several conclusions reached from the
+execution sweeps:
+
+- The corrected `upper_shelf` position is genuinely plannable: its deck top
+  and a preplace pose above it both return `Success`, from the home
+  configuration *and* from the configuration reached after 40 greedy
+  incremental steps. The old position (`y=0.10`, `top_z=1.065`) returns
+  `Fail` from both. So the `spec.py` geometry change is confirmed, not just
+  "an improvement" -- the old geometry was genuinely unplannable and the new
+  one is not.
+- A 6x5 grid over `z=0.85-1.10` and `y=-0.30-0.00` at the shelf's x returned
+  `Success` for all 40 queries, as did the whole lower-shelf grasp column.
+  There is no reach *ceiling* in the region this task uses, and no collision
+  with the registered shelf along the straight line between pregrasp and
+  preplace poses -- both hypotheses raised from the execution sweeps were
+  wrong.
+
+`num_trajopt_seeds` was A/B tested on an identical 90-query grid (both arms,
+three x, five y, three z), pre-installing the world patch with the seed count
+under test so nothing else differed. **`seeds=1` and `seeds=4` produced
+identical results: 78 Success / 12 Fail, the same 12 failures.** RoboTwin's
+`num_trajopt_seeds=1` is therefore not a reliability problem for this task's
+workspace, and the earlier speculation that it explained intermittent
+failures is withdrawn; that change was implemented, measured, found to do
+nothing, and reverted rather than kept on plausibility.
+
+The 12 failures are not random -- they are a deterministic, symmetric
+**cross-body reach limit**: the left arm cannot plan to `x=+0.15` at
+`y >= -0.05` (any height tried), and the right arm cannot plan to `x=-0.15`
+at the same `y`, while every same-side and centreline pose succeeds. This is
+real and actionable: **arm selection must be side-aware**. The oracle cannot
+assign an arbitrary arm to an arbitrary object or placement slot; each arm
+must handle its own side of the workcell, and the shelf's usable x-span per
+arm is bounded by this limit. Every diagnostic in this session that used the
+left arm for a positive-x target was fighting this constraint.
+
+What remains genuinely unexplained is narrower than previously claimed: a
+greedy stepping loop (recompute the full remaining delta, clamp it, re-plan
+from scratch, execute, repeat) sometimes reaches a configuration from which
+its next intermediate waypoint fails, even though both endpoints and every
+straight-line waypoint plan fine from a fixed configuration. That is a
+property of the stepping strategy, not of the geometry or the planner
+config, and it is precisely the "dense waypoint IK used as trajectory
+planning" anti-pattern the research plan warns against. A real oracle plans
+once to a target and executes cuRobo's own interpolated trajectory; it
+should not inherit this behaviour, and no fix belongs in the task spec or
+planner configuration for it.
 
 ## Action, frame, and timing contracts
 
