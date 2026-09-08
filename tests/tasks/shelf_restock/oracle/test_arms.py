@@ -1,39 +1,50 @@
 import pytest
 
+from oct_vla.core.frames import Pose
+from oct_vla.core.objects import ObjectState
 from oct_vla.tasks.shelf_restock.oracle.arms import (
     CROSS_BODY_X,
     CROSS_BODY_Y,
+    arm_for,
     is_cross_body_limited,
-    select_arm,
 )
+from oct_vla.tasks.shelf_restock.oracle.placement import plan_placement
+from oct_vla.tasks.shelf_restock.spec import DEFAULT_SPEC
 
 
-@pytest.mark.parametrize(
-    "x,expected",
-    [(-0.3, "left"), (-0.15, "left"), (-0.001, "left"), (0.001, "right"), (0.15, "right")],
-)
-def test_select_arm_picks_the_same_side(x, expected):
-    assert select_arm((x, -0.1, 0.9)) == expected
+def test_the_left_arm_moves_objects_and_the_right_arm_only_compacts():
+    assert arm_for("grasp") == "left"
+    assert arm_for("place") == "left"
+    assert arm_for("compact") == "right"
 
 
-def test_select_arm_breaks_centreline_ties_deterministically():
-    assert select_arm((0.0, -0.1, 0.9)) == "left"
-    assert select_arm((0.0, 0.0, 1.05)) == "left"
+def test_arm_for_rejects_an_unknown_role():
+    with pytest.raises(ValueError, match="role must be one of"):
+        arm_for("shove")
 
 
-def test_select_arm_rejects_malformed_positions():
-    with pytest.raises(ValueError):
-        select_arm((0.0, 0.0))
-    with pytest.raises(ValueError):
-        select_arm((float("nan"), 0.0, 0.9))
+def test_the_grasping_arm_reaches_the_whole_lower_shelf():
+    """Roles are fixed, so the left arm must cover every x an object can spawn
+    at; lower-shelf y sits below CROSS_BODY_Y, which is what makes that hold."""
+    low_x, high_x = DEFAULT_SPEC.object_variation.position_x_range
+    low_y, high_y = DEFAULT_SPEC.object_variation.position_y_range
+    for x in (low_x, 0.0, high_x):
+        for y in (low_y, high_y):
+            assert not is_cross_body_limited("left", (x, y, 0.78))
 
 
-def test_select_arm_never_produces_a_cross_body_limited_pairing():
-    for x in (-0.3, -0.15, -0.05, 0.0, 0.05, 0.15, 0.3):
-        for y in (-0.30, -0.20, -0.10, -0.05, 0.0):
-            for z in (0.85, 0.95, 1.05):
-                position = (x, y, z)
-                assert not is_cross_body_limited(select_arm(position), position)
+def test_placing_far_along_the_upper_shelf_is_flagged_not_silently_attempted():
+    """The upper shelf lies inside the left arm's cross-body band, so the far
+    +x end of the deck is out of reach and must be reported as such."""
+    assert is_cross_body_limited(
+        "left", (CROSS_BODY_X, DEFAULT_SPEC.upper_shelf.center_xyz[1], 0.97)
+    )
+
+
+def test_the_first_placement_is_within_the_placing_arm_reach():
+    obj = ObjectState("t", Pose((0.0, -0.25, 0.78), (0, 0, 0, 1)), (0.04, 0.04, 0.05), 1.0, 1.0)
+    placement = plan_placement(DEFAULT_SPEC, obj, 0.0, None, standoff=0.1)
+    assert not is_cross_body_limited("left", placement.object_pose.position)
 
 
 @pytest.mark.parametrize("z", [0.85, 0.95, 1.05])

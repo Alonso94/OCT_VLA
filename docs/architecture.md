@@ -10,7 +10,7 @@ the shelf-restocking task's pure specification, geometry, success check, and
 repeat-until-empty manager, a RoboTwin scene that builds this task live
 (spawned objects, no oracle), and the first four oracle pieces: world-model
 registration (cuRobo's planner is now genuinely aware of this task's shelf
-and objects), top-down grasp-candidate generation, side-aware arm selection,
+and objects), top-down grasp-candidate generation, role-based arm assignment,
 and plan-once motion primitives. Other interfaces below remain design
 contracts.
 
@@ -94,8 +94,8 @@ manipulation skill; the policy or oracle performs each restock and calls
 `record_placement` back into it.
 
 `tasks/shelf_restock/robotwin_env.py`'s `ShelfRestockTask` builds this scene
-in RoboTwin: a static upper-shelf box plus randomly placed box objects on the
-lower shelf/table, loaded as an external task entrypoint
+in RoboTwin: a static upper-shelf box plus randomly placed `113_coffee-box`
+mesh objects on the lower shelf/table, loaded as an external task entrypoint
 (`module:ClassName`, resolved by `RoboTwinNativePort._load_task_class`
 without copying anything into the RoboTwin checkout, reusing the mechanism
 the old repo already proved out). `play_once` is intentionally
@@ -383,24 +383,158 @@ indistinguishable from a gripper closing on itself.
 
 Contacts are now keyed by each link entity's `per_scene_id` and carry the
 owning `side`, with the counterpart qualified (`left/panda_hand`) whenever it
-is also a robot link. The same failure now reads
-`right/panda_rightfinger <-> left/panda_hand`: the right arm struck the left
-arm, which was parked over the upper shelf after transfer 0.
+is also a robot link. That the original event was arm-vs-arm is an inference
+from the shared naming, not a re-observation -- that exact run was not
+repeated. The mechanism itself is confirmed directly, though: a later run
+reported `right/panda_link6 <-> left/panda_link7` with both wrists 0.13m
+apart, which the old code could not have expressed at all.
 
-This is a genuine open gap, not a reporting artifact. `move_to` calls
-`port.plan(side, ...)`, a **single-arm** plan: the idle arm is *held* at its
-joint positions but is not in the planner's collision world, so nothing
-stops one arm being routed through the other. Both arms converge on the same
-narrow upper shelf, so this is reachable in normal operation, not a corner
-case. It needs either a park pose that clears the shared workspace before
-the other arm works, or the idle arm's geometry added to the planning world
--- an open decision, not yet made.
+### Fixed arm roles
 
-Two smaller things the same run measured, both unresolved: placement lands
-~0.032-0.037m from the intended pose, essentially all of it a consistent
-**-y drift** (x is near-exact and it reproduces across seeds, so it is a
-bias, not jitter); and objects come to rest ~3mm above `resting_z`,
-suggesting `upper_shelf.top_z` is slightly under-stated.
+Arms are now assigned by **role**, not by which side the target is on: the
+**left** arm grasps and places, the **right** arm only compacts. A fixed
+split keeps each arm's job identical across episodes, which is what makes
+demonstrations learnable. It does not by itself resolve the cross-arm
+collision below: compaction sends the right arm to the very spot the left
+arm has just placed into, and the left arm's retreat leaves it directly
+above that spot. `select_arm` (same-side selection) is
+gone, replaced by `arm_for(role)`; the measured cross-body data it was built
+on is retained in `is_cross_body_limited`, which now guards real cases
+rather than impossible ones.
+
+The consequence to watch: the left arm must place across the whole deck, and
+the upper shelf sits at `y = -0.02`, inside the cross-body band, so
+placements at `x >= CROSS_BODY_X` (0.15) are out of its reach. `move_to`
+raises with a kinematic explanation rather than letting it surface as an
+opaque planner `Fail`. Grasping is unaffected -- lower-shelf objects sit
+around `y = -0.25`, well below `CROSS_BODY_Y` -- so the left arm covers the
+full spawn width there.
+
+This bounds how many objects a row can hold before the placing arm runs out
+of reach, which is a real limit on episode length, not a bug.
+
+### The restocked object is a real asset
+
+The objects are RoboTwin's `113_coffee-box` scanned mesh, not procedural
+boxes. A box's uniform faces and exact symmetry would flatter the
+object-centric conditioning this research is meant to evaluate, and the
+policy should see the kind of object it would meet at deployment.
+
+Three consequences follow, none of them cosmetic.
+
+**Size stops being a task parameter.** `create_actor` overwrites its own
+`scale` argument with the value inside `model_data<N>.json`, so an asset's
+dimensions belong to the asset. `ObjectVariation`'s size sampling no longer
+drives spawning; per-episode size variation is now which of the seven
+variants is drawn. `assets.upright_size` reads `extents * scale` and rotates
+it into the upright frame. Measured, the variants run 0.048-0.078m across
+their narrower horizontal axis and 0.057-0.097m tall.
+
+**The mesh frame is not the object frame.** These assets are authored y-up
+and spawned upright by a fixed base quaternion (RoboTwin's own
+`qpos=[0.5, 0.5, 0.5, 0.5]`, which maps model +y to world +z). That rotation
+describes the mesh, not the object, so `TrackedActor.upright_rotation` is
+divided back out before an `ObjectState` is reported. Leaving it in would
+make the canonical pose asset-specific, and `grasps._object_yaw` -- which
+reads the z component of the orientation's log, valid only for an upright,
+yaw-only object -- would have extracted a meaningless number from a
+120-degree tilt.
+
+**Instance names must be assigned.** `create_actor` calls
+`mesh.set_name(modelname)`, so all three objects would be `113_coffee-box`.
+Contact reports and the oracle's `allow_contact_with` both key on that name,
+so identical names would let a collision with *any* object be excused as
+contact with the held one. The task renames each instance after building it.
+
+Grasp candidates are now returned narrowest-closing-width first. The gripper
+opens to 0.08m and a variant can be 0.078m across one axis and 0.022m across
+the other; both "fit", so an unordered list let a caller take a grasp with
+2mm of total clearance when a comfortable one existed.
+
+### Head camera
+
+The stock embodiment head-camera pose frames a tabletop and does not see the
+upper shelf at all. `robotwin_env.HEAD_CAMERA_OVERRIDE` pulls it back and up
+so both shelf levels are in frame -- a precondition for the task being
+learnable from RGB, not a cosmetic choice. RoboTwin reads the static camera
+list from `left_embodiment_config` only (`envs/camera/camera.py`), so only
+that copy is overridden; the override raises if no `head_camera` entry is
+found, since the alternative is recording an entire dataset that cannot see
+the target shelf.
+
+### Two open gaps in what the planner can see
+
+Both were exposed by the same live two-transfer run, and both are the same
+shape: `move_to` calls `port.plan(side, ...)`, a **single-arm** plan against
+a world containing only the static geometry. Two things that can be hit are
+absent from it.
+
+**The other arm.** The idle arm is *held* at its joint positions but is not
+in the planning world, so nothing stops one arm being routed through the
+other. Compaction makes this unavoidable rather than incidental: it sends
+the right arm to exactly the spot the left arm just placed into, while the
+left arm's retreat leaves it directly above that spot. Observed as
+`right/panda_link6 <-> left/panda_link7` (impulse 0.255) together with
+`right/panda_hand <-> left/panda_leftfinger`, with both wrists at z ~1.2 and
+only 0.13m apart in x. It needs either a park pose that clears the shared
+workspace before the other arm works, or the idle arm's geometry added to
+the planning world -- an open decision, not yet made.
+
+**Where the objects are now.** `register_objects` does add every spawned
+object to cuRobo's world -- but only once, at `load_actors`, from the poses
+they were spawned at. Nothing re-registers them, so the moment the first
+object is moved to the upper shelf the planner's model of the scene is
+wrong: it still believes that object is sitting on the lower shelf where it
+started, and believes the space it now occupies is empty.
+
+The consequence is reproducible. In two separate runs the left arm's
+cross-body reach for the second object swept the already-placed first object
+clean off the upper shelf -- placed at `(0.012, -0.050, 0.977)` and found
+afterwards at `(0.188, -0.395, 0.756)`, a shelf level down and most of the
+way across the table. The second run shows the full cascade: the displaced
+object then knocked `obj_1` about 16mm out of position, which made the grasp
+pose (computed from the pre-move observation) stale, and the descent ended
+with `left/panda_rightfinger <-> restock_object_1`.
+
+Two things make this worse than a single failed transfer. The task had
+already been scored a success for the object that was later swept away --
+success is per transfer, so a later transfer silently undoing an earlier one
+counts as two successes. And a stale world is *invisible*: the planner
+reports `Success` for a trajectory through a space it wrongly believes to be
+empty, which is the same soft-cost blind spot as before, only now fed with
+stale data as well.
+
+The fix is to re-register object poses before planning rather than once at
+load time; `register_objects`' own docstring already flagged that it reads
+poses once. Not yet done.
+
+These are not exotic. Both arms and every object converge on one narrow
+shelf, so both gaps are reachable in ordinary operation.
+
+### Run-to-run nondeterminism at a fixed seed
+
+Two runs of the identical script at `seed=0` failed at different steps: one
+at transfer 1's `descend` (`left/panda_rightfinger <-> restock_object_0`),
+the other only later at `c:pregrasp` with the arm-vs-arm collision, having
+completed the whole left-arm sequence. The scene is identical; cuRobo's
+trajopt is seeded stochastically, so a fixed scene seed does not fix the
+trajectory. Any reliability number therefore has to come from repeated runs
+per seed, not one run per seed -- and a single passing run is not evidence
+that a step is fixed.
+
+### Smaller measured discrepancies, unresolved
+
+Placement error is *not* the uniform bias earlier supposed. Objects appear
+to settle toward `y ~ -0.056` regardless of where they were aimed: the first
+placement, aimed at the deck centre `y = -0.020`, landed at `-0.055`
+(0.036m error), while the second, aimed at `-0.055` (its neighbour's actual
+resting y), landed at `-0.057` -- under 2mm. So aiming at the deck centre
+misses and aiming near `y = -0.056` does not, which points at the deck's
+modelled y-centre or a release-time nudge rather than at tracking error.
+Not yet diagnosed.
+
+Objects also come to rest ~3mm above `resting_z`, suggesting
+`upper_shelf.top_z` is slightly under-stated.
 
 ## Action, frame, and timing contracts
 

@@ -16,6 +16,9 @@ This patches ``MotionGenConfig.load_from_robot_config`` in this process only
 
 from typing import Any
 
+from oct_vla.core.frames import Pose
+from oct_vla.robots.robotwin.assets import centered_upright_pose
+from oct_vla.robots.robotwin.backend import decode_pose, encode_pose
 from oct_vla.tasks.shelf_restock.spec import ShelfRestockSpec
 
 _PATCHED_ATTR = "_shelf_restock_world_patch"
@@ -70,13 +73,30 @@ def register_objects(task: Any, tracked_objects: dict[str, Any]) -> None:
     Call once, after ``load_actors`` -- object poses/sizes are read once
     here, not tracked live; a moved object needs a fresh call to stay
     accurately represented for planning.
+
+    Poses go through the same mesh-to-object correction the perception layer
+    uses, because `size_xyz` describes the object's upright bounding box
+    while the actor's own pose describes the mesh: a scanned asset's origin
+    sits at its base and its frame is tilted, so using the raw pose would put
+    cuRobo's obstacle half an object low and rotated away from where the
+    oracle believes the object is.
     """
     from curobo.geom.types import WorldConfig
 
     cuboids = dict(shelf_cuboids(task.spec))
     for track_id, entry in tracked_objects.items():
         pose = entry.actor.get_pose()
-        cuboids[track_id] = {"dims": list(entry.size_xyz), "pose": [*pose.p, *pose.q]}
+        measured = decode_pose((*pose.p, *pose.q))
+        position, orientation = centered_upright_pose(
+            measured.position,
+            measured.orientation,
+            entry.upright_rotation,
+            entry.center_offset,
+        )
+        cuboids[track_id] = {
+            "dims": list(entry.size_xyz),
+            "pose": list(encode_pose(Pose(position, orientation, measured.frame))),
+        }
 
     world = WorldConfig.from_dict({"cuboid": cuboids})
     for planner in (task.robot.left_planner, task.robot.right_planner):

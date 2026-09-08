@@ -81,3 +81,34 @@ def test_read_returns_multiple_tracked_actors_independently():
 
     assert set(evidence) == {"a", "b"}
     assert evidence["b"].pose.position == pytest.approx((1.0, 1.0, 1.0))
+
+
+def test_the_assets_mesh_frame_is_divided_out_of_the_reported_pose():
+    """A RoboTwin mesh asset spawned upright carries a 120-degree base
+    rotation that describes the mesh, not the object. Reporting it would make
+    ObjectState.pose asset-specific, and yaw-only consumers (grasp
+    generation) would read a meaningless yaw out of the tilt."""
+    from oct_vla.core.geometry import exp, log, multiply
+
+    upright = (0.5, 0.5, 0.5, 0.5)  # xyzw
+    yaw = 0.4
+    spawned = multiply(exp((0.0, 0.0, yaw)), upright)
+    # SAPIEN reports wxyz.
+    actor = FakeActor(FakeSapienPose((0.0, 0.0, 0.9), (spawned[3], *spawned[:3])))
+
+    source = RoboTwinObjectEvidenceSource(
+        {"a": TrackedActor(actor=actor, size_xyz=(0.07, 0.05, 0.09), upright_rotation=upright)}
+    )
+    (evidence,) = source.read()
+
+    assert log(evidence.pose.orientation) == pytest.approx((0.0, 0.0, yaw), abs=1e-9)
+    assert evidence.pose.position == pytest.approx((0.0, 0.0, 0.9))
+
+
+def test_an_actor_with_no_mesh_frame_is_reported_unchanged():
+    actor = FakeActor(FakeSapienPose((0.1, 0.2, 0.3), (1.0, 0.0, 0.0, 0.0)))
+    source = RoboTwinObjectEvidenceSource(
+        {"a": TrackedActor(actor=actor, size_xyz=(0.1, 0.1, 0.1))}
+    )
+    (evidence,) = source.read()
+    assert evidence.pose.orientation == pytest.approx((0.0, 0.0, 0.0, 1.0))

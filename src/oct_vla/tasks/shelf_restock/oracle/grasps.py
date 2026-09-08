@@ -157,4 +157,9 @@ def generate_top_down_grasps(
         candidates.append(
             GraspCandidate(grasp_pose, backed_off(grasp_pose, standoff), closing_width, wrist_yaw)
         )
-    return tuple(candidates)
+    # Narrowest closing width first. Real assets are not square: the coffee-box
+    # variants run to 0.078m across one axis against an 0.08m gripper, 2mm of
+    # total clearance, while the other axis can be 0.022m. Both "fit", so a
+    # caller taking candidates[0] would otherwise pick a grasp that only just
+    # fits when a comfortable one was available.
+    return tuple(sorted(candidates, key=lambda candidate: candidate.closing_width))
