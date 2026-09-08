@@ -342,6 +342,66 @@ once to a target and executes cuRobo's own interpolated trajectory; it
 should not inherit this behaviour, and no fix belongs in the task spec or
 planner configuration for it.
 
+## Oracle: placement and compaction
+
+Placing is grasping read backwards: the same held-object relationship, with
+the object's *intended* pose substituted for its current one. So
+`grasps.holding_tcp_pose` and `backed_off` are shared by both, and
+`oracle/placement.py` only decides *where* the object goes.
+
+The first object goes to the middle of the upper deck. A later one goes
+beside the previously placed neighbour, deliberately leaving `PLACEMENT_GAP`
+(0.06m) -- wider than the success threshold -- so that the compaction step
+has something real to do; compaction then closes that to `COMPACTED_GAP`
+(0.005m). Which side of the neighbour is chosen is whichever has more shelf
+room, so a row builds outward instead of running off the deck.
+
+The success criterion had to be fixed to make this expressible at all. It
+compared *centre-to-centre* distance against `compaction_distance`, which is
+unsatisfiable for every object size the spec allows: two boxes that are
+physically touching are already `(width_a + width_b) / 2` apart. It now
+measures the gap between *surfaces*, treating each object as a circle of
+`horizontal_radius` (half its larger horizontal dimension) -- size-aware,
+yaw-independent, and conservative, since for a non-square footprint the true
+gap along the line of centres is never smaller than this.
+
+### A live two-transfer run, and what it exposed
+
+Transfer 0 succeeded end to end -- grasp, transport, place, release, retreat
+-- with zero robot contacts remaining and the object on the upper shelf.
+Transfer 1 failed at `preplace`, and the failure was reported as
+`panda_rightfinger <-> panda_hand`.
+
+That reading was wrong, and so was my first explanation of it (a missed
+right-arm grasp -- disproved directly: an isolated right-arm grasp lifts the
+object 0.104m with both fingers in contact and the gripper holding at 0.571,
+nowhere near bottomed out). The truth is that **both arms load the same
+Panda URDF**, so all fourteen link names are shared between them, and
+`contacts()` was pooling both arms' link *names* into one set. It therefore
+could not say which arm a link belonged to, and an arm-vs-arm collision was
+indistinguishable from a gripper closing on itself.
+
+Contacts are now keyed by each link entity's `per_scene_id` and carry the
+owning `side`, with the counterpart qualified (`left/panda_hand`) whenever it
+is also a robot link. The same failure now reads
+`right/panda_rightfinger <-> left/panda_hand`: the right arm struck the left
+arm, which was parked over the upper shelf after transfer 0.
+
+This is a genuine open gap, not a reporting artifact. `move_to` calls
+`port.plan(side, ...)`, a **single-arm** plan: the idle arm is *held* at its
+joint positions but is not in the planner's collision world, so nothing
+stops one arm being routed through the other. Both arms converge on the same
+narrow upper shelf, so this is reachable in normal operation, not a corner
+case. It needs either a park pose that clears the shared workspace before
+the other arm works, or the idle arm's geometry added to the planning world
+-- an open decision, not yet made.
+
+Two smaller things the same run measured, both unresolved: placement lands
+~0.032-0.037m from the intended pose, essentially all of it a consistent
+**-y drift** (x is near-exact and it reproduces across seeds, so it is a
+bias, not jitter); and objects come to rest ~3mm above `resting_z`,
+suggesting `upper_shelf.top_z` is slightly under-stated.
+
 ## Action, frame, and timing contracts
 
 The sole learned action is a 14-D Cartesian step:

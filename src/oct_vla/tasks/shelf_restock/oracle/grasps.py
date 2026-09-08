@@ -87,6 +87,41 @@ def _top_down_orientation(yaw: float) -> tuple[float, float, float, float]:
     return multiply(exp((0.0, 0.0, yaw)), POINTING_DOWN)
 
 
+def holding_tcp_pose(
+    object_position: tuple[float, float, float],
+    object_height: float,
+    wrist_yaw: float,
+    *,
+    grasp_depth: float = DEFAULT_GRASP_DEPTH,
+) -> Pose:
+    """The pose to command so an object of `object_height` sits centred at
+    `object_position`, gripped `grasp_depth` below its top face.
+
+    Grasping and placing are the same relationship read in two directions:
+    to pick an object up, command this for where it currently is; to put a
+    held object down, command it for where it should end up.
+    """
+    if not 0.0 < grasp_depth < MAX_GRASP_DEPTH:
+        raise ValueError(
+            f"grasp_depth must be in (0, {MAX_GRASP_DEPTH:.4f}); deeper puts the hand "
+            f"body inside the object. Got {grasp_depth}"
+        )
+    orientation = _top_down_orientation(wrist_yaw)
+    # Unit vector pointing from the commanded pose toward the object.
+    approach = rotate(orientation, (1.0, 0.0, 0.0))
+    rise = max(object_height / 2.0 - grasp_depth, 0.0)
+    pads = tuple(c - rise * a for c, a in zip(object_position, approach, strict=True))
+    position = tuple(p - GRASP_TCP_OFFSET * a for p, a in zip(pads, approach, strict=True))
+    return Pose(position, orientation, WORKCELL_FRAME)
+
+
+def backed_off(pose: Pose, distance: float) -> Pose:
+    """`pose` moved `distance` back along its own approach axis."""
+    approach = rotate(pose.orientation, (1.0, 0.0, 0.0))
+    position = tuple(p - distance * a for p, a in zip(pose.position, approach, strict=True))
+    return Pose(position, pose.orientation, pose.frame)
+
+
 def generate_top_down_grasps(
     obj: ObjectState,
     *,
@@ -110,34 +145,16 @@ def generate_top_down_grasps(
     robot.left_plan_path/right_plan_path use internally; it has not yet been
     confirmed by a live grasp attempt (see docs/architecture.md).
     """
-    if not 0.0 < grasp_depth < MAX_GRASP_DEPTH:
-        raise ValueError(
-            f"grasp_depth must be in (0, {MAX_GRASP_DEPTH:.4f}); deeper puts the hand "
-            f"body inside the object. Got {grasp_depth}"
-        )
     object_yaw = _object_yaw(obj)
-    # Distance from the object's centre up to where the pads should sit.
-    rise = max(obj.size_xyz[2] / 2.0 - grasp_depth, 0.0)
     candidates = []
     for offset_yaw, closing_width in ((0.0, obj.size_xyz[0]), (pi / 2, obj.size_xyz[1])):
         if closing_width > gripper_max_width:
             continue
-        orientation = _top_down_orientation(object_yaw + offset_yaw)
-        # Unit vector pointing from the commanded pose toward the object.
-        approach = rotate(orientation, (1.0, 0.0, 0.0))
-        pads = tuple(c - rise * a for c, a in zip(obj.pose.position, approach, strict=True))
-        grasp_position = tuple(
-            p - GRASP_TCP_OFFSET * a for p, a in zip(pads, approach, strict=True)
-        )
-        pregrasp_position = tuple(
-            g - standoff * a for g, a in zip(grasp_position, approach, strict=True)
+        wrist_yaw = object_yaw + offset_yaw
+        grasp_pose = holding_tcp_pose(
+            obj.pose.position, obj.size_xyz[2], wrist_yaw, grasp_depth=grasp_depth
         )
         candidates.append(
-            GraspCandidate(
-                Pose(grasp_position, orientation, WORKCELL_FRAME),
-                Pose(pregrasp_position, orientation, WORKCELL_FRAME),
-                closing_width,
-                object_yaw + offset_yaw,
-            )
+            GraspCandidate(grasp_pose, backed_off(grasp_pose, standoff), closing_width, wrist_yaw)
         )
     return tuple(candidates)

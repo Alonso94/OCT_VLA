@@ -159,29 +159,38 @@ class RoboTwinNativePort:
     def contacts(self, min_impulse: float = 1e-6) -> tuple[Contact, ...]:
         """Contacts involving a robot link, above a noise threshold.
 
-        Robot links are identified from the two articulations themselves
-        rather than by name matching, so this does not depend on the
-        embodiment's link-naming convention.
+        Robot links are keyed by their entity's `per_scene_id`, not by link
+        name: both arms load the same Panda URDF, so all fourteen link names
+        are shared between them and a name cannot say which arm a link is on.
+        Reporting an arm-vs-arm collision as a bare
+        'panda_rightfinger <-> panda_hand' made a real collision between the
+        moving arm and the parked one indistinguishable from a gripper
+        closing on itself.
         """
         self._require_task()
         robot = self._task.robot
-        link_names = {
-            link.get_name()
-            for entity in (robot.left_entity, robot.right_entity)
+        owners = {
+            link.entity.per_scene_id: (side, link.get_name())
+            for side, entity in (("left", robot.left_entity), ("right", robot.right_entity))
             for link in entity.get_links()
         }
         found = []
         for contact in self._task.scene.get_contacts():
-            first, second = (body.entity.name for body in contact.bodies)
+            first, second = contact.bodies
             impulse = sum(
                 sum(component**2 for component in point.impulse) ** 0.5 for point in contact.points
             )
             if impulse <= min_impulse:
                 continue
-            if first in link_names:
-                found.append(Contact(first, second, impulse))
-            elif second in link_names:
-                found.append(Contact(second, first, impulse))
+            for body, counterpart in ((first, second), (second, first)):
+                owner = owners.get(body.entity.per_scene_id)
+                if owner is None:
+                    continue
+                side, link = owner
+                other = owners.get(counterpart.entity.per_scene_id)
+                other_name = f"{other[0]}/{other[1]}" if other else counterpart.entity.name
+                found.append(Contact(side, link, other_name, impulse))
+                break
         return tuple(found)
 
     def hold(self) -> None:

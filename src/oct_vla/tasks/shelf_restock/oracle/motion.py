@@ -75,7 +75,7 @@ def check_contacts(port: NativePort, allow_contact_with: Collection[str] = ()) -
         return
     worst = max(offending, key=lambda contact: contact.impulse)
     raise MotionError(
-        f"motion ended in contact: {worst.link} <-> {worst.other} "
+        f"motion ended in contact: {worst.qualified_link} <-> {worst.other} "
         f"(impulse {worst.impulse:.4f}); {len(offending)} contact(s) not in "
         f"allow_contact_with={sorted(allowed)}"
     )

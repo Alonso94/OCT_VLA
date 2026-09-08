@@ -40,13 +40,28 @@ class Trajectory:
 
 @dataclass(frozen=True)
 class Contact:
-    """One contact involving a robot link. `other` may be another robot link
-    (self-collision) or a scene body. Privileged state: for the oracle,
-    evaluator and diagnostics only, never for policy observations."""
+    """One contact involving a robot link. Privileged state: for the oracle,
+    evaluator and diagnostics only, never for policy observations.
 
+    `side` says which arm owns `link`. Both arms load the same Panda URDF, so
+    every link name is shared between them ('panda_hand' and the rest); the
+    side must therefore come from the articulation a link belongs to, never
+    from its name. `other` is a scene body's name, or -- when the contact is
+    with the robot itself -- the other link qualified by its own arm
+    ('right/panda_hand'), so an arm-vs-arm collision cannot be misread as a
+    self-collision. It was: an unqualified 'panda_rightfinger <-> panda_hand'
+    from the right arm striking the parked left arm looked exactly like one
+    gripper closing on itself (docs/architecture.md).
+    """
+
+    side: str
     link: str
     other: str
     impulse: float
+
+    @property
+    def qualified_link(self) -> str:
+        return f"{self.side}/{self.link}"
 
 
 class NativePort(Protocol):

@@ -181,13 +181,15 @@ def test_executed_motion_ticks_matches_logged_rows():
 
 
 def test_move_to_raises_when_it_ends_in_unexpected_contact():
-    port = FakePort(rows=2, contacts=(Contact("panda_link6", "upper_shelf", 0.52),))
+    port = FakePort(rows=2, contacts=(Contact("left", "panda_link6", "upper_shelf", 0.52),))
     with pytest.raises(MotionError, match="upper_shelf"):
         move_to(port, "left", target(), WORLD_TO_WORKCELL, settle_ticks=1)
 
 
 def test_move_to_accepts_contact_with_an_allowed_body():
-    port = FakePort(rows=2, contacts=(Contact("panda_leftfinger", "restock_object_0", 0.11),))
+    port = FakePort(
+        rows=2, contacts=(Contact("left", "panda_leftfinger", "restock_object_0", 0.11),)
+    )
     motion = move_to(
         port,
         "left",
@@ -203,11 +205,11 @@ def test_move_to_reports_the_worst_contact_and_the_count():
     port = FakePort(
         rows=1,
         contacts=(
-            Contact("panda_link7", "upper_shelf", 0.26),
-            Contact("panda_link6", "upper_shelf", 0.52),
+            Contact("left", "panda_link7", "upper_shelf", 0.26),
+            Contact("left", "panda_link6", "upper_shelf", 0.52),
         ),
     )
-    with pytest.raises(MotionError, match=r"panda_link6 <-> upper_shelf .*0\.5200.*2 contact"):
+    with pytest.raises(MotionError, match=r"left/panda_link6 <-> upper_shelf .*0\.5200.*2 contact"):
         move_to(port, "left", target(), WORLD_TO_WORKCELL, settle_ticks=0)
 
 
@@ -216,6 +218,35 @@ def test_check_contacts_passes_when_the_robot_touches_nothing():
 
 
 def test_set_gripper_does_not_check_contacts_since_closing_is_contact():
-    port = FakePort(contacts=(Contact("panda_leftfinger", "restock_object_0", 0.11),))
+    port = FakePort(contacts=(Contact("left", "panda_leftfinger", "restock_object_0", 0.11),))
     motion = set_gripper(port, "left", 0.0, ticks=2)
     assert motion.ticks == 2
+
+
+def test_a_collision_with_the_other_arm_is_not_mistaken_for_a_self_collision():
+    """Both arms load the same Panda URDF, so link names alone cannot say
+    which arm a link is on; the other arm must be reported qualified."""
+    port = FakePort(
+        rows=1, contacts=(Contact("right", "panda_rightfinger", "left/panda_hand", 0.008),)
+    )
+    with pytest.raises(MotionError, match="right/panda_rightfinger <-> left/panda_hand"):
+        move_to(port, "right", target(), WORLD_TO_WORKCELL, settle_ticks=0)
+
+
+def test_carrying_an_object_does_not_excuse_hitting_the_other_arm():
+    port = FakePort(
+        rows=1,
+        contacts=(
+            Contact("right", "panda_leftfinger", "restock_object_1", 0.11),
+            Contact("right", "panda_rightfinger", "left/panda_hand", 0.008),
+        ),
+    )
+    with pytest.raises(MotionError, match="left/panda_hand"):
+        move_to(
+            port,
+            "right",
+            target(),
+            WORLD_TO_WORKCELL,
+            settle_ticks=0,
+            allow_contact_with=("restock_object_1",),
+        )
