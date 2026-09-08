@@ -104,3 +104,23 @@ def test_default_spec_lower_and_upper_shelf_do_not_overlap():
     lower_top = lower.top_z
     upper_bottom = upper.center_xyz[2] - upper.half_extent_xyz[2]
     assert lower_top < upper_bottom
+
+
+def test_upper_deck_does_not_overhang_the_object_spawn_zone():
+    """A top-down grasp puts the wrist above the object, so an object beneath
+    the deck cannot be grasped at all -- measured live, not hypothetical."""
+    upper = DEFAULT_SPEC.upper_shelf
+    deck_near_edge = upper.center_xyz[1] - upper.half_extent_xyz[1]
+    _, spawn_far_y = DEFAULT_SPEC.object_variation.position_y_range
+    assert spawn_far_y < deck_near_edge, (
+        f"objects spawn up to y={spawn_far_y} but the deck starts at y={deck_near_edge}"
+    )
+
+
+def test_object_spawn_zone_lies_within_the_lower_shelf():
+    lower = DEFAULT_SPEC.lower_shelf
+    variation = DEFAULT_SPEC.object_variation
+    for axis, (lo, hi) in enumerate((variation.position_x_range, variation.position_y_range)):
+        region_lo = lower.center_xyz[axis] - lower.half_extent_xyz[axis]
+        region_hi = lower.center_xyz[axis] + lower.half_extent_xyz[axis]
+        assert region_lo <= lo and hi <= region_hi

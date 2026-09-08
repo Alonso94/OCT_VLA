@@ -264,34 +264,71 @@ re-plans every step; driving a long motion through it is the "dense waypoint
 IK used as trajectory planning" anti-pattern, and it demonstrably drove the
 arm into configurations whose next waypoint could not be planned.
 
-### Three findings from live verification, none yet fixed
+### Four findings from live verification, all now fixed
 
 Executing these primitives against the real scene surfaced problems that the
 planning-only queries above could not have caught, because they only checked
-plan *status*:
+plan *status*. Each is now fixed and the fix is validated by an end-to-end
+grasp-and-lift (below).
 
 1. **A cuRobo `Success` does not mean the trajectory is collision-free.**
    Executing a `Success` plan left the arm in sustained contact:
    `panda_link6 <-> upper_shelf` (impulse 0.52), `panda_link7 <-> upper_shelf`
-   (0.26), `panda_rightfinger <-> table` (0.40). The arm jams against the
-   shelf and holds a ~0.147 rad steady-state joint error that does not decay
-   even after 2000 settle ticks. Collision avoidance in trajopt is a soft
-   cost, exactly as the old repo's investigation documented. **Every
+   (0.26), `panda_rightfinger <-> table` (0.40), holding a ~0.147 rad
+   steady-state joint error that did not decay over 2000 settle ticks --
+   the arm was jammed, not converging. Collision avoidance in trajopt is a
+   soft cost, exactly as the old repo's investigation documented. **Every
    reachability conclusion in this document that rests on plan status alone
-   is therefore weaker than it reads**, and the oracle needs an explicit
-   post-hoc contact check; `NativePort` does not expose contacts yet.
-2. **The upper shelf overhangs the object spawn zone.** The deck spans
-   `y in [-0.13, 0.03]` while objects spawn at `y in [-0.20, -0.10]`, so an
-   object at `y=-0.124` sits directly beneath it and cannot be grasped
-   top-down -- the wrist links occupy the deck's volume. This hypothesis was
-   raised earlier and wrongly dismissed when planning-only queries returned
-   `Success`; they did so precisely because collision is a soft cost.
-3. **`grasps.py` does not account for the TCP-to-fingertip offset.** Measured
-   directly: the pose `get_*_ee_pose()` reports sits 0.0976m above the finger
-   link origins and 0.0397m above `panda_hand`, so with Franka's 0.1034m
-   hand-to-TCP offset the grasp point is ~0.143m *below* the commanded pose.
-   `generate_top_down_grasps` puts the commanded TCP at the object's centre,
-   which drives the fingers ~0.14m below it, into the table.
+   is therefore weaker than it reads.** Fixed by adding `Contact` and
+   `NativePort.contacts()` (robot links identified from the articulations
+   themselves, not by name matching) and a `check_contacts` gate that
+   `move_to` applies after every motion; `allow_contact_with` carries the
+   held object. `set_gripper` deliberately does not gate, since closing on
+   an object *is* contact.
+2. **The upper shelf overhung the object spawn zone.** The deck spanned
+   `y in [-0.13, 0.03]` while objects spawned at `y in [-0.20, -0.10]`, so an
+   object at `y=-0.124` sat beneath it and could not be grasped top-down.
+   This hypothesis was raised earlier and wrongly dismissed when
+   planning-only queries returned `Success` -- they did so precisely because
+   collision is a soft cost. Fixed by separating them: deck
+   `y in [-0.08, 0.04]`, spawn `y in [-0.30, -0.20]`, 0.12m clear, with a
+   unit test asserting the invariant so it cannot silently regress.
+3. **`grasps.py` ignored the TCP-to-grasp-point offset.** The pose the robot
+   reports and accepts is 0.127m above the point between the finger pads, so
+   commanding it at an object's centre drove the fingers ~0.13m below the
+   object, into the table. `GRASP_TCP_OFFSET` now offsets every candidate
+   back along its own approach axis. The constant is composed from three
+   independently checkable sources (measured hand offset, `panda.urdf` joint
+   origin, cuRobo's own collision spheres) and cross-checks against the
+   measured finger-origin position to 0.5mm.
+4. **Grasping at an object's centre buries the hand in tall objects.**
+   `panda_hand`'s lowest collision sphere sits 0.1067m below the commanded
+   pose, i.e. only 0.0203m above the pads, so any object taller than ~4cm is
+   penetrated by the hand -- observed as `panda_hand <-> restock_object_0`
+   on a 7.5cm object, while the spec allows 3-8cm. Fixed by grasping
+   `grasp_depth` below the object's *top face* rather than at its centre,
+   with `MAX_GRASP_DEPTH` derived from that geometry and enforced.
+
+A fifth problem appeared once the contact gate was live: the hand is ~0.10m
+from grasp axis to outer edge, but objects spawned as little as 0.08m apart,
+so descending onto one shoved its neighbour (`panda_hand <->
+restock_object_1`). `MIN_OBJECT_SEPARATION` is now 0.15m, and because
+rejection sampling could not reliably fit three objects into the spawn strip
+at that separation (it failed outright at seed 0), the x positions are now
+*constructed* with guaranteed gaps rather than retried.
+
+### End-to-end validation
+
+With all of the above in place, a full open / pregrasp / descend / close /
+lift sequence against the live scene: object lifted +0.104m, both fingers in
+contact with it and nothing else, and **every free-space motion passed the
+contact gate**. Arm selection routed the target correctly by side. A demo
+video is written to `outputs/` (gitignored).
+
+This is the first end-to-end physical manipulation this rebuild has
+achieved. It is one seed and one object, not a success rate; the oracle
+still needs place, compaction, retreat, and repetition before any success
+statistics mean anything.
 
 What remains genuinely unexplained is narrower than previously claimed: a
 greedy stepping loop (recompute the full remaining delta, clamp it, re-plan

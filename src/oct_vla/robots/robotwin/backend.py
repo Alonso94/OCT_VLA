@@ -38,6 +38,17 @@ class Trajectory:
         object.__setattr__(self, "qdot", tuple(finite_values(q, 7) for q in self.qdot))
 
 
+@dataclass(frozen=True)
+class Contact:
+    """One contact involving a robot link. `other` may be another robot link
+    (self-collision) or a scene body. Privileged state: for the oracle,
+    evaluator and diagnostics only, never for policy observations."""
+
+    link: str
+    other: str
+    impulse: float
+
+
 class NativePort(Protocol):
     """Simulator-only seam; poses are world xyz+wxyz and joint rows have seven values."""
 
@@ -52,6 +63,16 @@ class NativePort(Protocol):
     def tick(self) -> None: ...
     def hold(self) -> None: ...
     def close(self) -> None: ...
+
+    def contacts(self) -> tuple[Contact, ...]:
+        """Contacts currently involving a robot link.
+
+        Needed because a cuRobo `Success` does not mean the trajectory was
+        collision-free -- trajopt collision avoidance is a soft cost, and
+        executing a "successful" plan has been observed to leave the arm
+        jammed against scene geometry (docs/architecture.md).
+        """
+        ...
 
 
 class BackendError(RuntimeError):

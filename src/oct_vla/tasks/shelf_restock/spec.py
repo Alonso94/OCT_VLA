@@ -143,12 +143,19 @@ class ShelfRestockSpec:
             raise ValueError("instruction must be a nonempty string")
 
 
+# The upper deck must not overhang where objects spawn: a top-down grasp puts
+# the wrist links above the object, so an object under the deck cannot be
+# grasped at all (see docs/architecture.md). The deck's far edge also has to
+# stay well short of y=0.10, which failed to plan for both arms at every
+# height tried. Hence a deck spanning y in [-0.08, 0.04] and a spawn zone at
+# y in [-0.30, -0.20] -- 0.12m of clearance between them, with both regions
+# inside the range that planned successfully.
 DEFAULT_SPEC = ShelfRestockSpec(
-    lower_shelf=ShelfRegion("lower_shelf", (0.0, -0.15, 0.74), (0.22, 0.10, 0.01)),
-    upper_shelf=ShelfRegion("upper_shelf", (0.0, -0.05, 0.92), (0.20, 0.08, 0.015)),
+    lower_shelf=ShelfRegion("lower_shelf", (0.0, -0.25, 0.74), (0.22, 0.10, 0.01)),
+    upper_shelf=ShelfRegion("upper_shelf", (0.0, -0.02, 0.92), (0.20, 0.06, 0.015)),
     object_variation=ObjectVariation(
-        position_x_range=(-0.18, 0.18),
-        position_y_range=(-0.20, -0.10),
+        position_x_range=(-0.20, 0.20),
+        position_y_range=(-0.30, -0.20),
         yaw_range=(-0.4, 0.4),
         size_xyz_range=((0.03, 0.06), (0.03, 0.06), (0.03, 0.08)),
     ),

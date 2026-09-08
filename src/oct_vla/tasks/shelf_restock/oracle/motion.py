@@ -17,6 +17,7 @@ These primitives are written against the `NativePort` protocol, not against
 SAPIEN, so they are unit-testable with a fake port.
 """
 
+from collections.abc import Collection
 from dataclasses import dataclass
 
 from oct_vla.core.frames import Pose, Transform
@@ -56,6 +57,30 @@ def _arm(reading, side: Side):
     return reading.left if side == "left" else reading.right
 
 
+def check_contacts(port: NativePort, allow_contact_with: Collection[str] = ()) -> None:
+    """Raise unless every current robot contact is with an allowed body.
+
+    A cuRobo `Success` is not evidence of a collision-free trajectory --
+    trajopt collision avoidance is a soft cost, and executing a "successful"
+    plan has been observed to leave the wrist jammed against the shelf
+    (docs/architecture.md). Checking afterwards is the only hard guarantee.
+
+    This inspects the state at the moment it is called, so it catches
+    sustained contact (a jam) but not a transient brush that has already
+    separated.
+    """
+    allowed = set(allow_contact_with)
+    offending = [contact for contact in port.contacts() if contact.other not in allowed]
+    if not offending:
+        return
+    worst = max(offending, key=lambda contact: contact.impulse)
+    raise MotionError(
+        f"motion ended in contact: {worst.link} <-> {worst.other} "
+        f"(impulse {worst.impulse:.4f}); {len(offending)} contact(s) not in "
+        f"allow_contact_with={sorted(allowed)}"
+    )
+
+
 def move_to(
     port: NativePort,
     side: Side,
@@ -64,12 +89,16 @@ def move_to(
     *,
     gripper: float | None = None,
     settle_ticks: int = SETTLE_TICKS,
+    allow_contact_with: Collection[str] = (),
 ) -> ExecutedMotion:
     """Plan once to `target` (workcell frame) and execute the whole trajectory.
 
     The other arm holds at the joint positions it had before the motion, with
     zero velocity, for every tick -- the same hold semantics the canonical
     backend uses, so a stationary arm never drifts.
+
+    Raises `MotionError` if the arm ends in contact with anything outside
+    `allow_contact_with` (pass the held object's name when carrying one).
     """
     other = _other(side)
     if is_cross_body_limited(side, target.position):
@@ -103,6 +132,7 @@ def move_to(
     for _ in range(settle_ticks):
         tick(trajectory.q[-1], ZERO_VELOCITY)
 
+    check_contacts(port, allow_contact_with)
     return ExecutedMotion(side, tuple(q_log), tuple(qdot_log), tuple(gripper_log))
 
 
@@ -114,6 +144,10 @@ def set_gripper(
     Ramped rather than commanded in one step: RoboTwin's own `set_gripper`
     rate-limits how far a drive target may move per call, so a single large
     command would be silently truncated instead of reaching `target`.
+
+    Deliberately does not check contacts: closing on an object *is* contact.
+    Call `check_contacts` explicitly afterwards, passing the object being
+    grasped, if you want to assert nothing else is being touched.
     """
     if ticks <= 0:
         raise ValueError("ticks must be positive")

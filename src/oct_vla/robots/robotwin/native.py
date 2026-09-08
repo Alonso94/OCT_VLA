@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from oct_vla.core.observation import RGBFrame
-from oct_vla.robots.robotwin.backend import ArmReading, Reading, Trajectory
+from oct_vla.robots.robotwin.backend import ArmReading, Contact, Reading, Trajectory
 from oct_vla.robots.robotwin.task_config import build_dual_franka_setup
 
 CAMERA_NAMES = ("head_camera", "left_camera", "right_camera")
@@ -155,6 +155,34 @@ class RoboTwinNativePort:
     def tick(self) -> None:
         self._require_task()
         self._task.scene.step()
+
+    def contacts(self, min_impulse: float = 1e-6) -> tuple[Contact, ...]:
+        """Contacts involving a robot link, above a noise threshold.
+
+        Robot links are identified from the two articulations themselves
+        rather than by name matching, so this does not depend on the
+        embodiment's link-naming convention.
+        """
+        self._require_task()
+        robot = self._task.robot
+        link_names = {
+            link.get_name()
+            for entity in (robot.left_entity, robot.right_entity)
+            for link in entity.get_links()
+        }
+        found = []
+        for contact in self._task.scene.get_contacts():
+            first, second = (body.entity.name for body in contact.bodies)
+            impulse = sum(
+                sum(component**2 for component in point.impulse) ** 0.5 for point in contact.points
+            )
+            if impulse <= min_impulse:
+                continue
+            if first in link_names:
+                found.append(Contact(first, second, impulse))
+            elif second in link_names:
+                found.append(Contact(second, first, impulse))
+        return tuple(found)
 
     def hold(self) -> None:
         """Freeze both arms at their measured position with zero velocity."""

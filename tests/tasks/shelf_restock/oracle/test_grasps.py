@@ -6,6 +6,9 @@ from oct_vla.core.frames import WORKCELL_FRAME, Pose
 from oct_vla.core.geometry import exp, rotate
 from oct_vla.core.objects import ObjectState
 from oct_vla.tasks.shelf_restock.oracle.grasps import (
+    _HAND_REACH_BELOW_TCP,
+    GRASP_TCP_OFFSET,
+    MAX_GRASP_DEPTH,
     POINTING_DOWN,
     _object_yaw,
     _top_down_orientation,
@@ -66,16 +69,73 @@ def test_generate_top_down_grasps_returns_nothing_when_neither_dimension_fits():
     assert candidates == ()
 
 
-def test_grasp_and_pregrasp_pose_differ_only_by_standoff_along_z():
+def test_grasp_pose_is_offset_back_along_the_approach_axis_not_at_the_centre():
+    """The commanded pose is not the point between the fingers: putting it at
+    the object's centre buries the fingers GRASP_TCP_OFFSET below it."""
+    height, depth = 0.03, 0.015
     (candidate,) = generate_top_down_grasps(
-        obj(position=(0.1, 0.2, 0.75), size=(0.04, 0.09, 0.03)),
+        obj(position=(0.1, 0.2, 0.75), size=(0.04, 0.09, height)),
         gripper_max_width=0.05,
         standoff=0.12,
+        grasp_depth=depth,
     )
-    assert candidate.grasp_pose.position == pytest.approx((0.1, 0.2, 0.75))
-    assert candidate.pregrasp_pose.position == pytest.approx((0.1, 0.2, 0.87))
+    pads_z = 0.75 + height / 2 - depth
+    assert candidate.grasp_pose.position == pytest.approx((0.1, 0.2, pads_z + GRASP_TCP_OFFSET))
+    assert candidate.pregrasp_pose.position == pytest.approx(
+        (0.1, 0.2, pads_z + GRASP_TCP_OFFSET + 0.12)
+    )
     assert candidate.grasp_pose.orientation == candidate.pregrasp_pose.orientation
     assert candidate.grasp_pose.frame == WORKCELL_FRAME
+
+
+def test_finger_pads_land_just_below_the_object_top_face():
+    """Reconstruct where the pads end up: the commanded pose advanced by
+    GRASP_TCP_OFFSET along its own approach axis must sit grasp_depth below
+    the object's top, which is what keeps the hand body clear of a tall
+    object."""
+    height, depth = 0.05, 0.015
+    target = obj(position=(0.05, -0.25, 0.78), size=(0.04, 0.04, height), yaw=0.6)
+    for candidate in generate_top_down_grasps(
+        target, gripper_max_width=0.08, standoff=0.1, grasp_depth=depth
+    ):
+        approach = rotate(candidate.grasp_pose.orientation, (1, 0, 0))
+        pads = tuple(
+            p + GRASP_TCP_OFFSET * a
+            for p, a in zip(candidate.grasp_pose.position, approach, strict=True)
+        )
+        top_z = target.pose.position[2] + height / 2
+        assert pads[:2] == pytest.approx(target.pose.position[:2], abs=1e-9)
+        assert pads[2] == pytest.approx(top_z - depth, abs=1e-9)
+
+
+def test_hand_body_stays_clear_of_the_object_top_for_every_allowed_height():
+    """The failure this guards: grasping a tall object at its centre put
+    panda_hand inside it. Checked across the spec's full height range."""
+    for height in (0.03, 0.05, 0.08, 0.12):
+        target = obj(position=(0.0, -0.25, 0.80), size=(0.04, 0.04, height))
+        (candidate, _) = generate_top_down_grasps(target, gripper_max_width=0.08, standoff=0.1)
+        hand_lowest_z = candidate.grasp_pose.position[2] - _HAND_REACH_BELOW_TCP
+        top_z = target.pose.position[2] + height / 2
+        assert hand_lowest_z > top_z, f"hand enters a {height}m object"
+
+
+def test_rejects_a_grasp_depth_that_would_bury_the_hand():
+    with pytest.raises(ValueError, match="grasp_depth"):
+        generate_top_down_grasps(
+            obj(), gripper_max_width=0.08, standoff=0.1, grasp_depth=MAX_GRASP_DEPTH
+        )
+    with pytest.raises(ValueError, match="grasp_depth"):
+        generate_top_down_grasps(obj(), gripper_max_width=0.08, standoff=0.1, grasp_depth=0.0)
+
+
+def test_pregrasp_is_further_back_along_approach_than_grasp():
+    (candidate, _) = generate_top_down_grasps(
+        obj(size=(0.04, 0.04, 0.03)), gripper_max_width=0.08, standoff=0.09
+    )
+    # Top-down: "back along approach" is straight up.
+    assert candidate.pregrasp_pose.position[2] - candidate.grasp_pose.position[2] == pytest.approx(
+        0.09
+    )
 
 
 def test_wrist_yaw_accounts_for_the_object_s_own_yaw():

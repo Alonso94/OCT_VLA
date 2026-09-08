@@ -22,8 +22,13 @@ from oct_vla.robots.robotwin.backend import encode_pose
 from oct_vla.tasks.shelf_restock.oracle.world import install_world_patch, register_objects
 from oct_vla.tasks.shelf_restock.spec import DEFAULT_SPEC, ShelfRestockSpec
 
-MIN_OBJECT_SEPARATION = 0.08
-PLACEMENT_ATTEMPTS = 20
+# The hand is wider than the object it grasps: cuRobo's own collision spheres
+# put panda_hand's outermost centres at y=+-0.08 with radius 0.023, so it is
+# ~0.10m from the grasp axis to the outside of the hand. Spawning objects
+# closer than that means descending onto one shoves its neighbour -- observed
+# live as panda_hand <-> restock_object_1 during a descent, which the oracle's
+# contact check now rejects outright (docs/architecture.md).
+MIN_OBJECT_SEPARATION = 0.15
 OBJECT_COLORS = (
     (0.8, 0.2, 0.2),
     (0.2, 0.6, 0.8),
@@ -69,31 +74,43 @@ class ShelfRestockTask(Base_Task):
         z = spec.lower_shelf.top_z + spec.spawn_clearance
 
         self.tracked_objects: dict[str, Any] = {}
-        placed_xy: list[tuple[float, float]] = []
-        for index in range(self.object_count):
-            pose = self._sample_clear_pose(spec, rng, z, placed_xy)
-            placed_xy.append((pose.position[0], pose.position[1]))
+        for index, x in enumerate(self._spaced_x_positions(spec, rng)):
+            sampled = spec.object_variation.sample_pose(z, rng)
+            # x comes from the spacing construction; y/yaw stay as sampled.
+            position = (x, sampled.position[1], sampled.position[2])
             size = spec.object_variation.sample_size(rng)
             actor = create_box(
                 scene=self,
-                pose=_sapien_pose(pose.position, pose.orientation),
+                pose=_sapien_pose(position, sampled.orientation),
                 half_size=tuple(s / 2 for s in size),
                 color=OBJECT_COLORS[index % len(OBJECT_COLORS)],
                 name=f"restock_object_{index}",
             )
             self.tracked_objects[f"obj_{index}"] = TrackedObject(actor, size)
 
-    @staticmethod
-    def _sample_clear_pose(spec, rng, z, placed_xy):
-        for _attempt in range(PLACEMENT_ATTEMPTS):
-            pose = spec.object_variation.sample_pose(z, rng)
-            x, y, _ = pose.position
-            if all(
-                ((x - px) ** 2 + (y - py) ** 2) ** 0.5 >= MIN_OBJECT_SEPARATION
-                for px, py in placed_xy
-            ):
-                return pose
-        return pose  # last sample stands if no clear spot found within budget
+    def _spaced_x_positions(self, spec, rng) -> list[float]:
+        """x positions guaranteed at least MIN_OBJECT_SEPARATION apart.
+
+        Rejection sampling cannot reliably fit this many objects into the
+        spawn strip at this separation -- it failed outright at seed 0 -- so
+        the gaps are constructed rather than retried: sample `n` offsets from
+        the span left over after reserving every gap, sort them, then add back
+        `i * separation`. Separating in x alone is sufficient because it
+        already lower-bounds the Euclidean distance whatever y is sampled.
+        """
+        low, high = spec.object_variation.position_x_range
+        reserved = MIN_OBJECT_SEPARATION * (self.object_count - 1)
+        free = (high - low) - reserved
+        if free < 0:
+            raise RuntimeError(
+                f"cannot fit {self.object_count} objects {MIN_OBJECT_SEPARATION}m apart "
+                f"in an x span of {high - low:.3f}m; widen position_x_range or spawn fewer"
+            )
+        offsets = sorted(rng.uniform(0.0, free) for _ in range(self.object_count))
+        positions = [low + offset + i * MIN_OBJECT_SEPARATION for i, offset in enumerate(offsets)]
+        # Decouple spatial order from object index so obj_0 is not always leftmost.
+        rng.shuffle(positions)
+        return positions
 
     def play_once(self) -> None:
         raise NotImplementedError("ShelfRestockTask has no oracle yet; see docs/architecture.md")

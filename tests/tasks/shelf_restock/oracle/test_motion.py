@@ -5,11 +5,12 @@ import pytest
 from oct_vla.core.frames import WORKCELL_FRAME, Pose, Transform
 from oct_vla.core.geometry import exp
 from oct_vla.core.observation import RGBFrame
-from oct_vla.robots.robotwin.backend import ArmReading, Reading, Trajectory
+from oct_vla.robots.robotwin.backend import ArmReading, Contact, Reading, Trajectory
 from oct_vla.tasks.shelf_restock.oracle.motion import (
     ZERO_VELOCITY,
     ExecutedMotion,
     MotionError,
+    check_contacts,
     move_to,
     set_gripper,
 )
@@ -29,12 +30,18 @@ def _frame() -> RGBFrame:
 class FakePort:
     dt = 1.0 / 250.0
 
-    def __init__(self, rows: int = 3, fail_plan: bool = False) -> None:
+    def __init__(
+        self, rows: int = 3, fail_plan: bool = False, contacts: tuple[Contact, ...] = ()
+    ) -> None:
         self.plan_calls: list[tuple[str, tuple[float, ...]]] = []
         self.commands: list[tuple[str, tuple[float, ...], tuple[float, ...], float]] = []
         self.ticks = 0
         self.rows = rows
         self.fail_plan = fail_plan
+        self._contacts = contacts
+
+    def contacts(self) -> tuple[Contact, ...]:
+        return self._contacts
 
     def reset(self, seed: int) -> None: ...
 
@@ -171,3 +178,44 @@ def test_set_gripper_rejects_nonpositive_ticks():
 def test_executed_motion_ticks_matches_logged_rows():
     motion = ExecutedMotion("left", ((0.0,) * 7,) * 3, ((0.0,) * 7,) * 3, (0.5, 0.5, 0.5))
     assert motion.ticks == 3
+
+
+def test_move_to_raises_when_it_ends_in_unexpected_contact():
+    port = FakePort(rows=2, contacts=(Contact("panda_link6", "upper_shelf", 0.52),))
+    with pytest.raises(MotionError, match="upper_shelf"):
+        move_to(port, "left", target(), WORLD_TO_WORKCELL, settle_ticks=1)
+
+
+def test_move_to_accepts_contact_with_an_allowed_body():
+    port = FakePort(rows=2, contacts=(Contact("panda_leftfinger", "restock_object_0", 0.11),))
+    motion = move_to(
+        port,
+        "left",
+        target(),
+        WORLD_TO_WORKCELL,
+        settle_ticks=1,
+        allow_contact_with=("restock_object_0",),
+    )
+    assert motion.ticks == 3
+
+
+def test_move_to_reports_the_worst_contact_and_the_count():
+    port = FakePort(
+        rows=1,
+        contacts=(
+            Contact("panda_link7", "upper_shelf", 0.26),
+            Contact("panda_link6", "upper_shelf", 0.52),
+        ),
+    )
+    with pytest.raises(MotionError, match=r"panda_link6 <-> upper_shelf .*0\.5200.*2 contact"):
+        move_to(port, "left", target(), WORLD_TO_WORKCELL, settle_ticks=0)
+
+
+def test_check_contacts_passes_when_the_robot_touches_nothing():
+    check_contacts(FakePort())
+
+
+def test_set_gripper_does_not_check_contacts_since_closing_is_contact():
+    port = FakePort(contacts=(Contact("panda_leftfinger", "restock_object_0", 0.11),))
+    motion = set_gripper(port, "left", 0.0, ticks=2)
+    assert motion.ticks == 2
