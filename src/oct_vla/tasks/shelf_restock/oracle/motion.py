@@ -90,15 +90,27 @@ def move_to(
     gripper: float | None = None,
     settle_ticks: int = SETTLE_TICKS,
     allow_contact_with: Collection[str] = (),
+    ignore_object: str | None = None,
 ) -> ExecutedMotion:
     """Plan once to `target` (workcell frame) and execute the whole trajectory.
 
-    The other arm holds at the joint positions it had before the motion, with
-    zero velocity, for every tick -- the same hold semantics the canonical
-    backend uses, so a stationary arm never drifts.
+        The other arm holds at the joint positions it had before the motion, with
+        zero velocity, for every tick -- the same hold semantics the canonical
+        backend uses, so a stationary arm never drifts.
 
-    Raises `MotionError` if the arm ends in contact with anything outside
-    `allow_contact_with` (pass the held object's name when carrying one).
+        Raises `MotionError` if the arm ends in contact with anything outside
+        `allow_contact_with` (pass the held object's name when carrying one).
+
+    `ignore_object` drops one object from the planning world for this
+        motion: the one this arm is deliberately engaging with, whether
+        descending onto it to grasp or carrying it. Either way the arm cannot
+        plan against it -- a grasp pose overlaps the target's own box, and a
+        carried object travels with the hand -- so leaving it in makes cuRobo
+        start in collision and return a bare `Fail`.
+
+        It is the object's *track_id*, a different identifier from the actor body
+        name `allow_contact_with` matches on: the planner's world is keyed by
+        track_id, while contacts report SAPIEN body names.
     """
     other = _other(side)
     if is_cross_body_limited(side, target.position):
@@ -111,6 +123,8 @@ def move_to(
     holding = _arm(reading, other)
     if gripper is None:
         gripper = _arm(reading, side).gripper
+
+    port.ignored_object = ignore_object
 
     world_target = encode_pose(world_to_workcell.inverse().apply_pose(target))
     trajectory = port.plan(side, world_target)

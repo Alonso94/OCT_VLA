@@ -68,6 +68,12 @@ class NativePort(Protocol):
     """Simulator-only seam; poses are world xyz+wxyz and joint rows have seven values."""
 
     dt: float
+    #: track_id of the one object the moving arm may ignore as an obstacle,
+    #: if any. An arm deliberately engaging an object -- descending onto it to
+    #: grasp, or carrying it -- cannot plan against it: a grasp pose overlaps
+    #: the target's own box, and a carried object sits exactly where the hand
+    #: already is. Both make every plan start in collision.
+    ignored_object: str | None
 
     def reset(self, seed: int) -> None: ...
     def read(self) -> Reading: ...

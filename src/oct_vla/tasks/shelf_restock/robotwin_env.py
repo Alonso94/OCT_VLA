@@ -86,6 +86,16 @@ class ShelfRestockTask(Base_Task):
         self._load_objects()
         register_objects(self, self.tracked_objects)
 
+    def refresh_planning_world(self, exclude: str | None = None) -> None:
+        """Re-register every object with both planners at its current pose.
+
+        Called by RoboTwinNativePort before each plan. Objects move, and a
+        planner working from load-time poses believes a restocked object is
+        still on the lower shelf while the space it now occupies is free.
+        `exclude` omits the track_id the moving arm is engaging with.
+        """
+        register_objects(self, self.tracked_objects, exclude=exclude)
+
     def _load_upper_shelf(self) -> None:
         shelf = self.spec.upper_shelf
         self.upper_shelf_actor = create_box(

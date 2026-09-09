@@ -124,13 +124,77 @@ which RoboTwin uses by default -- so that headroom must be reserved *before*
 `install_world_patch` patches `MotionGenConfig.load_from_robot_config` in this
 process only (nothing on disk, inside the RoboTwin checkout or otherwise, is
 modified) to reserve capacity for the upper shelf plus every object this task
-could spawn, and to inject the upper shelf's real geometry into the initial
-world model. `ShelfRestockTask.setup_demo` installs this before calling
-`_init_task_env_`. Once real objects exist, `register_objects` (called at the
-end of `load_actors`) pushes their actual poses/sizes into both arms'
-`MotionGen`/`MotionGen_batch` planners via `update_world` -- no placeholder or
-parked dummy obstacles needed, unlike the old repo's abandoned v1 draft,
-because `collision_cache={"obb": N}` reserves the headroom cleanly instead.
+could spawn. `ShelfRestockTask.setup_demo` installs this before calling
+`_init_task_env_`. `register_objects` then pushes the real geometry into both
+arms' `MotionGen`/`MotionGen_batch` planners via `update_world` -- no
+placeholder or parked dummy obstacles needed, unlike the old repo's abandoned
+v1 draft, because `collision_cache={"obb": N}` reserves the headroom cleanly
+instead.
+
+Capacity is *all* the patch reserves. It deliberately injects no geometry,
+for the reason in the next section: the hook has no access to the planner
+whose frame the world is expressed in, so anything it added would land in the
+wrong place.
+
+### cuRobo's world is in the robot's base frame, not the world frame
+
+This was wrong here for several commits, and it invalidated the collision
+safety those commits claimed. Each RoboTwin planner expresses its obstacles
+relative to *its own robot base*, not in world coordinates. Three independent
+confirmations in RoboTwin's `envs/robot/planner.py`: its stock table cuboid is
+posed at `0.74 - robot_origion_pose.p[2]`; `plan_path` runs every target
+through `_trans_from_world_to_base` before planning; and that function is
+exactly `wRb.T @ (p - base_p)`.
+
+Registering world-frame poses therefore placed every obstacle -- the shelf and
+every object -- somewhere the arm was never going to be. The planner was
+avoiding phantom geometry while the real shelf and real objects stayed
+invisible to it, which is why plans kept reporting `Success` and then driving
+through the shelf or sweeping a placed object off it. `planner_cuboids`
+reproduces RoboTwin's own conversion and is applied per planner, since the two
+arms have different bases.
+
+It does not apply the planner's `frame_bias`, which `plan_path` adds to
+targets after the same conversion. That value is `[0, 0, 0]` for franka-panda,
+and guessing how a nonzero bias ought to apply to obstacles would be inventing
+a convention rather than matching one.
+
+A second bug sat underneath: `update_world` *replaces* the world rather than
+merging into it, so registering shelf and objects silently deleted RoboTwin's
+own table obstacle. The table is now re-supplied on every call, with the
+dimensions `Base_Task.create_table_and_wall` actually uses
+(`create_table(length=1.2, width=0.7, thickness=0.05)`, whose tabletop slab is
+centred half a thickness below the actor origin).
+
+Objects are re-registered from live actor poses before *every* plan, in
+`RoboTwinNativePort.plan` rather than at each call site. A stale world is the
+failure mode hardest to notice, because the planner still reports `Success`
+while routing through an object it believes has not moved.
+
+### One object the arm may ignore
+
+Correct obstacles create a problem correct-but-invisible ones did not: an arm
+cannot plan against the object it is deliberately engaging with. A grasp pose
+overlaps the target's own bounding box, and a carried object sits exactly
+where the hand already is. Either way cuRobo starts in collision and returns a
+bare `Fail` -- seen first when placing a held object, then again when
+descending onto a target.
+
+`move_to(..., ignore_object=track_id)` drops that one object from the
+planning world for the duration of the motion, via `NativePort.ignored_object`.
+It is deliberately one object and deliberately explicit: the caller states
+which object it is engaging, rather than the world guessing from proximity or
+contact.
+
+This is the narrow fix, not the complete one. The planner also stops
+accounting for the *volume* of a carried object, so a carried object can still
+clip scene geometry. cuRobo's `attach_objects_to_robot` is the fuller answer
+-- it would move the object's geometry with the arm instead of deleting it --
+and is not done here.
+
+Note the two identifiers in play: the planning world is keyed by `track_id`
+(`obj_0`), while contacts report SAPIEN body names (`restock_object_0`). A
+carrying motion passes both, for different checks.
 
 Live verification repeated the reachability probe above with the shelf now a
 real obstacle. The lower-shelf-object reach still succeeded in the same 29
@@ -504,9 +568,22 @@ reports `Success` for a trajectory through a space it wrongly believes to be
 empty, which is the same soft-cost blind spot as before, only now fed with
 stale data as well.
 
-The fix is to re-register object poses before planning rather than once at
-load time; `register_objects`' own docstring already flagged that it reads
-poses once. Not yet done.
+**Both of these are now fixed** -- and the deeper cause was worse than
+staleness alone: the obstacles were also in the wrong *frame* (see "cuRobo's
+world is in the robot's base frame" above), so the planner had never really
+seen the shelf or the objects at all. With poses in the right frame and
+refreshed before every plan, the same seed no longer sweeps the placed object
+off the shelf: it stays at `(0.014, -0.044, 0.974)` through the following
+transfer, where it previously ended at `(0.188, -0.395, 0.756)`. Placement
+error also fell from ~0.036m to ~0.023m, and transfer 1 now carries its object
+all the way to the shelf instead of failing at the grasp.
+
+What still fails is transfer 1's `place`, as a planner `Fail` rather than a
+collision. It is marginal, not systematic: transfer 0 places successfully at
+`z=0.974` while transfer 1's object is 10mm shorter and places at `z=0.968`,
+bringing the fingers nearer the deck that is only now a real obstacle. The
+cause is not yet isolated, and guessing at it is what this document has
+repeatedly had to retract.
 
 These are not exotic. Both arms and every object converge on one narrow
 shelf, so both gaps are reachable in ordinary operation.

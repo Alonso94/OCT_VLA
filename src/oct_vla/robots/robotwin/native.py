@@ -105,6 +105,10 @@ class RoboTwinNativePort:
         self.task_config = task_config
         self._task: Any | None = None
         self._episode = 0
+        #: track_id of the object this arm is engaging with, excluded from
+        #: the planning world for the duration. Set by the oracle via
+        #: `move_to`; see NativePort.ignored_object.
+        self.ignored_object: str | None = None
 
     def reset(self, seed: int) -> None:
         _prepare_import_path(self.root)
@@ -116,6 +120,7 @@ class RoboTwinNativePort:
                 self._safe_close()
             self._task = _load_task_class(self.task_name)()
             self._task.setup_demo(now_ep_num=self._episode, seed=seed, is_test=True, **setup)
+            self.ignored_object = None
         actual_dt = float(self._task.scene.get_timestep())
         if abs(actual_dt - self.dt) > 1e-9:
             raise NativePortError(
@@ -135,6 +140,16 @@ class RoboTwinNativePort:
 
     def plan(self, side: str, pose_wxyz: tuple[float, ...]) -> Trajectory:
         self._require_task()
+        # Refresh the planner's obstacles from the live scene first. Doing it
+        # here rather than at each call site is deliberate: a plan made
+        # against a stale world is the failure mode that is hardest to notice,
+        # since the planner still reports Success while routing through an
+        # object it thinks has not moved. Tasks with no movable geometry need
+        # no hook and simply do not define one.
+        refresh = getattr(self._task, "refresh_planning_world", None)
+        if refresh is not None:
+            with _chdir(self.root):
+                refresh(self.ignored_object)
         plan_path = self._plan_path_fn(side)
         with _chdir(self.root):
             result = plan_path(list(pose_wxyz))
