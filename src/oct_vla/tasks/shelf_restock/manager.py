@@ -46,12 +46,29 @@ class ShelfRestockManager:
         target = self._selector(remaining, scene)
         if target not in remaining:
             raise ValueError("Selector must choose a track_id from the given remaining objects")
-        previous = self._placed_order[-1] if self._placed_order else None
+        previous = self._previous_neighbor(target, scene)
         return TaskContext(
             instruction=self.spec.instruction,
             target_track_id=target,
             previous_neighbor_track_id=previous,
         )
+
+    def _previous_neighbor(self, target: str, scene: ObjectScene) -> str | None:
+        """The most recently placed object still up there to compact against.
+
+        Not simply the last entry in placement order. An object that was
+        placed and then knocked back down is still in that history, but it is
+        no longer a neighbour on the upper shelf, and because it is back among
+        the lower-shelf candidates it can be selected as the target -- which
+        made it its own previous neighbour and raised out of TaskContext
+        mid-collection. Both conditions are checked here rather than trusting
+        placement order, since the scene is the authority on where things are.
+        """
+        upper = set(objects_on_upper_shelf(scene, self.spec))
+        for track_id in reversed(self._placed_order):
+            if track_id != target and track_id in upper:
+                return track_id
+        return None
 
     def record_placement(self, track_id: str) -> None:
         self._placed_order.append(track_id)

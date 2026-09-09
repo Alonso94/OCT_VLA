@@ -130,6 +130,14 @@ class RoboTwinNativePort:
             )
         self._episode += 1
 
+    @property
+    def task(self) -> Any:
+        """The live RoboTwin task. Simulation-privileged: the oracle and the
+        collection glue need its actors to build a ground-truth estimator, and
+        reaching through a private attribute to get them would hide that."""
+        self._require_task()
+        return self._task
+
     def read(self) -> Reading:
         self._require_task()
         with _chdir(self.root):

@@ -64,7 +64,9 @@ def test_record_placement_becomes_next_call_s_previous_neighbor():
     assert first.target_track_id == "a"
     manager.record_placement("a")
 
-    remaining = lower_scene("b")
+    # "a" is now up top, where a real scene would still report it: the
+    # neighbour must be observed on the upper shelf, not merely remembered.
+    remaining = ObjectScene(0.0, (obj("a", (0.0, 0.10, 1.05)), obj("b", (0.0, -0.15, 0.74))))
     second = manager.next_context(remaining)
     assert second.target_track_id == "b"
     assert second.previous_neighbor_track_id == "a"
@@ -80,3 +82,33 @@ def test_selector_returning_unknown_track_id_raises():
     manager = ShelfRestockManager(spec(), selector=lambda remaining, scene: "not-remaining")
     with pytest.raises(ValueError):
         manager.next_context(lower_scene("a"))
+
+
+def test_a_placed_object_knocked_back_down_is_not_its_own_previous_neighbour():
+    """It stays in placement history but returns to the lower-shelf
+    candidates, so without the scene check it could be selected as the target
+    while still being reported as the neighbour -- which TaskContext rejects."""
+    manager = ShelfRestockManager(spec())
+    manager.record_placement("obj_0")
+    context = manager.next_context(lower_scene("obj_0"))
+
+    assert context.target_track_id == "obj_0"
+    assert context.previous_neighbor_track_id is None
+
+
+def test_the_neighbour_is_the_most_recent_placement_still_on_the_upper_shelf():
+    manager = ShelfRestockManager(spec())
+    manager.record_placement("obj_0")
+    manager.record_placement("obj_1")
+    scene = ObjectScene(
+        0.0,
+        (
+            obj("obj_0", (0.0, 0.10, 1.05)),
+            obj("obj_1", (0.0, -0.15, 0.74)),
+            obj("obj_2", (0.0, -0.15, 0.74)),
+        ),
+    )
+    context = manager.next_context(scene)
+
+    # obj_1 was placed most recently but is back down, so obj_0 is the live one.
+    assert context.previous_neighbor_track_id == "obj_0"

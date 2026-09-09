@@ -17,9 +17,11 @@ htmlcov/
 build/
 dist/
 
-# External dependencies and experiment artifacts
+# External dependencies and experiment artifacts. Anchored to the repo root
+# (leading slash) so this does not also match src/oct_vla/data/ or
+# tests/data/, which are tracked source, not generated datasets.
 RoboTwin/
-data/
+/data/
 datasets/
 assets/
 outputs/

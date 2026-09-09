@@ -904,6 +904,48 @@ episode length, and success metadata. Export to LeRobot is an adapter over the
 canonical schema. Old recorded command targets must not be silently relabeled
 as subsequent measured poses when converting legacy data.
 
+## Recording episodes
+
+`data/` turns an oracle run into canonical training data, and is pure standard
+library: the package declares `dependencies = []` deliberately, and the
+collection path must not be the thing that breaks that.
+
+`EpisodeRecorder` wraps a `NativePort` and implements the same protocol by
+delegation, so the oracle is handed the recorder *instead of* the port and
+records itself without knowing recording exists. It samples on `tick()` at the
+plan's ~15Hz target, timestamping from `tick * dt` rather than an assumed FPS,
+because the data contract requires real intervals -- `validate_episode` flags
+irregular sampling rather than trusting a label.
+
+Phases and task context are recovered from the oracle's own `TransferRecord`s
+instead of being pushed into the recorder: each motion reports exactly how many
+ticks it commanded, and every one of those is a `port.tick()`, so tick ranges
+map to phases exactly with no coupling between the two.
+
+Frames are stored as concatenated raw RGB, gzipped. Measured on real rendered
+frames rather than synthetic data, gzip gives 3.5x on the head camera and
+~6.7x on the wrists -- about 82MB per episode, so 25 episodes is roughly 2GB.
+A stdlib PNG encoder was measured against it and gave no improvement whatsoever
+(131KB versus 131KB per sample): these renders are flat enough that gzip
+already captures the redundancy, and PNG's spatial prediction buys nothing. The
+plan makes LeRobot export an adapter over this canonical form, so that is where
+any video transcode belongs.
+
+### Yield, measured
+
+Five seeds, four complete episodes with no validation problems, 484-502 samples
+each. The failure was the right arm's compaction push returning a bare planner
+`Fail`. That is an 80% yield at roughly 136 seconds per seed, so ~32 seeds gives
+the ~25 episodes the study needs.
+
+One bug this found that a single seed could not: the manager reported the
+last-placed object as the previous neighbour from placement order alone. An
+object knocked back onto the lower shelf is still in that history *and* back
+among the target candidates, so it became its own neighbour and `TaskContext`
+rejected it mid-collection. The neighbour is now the most recent placement
+still *observed* on the upper shelf, which also stops the oracle compacting
+toward something that is no longer there.
+
 ## Policy and scientific validation
 
 Retain pretrained π0.5 and inject separately encoded object context through a
