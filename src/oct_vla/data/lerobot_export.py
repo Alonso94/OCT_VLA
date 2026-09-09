@@ -64,10 +64,22 @@ def _features(episode: Episode) -> dict[str, dict]:
             "shape": (16,),
             "names": {
                 "motors": [
-                    "left_eef.x", "left_eef.y", "left_eef.z", "left_eef.qx", "left_eef.qy",
-                    "left_eef.qz", "left_eef.qw", "left_eef.gripper", "right_eef.x",
-                    "right_eef.y", "right_eef.z", "right_eef.qx", "right_eef.qy", "right_eef.qz",
-                    "right_eef.qw", "right_eef.gripper",
+                    "left_eef.x",
+                    "left_eef.y",
+                    "left_eef.z",
+                    "left_eef.qx",
+                    "left_eef.qy",
+                    "left_eef.qz",
+                    "left_eef.qw",
+                    "left_eef.gripper",
+                    "right_eef.x",
+                    "right_eef.y",
+                    "right_eef.z",
+                    "right_eef.qx",
+                    "right_eef.qy",
+                    "right_eef.qz",
+                    "right_eef.qw",
+                    "right_eef.gripper",
                 ]
             },
         },
@@ -103,19 +115,23 @@ def export_episodes(
     repo_id: str = "local/oct_vla_shelf_restock",
     robot_type: str = "robotwin_franka_bimanual",
     include_unsuccessful: bool = False,
+    append: bool = False,
 ) -> ExportReport:
     """Convert canonical episode directories into a new local LeRobot dataset.
 
     LeRobot owns its uniform ``frame_index / fps`` timestamps.  The source
     recordings remain untouched and retain their simulator-clock timestamps.
-    ``output`` must not exist, preventing accidental replacement of an export.
+    ``output`` must not exist unless ``append`` is explicitly requested. This
+    makes a long batch export restartable one finalized episode at a time.
     """
     source_paths = tuple(Path(source) for source in sources)
     if not source_paths:
         raise ValueError("At least one canonical episode directory is required")
     destination = Path(output)
-    if destination.exists():
+    if destination.exists() and not append:
         raise FileExistsError(f"LeRobot output already exists: {destination}")
+    if append and not destination.is_dir():
+        raise FileNotFoundError(f"Cannot append: LeRobot output does not exist: {destination}")
 
     accepted: list[tuple[Path, Episode]] = []
     skipped: list[tuple[Path, str]] = []
@@ -135,14 +151,19 @@ def export_episodes(
     if any(_fps(episode) != fps for _, episode in accepted):
         raise ValueError("All exported episodes must use the same frame rate")
     np, LeRobotDataset = _require_export_dependencies()
-    dataset = LeRobotDataset.create(
-        repo_id=repo_id,
-        root=destination,
-        fps=fps,
-        robot_type=robot_type,
-        features=_features(accepted[0][1]),
-        use_videos=True,
-    )
+    if append:
+        dataset = LeRobotDataset.resume(repo_id=repo_id, root=destination)
+        if dataset.fps != fps:
+            raise ValueError(f"Cannot append {fps} Hz data to a {dataset.fps} Hz LeRobot dataset")
+    else:
+        dataset = LeRobotDataset.create(
+            repo_id=repo_id,
+            root=destination,
+            fps=fps,
+            robot_type=robot_type,
+            features=_features(accepted[0][1]),
+            use_videos=True,
+        )
     for _, episode in accepted:
         for index, sample in enumerate(episode.samples):
             frame = {

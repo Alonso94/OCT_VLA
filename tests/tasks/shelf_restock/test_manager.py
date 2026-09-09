@@ -112,3 +112,30 @@ def test_the_neighbour_is_the_most_recent_placement_still_on_the_upper_shelf():
 
     # obj_1 was placed most recently but is back down, so obj_0 is the live one.
     assert context.previous_neighbor_track_id == "obj_0"
+
+
+def test_an_upper_shelf_object_this_manager_never_placed_is_still_a_neighbour():
+    """Atomic demonstrations start from a scene that already holds a restocked
+    object, so the neighbour cannot come from placement history alone."""
+    manager = ShelfRestockManager(spec())
+    scene = ObjectScene(0.0, (obj("obj_0", (0.0, -0.15, 0.74)), obj("obj_1", (0.0, 0.10, 1.05))))
+    context = manager.next_context(scene)
+
+    assert context.target_track_id == "obj_0"
+    assert context.previous_neighbor_track_id == "obj_1"
+
+
+def test_placement_order_wins_over_a_bare_upper_shelf_object():
+    """When the manager has placed something itself, that is the neighbour the
+    row was built against; an unrelated object up there must not displace it."""
+    manager = ShelfRestockManager(spec())
+    manager.record_placement("obj_2")
+    scene = ObjectScene(
+        0.0,
+        (
+            obj("obj_0", (0.0, -0.15, 0.74)),
+            obj("obj_1", (0.0, 0.10, 1.05)),
+            obj("obj_2", (0.05, 0.10, 1.05)),
+        ),
+    )
+    assert manager.next_context(scene).previous_neighbor_track_id == "obj_2"

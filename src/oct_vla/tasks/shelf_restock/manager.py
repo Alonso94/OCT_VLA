@@ -64,11 +64,21 @@ class ShelfRestockManager:
         mid-collection. Both conditions are checked here rather than trusting
         placement order, since the scene is the authority on where things are.
         """
-        upper = set(objects_on_upper_shelf(scene, self.spec))
+        upper = objects_on_upper_shelf(scene, self.spec)
+        placed = set(upper)
         for track_id in reversed(self._placed_order):
-            if track_id != target and track_id in upper:
+            if track_id != target and track_id in placed:
                 return track_id
-        return None
+        # Nothing *this* manager placed is up there, but something may be
+        # anyway: an atomic demonstration starts from a scene that already
+        # contains a restocked neighbour, precisely so compaction can be
+        # demonstrated in a single transfer. Trusting placement order alone
+        # reported no neighbour for exactly those scenes, so the oracle placed
+        # the target where the neighbour already stood and the plan failed.
+        # The scene, not this object's memory, is the authority on what is on
+        # the shelf.
+        candidates = tuple(track_id for track_id in upper if track_id != target)
+        return min(candidates) if candidates else None
 
     def record_placement(self, track_id: str) -> None:
         self._placed_order.append(track_id)

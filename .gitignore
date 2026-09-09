@@ -4,6 +4,7 @@
 !.env.example
 .agents/
 .codex/
+.cache/
 
 # Python and build artifacts
 __pycache__/
