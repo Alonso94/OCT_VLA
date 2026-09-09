@@ -12,6 +12,7 @@ import importlib
 import os
 import sys
 from contextlib import contextmanager
+from math import isfinite
 from pathlib import Path
 from typing import Any
 
@@ -138,8 +139,26 @@ class RoboTwinNativePort:
         cameras = tuple(_rgb_frame(raw, name) for name in CAMERA_NAMES)
         return Reading(left, right, cameras)
 
-    def plan(self, side: str, pose_wxyz: tuple[float, ...]) -> Trajectory:
+    def plan(
+        self,
+        side: str,
+        pose_wxyz: tuple[float, ...],
+        constraint: tuple[float, ...] | None = None,
+    ) -> Trajectory:
         self._require_task()
+        # `constraint` is cuRobo's hold_vec_weight, 6 values: indices 0-2 are
+        # rotation, 3-5 are translation, 1.0 holds that component fixed along
+        # the path and 0.0 leaves it free. Six because that is exactly the
+        # shape CuroboPlanner.plan_path's constraint_pose expects; anything
+        # else can only be a caller mistake, so fail loudly here rather than
+        # inside RoboTwin's planner.
+        if constraint is not None and (
+            len(constraint) != 6 or not all(isfinite(v) for v in constraint)
+        ):
+            raise NativePortError(
+                f"constraint must have exactly 6 finite elements (rotation xyz, "
+                f"translation xyz); got {constraint!r}"
+            )
         # Refresh the planner's obstacles from the live scene first. Doing it
         # here rather than at each call site is deliberate: a plan made
         # against a stale world is the failure mode that is hardest to notice,
@@ -152,7 +171,10 @@ class RoboTwinNativePort:
                 refresh(self.ignored_object)
         plan_path = self._plan_path_fn(side)
         with _chdir(self.root):
-            result = plan_path(list(pose_wxyz))
+            if constraint is None:
+                result = plan_path(list(pose_wxyz))
+            else:
+                result = plan_path(list(pose_wxyz), constraint_pose=list(constraint))
         if result.get("status") != "Success":
             raise NativePortError(f"{side} arm global plan failed: {result.get('status')!r}")
         position = tuple(tuple(float(v) for v in row) for row in result["position"])

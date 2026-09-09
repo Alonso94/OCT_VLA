@@ -61,7 +61,8 @@ HEAD_CAMERA_OVERRIDE = {
 #: Its dimensions are a property of the asset (create_actor overwrites its own
 #: `scale` argument with the value inside model_data<N>.json), so
 #: ObjectVariation's size sampling no longer applies to spawning; the
-#: per-episode size variation is now which of the asset's variants is chosen.
+#: per-episode size variation is now which of the asset's variants is chosen,
+#: once per episode and shared by every object in it (see `_load_objects`).
 OBJECT_MODEL = "113_coffee-box"
 
 
@@ -112,10 +113,14 @@ class ShelfRestockTask(Base_Task):
         rng = random.Random(self._episode_seed)
 
         self.tracked_objects: dict[str, Any] = {}
+        # One variant for the whole episode, not one per object: a mixed-size
+        # row makes the placement/compaction geometry vary per object for
+        # reasons the policy cannot see, and the per-episode variation this
+        # research wants is pose, not a silent size change mid-row.
+        model_id = rng.choice(available_model_ids(OBJECT_MODEL))
+        size = upright_size(OBJECT_MODEL, model_id)
+        offset = upright_center_offset(OBJECT_MODEL, model_id)
         for index, x in enumerate(self._spaced_x_positions(spec, rng)):
-            model_id = rng.choice(available_model_ids(OBJECT_MODEL))
-            size = upright_size(OBJECT_MODEL, model_id)
-            offset = upright_center_offset(OBJECT_MODEL, model_id)
             sampled = spec.object_variation.sample_pose(0.0, rng)
             yaw = _yaw_of(sampled.orientation)
             orientation = exp((0.0, 0.0, yaw))

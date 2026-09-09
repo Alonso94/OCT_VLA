@@ -33,12 +33,14 @@ def test_the_grasping_arm_reaches_the_whole_lower_shelf():
             assert not is_cross_body_limited("left", (x, y, 0.78))
 
 
-def test_placing_far_along_the_upper_shelf_is_flagged_not_silently_attempted():
-    """The upper shelf lies inside the left arm's cross-body band, so the far
-    +x end of the deck is out of reach and must be reported as such."""
-    assert is_cross_body_limited(
-        "left", (CROSS_BODY_X, DEFAULT_SPEC.upper_shelf.center_xyz[1], 0.97)
-    )
+def test_placing_along_the_upper_shelf_is_no_longer_cross_body_limited():
+    """The deck sat at y=-0.02 -- inside the cross-body band -- until the spec
+    moved it to y=-0.06, specifically so left-arm placements land below
+    CROSS_BODY_Y and stop being flagged, which is what lets the right arm
+    reach what the left arm placed for compaction."""
+    shelf_y = DEFAULT_SPEC.upper_shelf.center_xyz[1]
+    assert shelf_y < CROSS_BODY_Y
+    assert not is_cross_body_limited("left", (CROSS_BODY_X, shelf_y, 0.97))
 
 
 def test_the_first_placement_is_within_the_placing_arm_reach():

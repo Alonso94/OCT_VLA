@@ -28,6 +28,16 @@ ZERO_VELOCITY = (0.0,) * 7
 SETTLE_TICKS = 50
 GRIPPER_TICKS = 60
 
+# cuRobo hold_vec_weight: rotation xyz (0-2), translation xyz (3-5); 1.0 holds
+# that component fixed along the whole path, 0.0 leaves it free. Locking all
+# three rotation components and freeing all three translation ones keeps the
+# wrist orientation fixed for the whole path so the motion stays a straight,
+# non-tumbling translation. A push needs this: an ordinary joint-space plan
+# curves through the contact -- it is free to reorient on approach -- so the
+# blade sweeps an arc through the object instead of sliding along one line,
+# shoving it off its intended path unpredictably.
+STRAIGHT_LINE = (1.0, 1.0, 1.0, 0.0, 0.0, 0.0)
+
 
 class MotionError(RuntimeError):
     """Raised instead of silently continuing when a motion cannot be executed."""
@@ -91,6 +101,8 @@ def move_to(
     settle_ticks: int = SETTLE_TICKS,
     allow_contact_with: Collection[str] = (),
     ignore_object: str | None = None,
+    constraint: tuple[float, ...] | None = None,
+    slowdown: int = 1,
 ) -> ExecutedMotion:
     """Plan once to `target` (workcell frame) and execute the whole trajectory.
 
@@ -111,7 +123,19 @@ def move_to(
         It is the object's *track_id*, a different identifier from the actor body
         name `allow_contact_with` matches on: the planner's world is keyed by
         track_id, while contacts report SAPIEN body names.
+
+    `constraint` is forwarded to `port.plan` verbatim (see `STRAIGHT_LINE`
+        above for a locked-orientation path); `None` plans exactly as before.
+
+    `slowdown` (>= 1) commands each planned row for `slowdown` consecutive
+        ticks instead of one, with its velocity scaled by `1 / slowdown` so
+        the same path is traversed proportionally slower. Contact-rich
+        motions like a compaction push need this: the trajectory is executed
+        open-loop, and a fast blade bounces the object on contact rather than
+        sliding it along the intended line.
     """
+    if slowdown < 1:
+        raise MotionError(f"slowdown must be >= 1; got {slowdown}")
     other = _other(side)
     if is_cross_body_limited(side, target.position):
         raise MotionError(
@@ -127,7 +151,7 @@ def move_to(
     port.ignored_object = ignore_object
 
     world_target = encode_pose(world_to_workcell.inverse().apply_pose(target))
-    trajectory = port.plan(side, world_target)
+    trajectory = port.plan(side, world_target, constraint)
 
     q_log: list[tuple[float, ...]] = []
     qdot_log: list[tuple[float, ...]] = []
@@ -142,7 +166,12 @@ def move_to(
         gripper_log.append(gripper)
 
     for q, qdot in zip(trajectory.q, trajectory.qdot, strict=True):
-        tick(q, qdot)
+        # Every log entry must match what the robot was really told, since
+        # this record is the expert demonstration -- so a slowdown of N
+        # commands (and logs) the same row N times, not once at N x the qdot.
+        scaled_qdot = tuple(v / slowdown for v in qdot)
+        for _ in range(slowdown):
+            tick(q, scaled_qdot)
     for _ in range(settle_ticks):
         tick(trajectory.q[-1], ZERO_VELOCITY)
 

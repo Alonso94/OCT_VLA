@@ -77,7 +77,17 @@ class NativePort(Protocol):
 
     def reset(self, seed: int) -> None: ...
     def read(self) -> Reading: ...
-    def plan(self, side: str, pose_wxyz: tuple[float, ...]) -> Trajectory: ...
+    def plan(
+        self,
+        side: str,
+        pose_wxyz: tuple[float, ...],
+        constraint: tuple[float, ...] | None = None,
+    ) -> Trajectory:
+        """`constraint` is cuRobo's own hold_vec_weight convention, not ours:
+        6 values, indices 0-2 rotation and 3-5 translation, 1.0 holds that
+        component fixed along the planned path and 0.0 leaves it free."""
+        ...
+
     def command(
         self, side: str, q: tuple[float, ...], qdot: tuple[float, ...], gripper: float
     ) -> None: ...

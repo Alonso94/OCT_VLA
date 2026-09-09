@@ -126,7 +126,7 @@ class ShelfRestockSpec:
     upper_shelf: ShelfRegion
     object_variation: ObjectVariation
     spawn_clearance: float = 0.001
-    compaction_distance: float = 0.03
+    compaction_distance: float = 0.04
     instruction: str = (
         "Restock the selected object from the lower shelf to the upper shelf, "
         "then compact it toward the previous neighbor if one exists."
@@ -143,19 +143,31 @@ class ShelfRestockSpec:
             raise ValueError("instruction must be a nonempty string")
 
 
-# The upper deck must not overhang where objects spawn: a top-down grasp puts
-# the wrist links above the object, so an object under the deck cannot be
-# grasped at all (see docs/architecture.md). The deck's far edge also has to
-# stay well short of y=0.10, which failed to plan for both arms at every
-# height tried. Hence a deck spanning y in [-0.08, 0.04] and a spawn zone at
-# y in [-0.30, -0.20] -- 0.12m of clearance between them, with both regions
-# inside the range that planned successfully.
+# Objects now spawn only on the left half (x in [-0.34, 0.0]): ROLE_ARMS
+# (oracle/arms.py) fixes the left arm as the one that both grasps and places,
+# with its base at x=-0.4 (the right arm's base is at x=+0.4), and spawning
+# across the full width forced that arm into cross-body reaches. lower_shelf's
+# x half-extent grew to 0.36 purely so `contains()` still covers the whole
+# spawn range -- it is the region test widening, not new physical deck
+# geometry.
+#
+# The upper deck must also not overhang where objects spawn: a top-down grasp
+# puts the wrist links above the object, so an object under the deck cannot be
+# grasped at all (see docs/architecture.md). Beyond that, the deck moved
+# forward from y=-0.02 to y=-0.06 so placements land at y < CROSS_BODY_Y
+# (-0.05, oracle/arms.py): at y=-0.02, every placement past |x|=0.15 fell
+# inside a measured cross-body-unreachable region, making it impossible for
+# the right arm (compaction) to reach what the left arm had placed. It is
+# deliberately not moved further forward than that: the deck's near edge is
+# now y=-0.12 and the spawn zone starts at y=-0.24, preserving the same 0.12m
+# of clearance the original placement was chosen to guarantee. The deck is
+# also wider in x (0.40 -> 0.60) to hold a row of objects.
 DEFAULT_SPEC = ShelfRestockSpec(
-    lower_shelf=ShelfRegion("lower_shelf", (0.0, -0.25, 0.74), (0.22, 0.10, 0.01)),
-    upper_shelf=ShelfRegion("upper_shelf", (0.0, -0.02, 0.92), (0.20, 0.06, 0.015)),
+    lower_shelf=ShelfRegion("lower_shelf", (0.0, -0.25, 0.74), (0.36, 0.10, 0.01)),
+    upper_shelf=ShelfRegion("upper_shelf", (0.0, -0.06, 0.92), (0.30, 0.06, 0.015)),
     object_variation=ObjectVariation(
-        position_x_range=(-0.20, 0.20),
-        position_y_range=(-0.30, -0.20),
+        position_x_range=(-0.34, 0.0),
+        position_y_range=(-0.32, -0.24),
         yaw_range=(-0.4, 0.4),
         size_xyz_range=((0.03, 0.06), (0.03, 0.06), (0.03, 0.08)),
     ),

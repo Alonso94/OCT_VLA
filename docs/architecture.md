@@ -429,6 +429,117 @@ measures the gap between *surfaces*, treating each object as a circle of
 yaw-independent, and conservative, since for a non-square footprint the true
 gap along the line of centres is never smaller than this.
 
+### Compaction is a push, not a re-grasp
+
+The compacting arm never opens. It descends beside the placed object with a
+closed gripper, shoves it sideways, and lifts away. A re-grasp was built
+first and did work end to end (gap 0.0099m), but a push has no grasp that can
+miss, and a closed gripper is simply a rigid tool.
+
+The approach is **top-down**, not from the side, and that was not the first
+choice. A horizontal approach was implemented and rejected by the planner: the
+pose the arm is commanded to sits `GRASP_TCP_OFFSET` (0.127m) back from the
+finger pads along the approach axis, so making that axis horizontal throws the
+wrist 0.15-0.25m sideways from the object. Pushing toward -x put it at
+`x = 0.254` against the right arm's own base at `x = 0.4`; pushing toward +x
+puts it beyond `x = -0.16`, past where that arm had already failed to plan.
+Both ends of a horizontal axis are unreachable for this arm, so the push
+reuses the only wrist orientation that plans reliably here, with the fingers
+separated perpendicular to travel so both pads meet the object's face.
+
+`push_axis_half_extent` exists because `horizontal_radius` is the wrong
+measure for this. That function returns a yaw-independent circumscribing
+radius -- correct and deliberately conservative for a neighbour-gap test, but
+it *understates* the extent along any one axis for a rotated box. Sizing the
+descent with it put the gripper 6mm inside a box yawed 0.33rad (0.027 assumed
+against 0.0332 actual), and the closed gripper's own ~12mm half-thickness was
+not counted at all.
+
+The failure that exposed this is worth recording because it did not look like
+a geometry bug. Every step reported success, the planner returned Success, and
+the object simply did not move -- 3mm against 58mm commanded. The measurement
+that settled it was commanded-versus-achieved pose: the arm sat 62mm *high* at
+both contact and push, having jammed its descent against the box and ridden
+over the top, catching it with a fingertip. With the clearance corrected the
+same motion tracks to 2.6mm and the descent reports no contacts at all.
+
+Both transfers then succeed, with the object moving 0.062m and a final
+neighbour gap of 0.033m against a 0.04m threshold.
+
+### The push is planned as a constrained path
+
+An ordinary plan curves through the contact: the blade sweeps an arc and
+shoves the object off its intended line. cuRobo can constrain the path
+instead, via RoboTwin's `plan_path(constraint_pose=...)`, which becomes a
+`PoseCostMetric(hold_partial_pose=True, hold_vec_weight=...)`. That vector has
+six entries, rotation 0-2 and translation 3-5, 1.0 holding a component fixed
+along the path; it is read in the *goal* frame, since cuRobo's
+`project_distance` defaults to true and nothing here overrides it.
+
+The obvious choice -- hold five of six and free only the travel axis -- is
+what this wanted and cuRobo reproducibly refused to plan it. The probable
+reason, not isolated directly, is that the held components are pinned to the
+goal pose's values for the whole path while the arm arrives at its contact
+pose a few millimetres off what was commanded (measured: commanded
+`(0.0529, -0.0584, 1.1008)`, achieved `(0.0509, -0.0592, 1.1045)`), so the
+constraint cannot be met from the first waypoint.
+
+What plans is holding all three rotations plus the end-effector's local +X,
+which under the push orientation is the vertical. That targets the defect that
+actually matters: vertical deviation is what let the blade ride up over the
+object in the 62mm stall, while a few millimetres of lateral bow does not hurt
+a push -- and the planner needs that horizontal freedom to stay feasible.
+Measured, the blade then holds its height to 0.2mm across the whole push, and
+the neighbour gap comes out at 0.0035m against a 0.04m threshold, the best of
+any variant tried.
+
+Contact-rich motions are also executed slower, by commanding each planned row
+for several ticks with its velocity scaled to match. The trajectory is run
+open-loop, so a fast blade bounces the object rather than sliding it. The
+descent beside the object needs no such help and runs at full speed. Push
+slowdowns of 3, 5, 6, 7 and 10 were each measured live: 3 through 7 are
+indistinguishable (gap 0.004-0.006m against a 0.04m threshold) and only 10 is
+clearly worse, so the value is not a tuned parameter and should not be treated
+as one.
+
+### A complete episode
+
+All three objects restocked, two compactions, the lower shelf emptied, and
+`check_success` returning True -- its first exercise. Placement error 0.005m;
+compaction gaps 0.0047m and 0.0037m against the 0.04m threshold.
+
+What this run tested that the two-transfer runs could not is the row *chain*:
+placements at -0.114, -0.005 and 0.043, compacting back to -0.071 and -0.027.
+The row built and stayed inside both arms' reach across two links, which is
+what the "start one step from centre and grow toward the compacting arm" rule
+exists for, and the third placement is precisely the case the old roomier-side
+heuristic would have dropped onto the first object.
+
+It remains one run at one seed. cuRobo's trajopt is stochastic -- the identical
+script at the identical seed has failed at different steps on consecutive runs
+earlier in this work -- so this is an existence proof that a full episode is
+possible, not a success rate.
+
+One limitation this leaves: a flat blade pushing a *yawed* box does not push
+it along the blade's normal, so the object slides in y as well -- 0.008m in
+the measured run, and the horizontal freedom the constraint allows is part of
+why. The gap threshold absorbs it, but it will grow with the object's yaw.
+
+### Parking the idle arm
+
+The idle arm is not in the planner's world (see the open gaps above), so
+nothing but sequencing keeps the arms apart. Compaction makes a collision
+certain rather than likely: it sends the right arm to exactly where the left
+arm has just placed, and the left arm's retreat leaves it directly above that
+spot. Observed as `right/panda_link6 <-> left/panda_link6` at 0.178 impulse,
+with the two wrists 0.088m apart.
+
+The oracle therefore parks the placing arm at its own measured rest pose
+before the compacting arm moves in, and parks the compacting arm again
+afterwards. The rest pose is read from the arm at episode start rather than
+written down as a constant: it is known-reachable by construction, which a
+hand-chosen park pose would not be.
+
 ### A live two-transfer run, and what it exposed
 
 Transfer 0 succeeded end to end -- grasp, transport, place, release, retreat
@@ -599,19 +710,55 @@ trajectory. Any reliability number therefore has to come from repeated runs
 per seed, not one run per seed -- and a single passing run is not evidence
 that a step is fixed.
 
-### Smaller measured discrepancies, unresolved
+### The placement error was a reach problem, now resolved
 
-Placement error is *not* the uniform bias earlier supposed. Objects appear
-to settle toward `y ~ -0.056` regardless of where they were aimed: the first
-placement, aimed at the deck centre `y = -0.020`, landed at `-0.055`
-(0.036m error), while the second, aimed at `-0.055` (its neighbour's actual
-resting y), landed at `-0.057` -- under 2mm. So aiming at the deck centre
-misses and aiming near `y = -0.056` does not, which points at the deck's
-modelled y-centre or a release-time nudge rather than at tracking error.
-Not yet diagnosed.
+Earlier notes here speculated that objects "settle toward `y ~ -0.056`
+regardless of where they were aimed", pointing at the deck's modelled centre
+or a release-time nudge. That was wrong. Moving the upper deck forward to
+`y = -0.06` -- done for reachability, not accuracy -- dropped placement error
+from ~0.023-0.036m to **0.0004m**. The error was never settling or tracking:
+it was the arm contorting to place inside its own cross-body-limited region,
+and it disappears once the target is outside that region.
 
-Objects also come to rest ~3mm above `resting_z`, suggesting
-`upper_shelf.top_z` is slightly under-stated.
+Two things follow. Aiming accuracy is not a limitation of this setup, so the
+compaction step does not need to exist in order to correct placement (it
+still does correct it, by re-observing before it re-grasps). And a
+"discrepancy" that vanishes when an unrelated geometry constant changes was
+never a discrepancy worth modelling -- it was a symptom of a reach limit.
+
+Objects still come to rest ~3mm above `resting_z`, suggesting
+`upper_shelf.top_z` is slightly under-stated. Unresolved, and now the largest
+remaining placement discrepancy by an order of magnitude.
+
+### A reach limit `is_cross_body_limited` does not cover
+
+The right arm failed to plan to `x = -0.124` on the upper deck at
+`y = -0.06`. Nothing flagged this in advance: `contains()` accepts the
+position (the deck is 0.60m wide), and `is_cross_body_limited` no longer
+fires anywhere on the deck at all, because moving it to `y = -0.06` put the
+whole deck below `CROSS_BODY_Y`. The measured grid that produced those
+constants only covered `x` in -0.15..0.15 at `y >= -0.05`, so it says nothing
+about this pose.
+
+So the deck's outer thirds are usable by the arm on their own side and by
+nothing else. That is what makes *where a row starts* a reachability
+decision rather than an aesthetic one: compaction pulls each new object back
+toward its neighbour, so a row does not march across the deck -- it stays
+clustered near its first object. Starting at the far edge parks the entire
+row where the compacting arm cannot reach it. Rows now start one placement
+step from the deck centre, away from the compacting arm, which keeps a short
+row inside the overlap of both arms' reach.
+
+The boundary of this limit is not measured. Treat 0.16m from the deck centre
+as the tested-good extent, not as a known edge.
+
+### Scenario geometry
+
+The scene was retuned toward the reference scenario: objects spawn only on
+the left half (`x` in -0.34..0.0), since the left arm both grasps and places
+and its base is at `x = -0.4`; the deck is wider (0.40 -> 0.60m) to hold a
+row; and every object in an episode is the same asset variant, so a row's
+geometry does not change size mid-sequence for reasons the policy cannot see.
 
 ## Action, frame, and timing contracts
 

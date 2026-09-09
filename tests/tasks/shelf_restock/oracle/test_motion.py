@@ -7,6 +7,7 @@ from oct_vla.core.geometry import exp
 from oct_vla.core.observation import RGBFrame
 from oct_vla.robots.robotwin.backend import ArmReading, Contact, Reading, Trajectory
 from oct_vla.tasks.shelf_restock.oracle.motion import (
+    STRAIGHT_LINE,
     ZERO_VELOCITY,
     ExecutedMotion,
     MotionError,
@@ -33,7 +34,7 @@ class FakePort:
     def __init__(
         self, rows: int = 3, fail_plan: bool = False, contacts: tuple[Contact, ...] = ()
     ) -> None:
-        self.plan_calls: list[tuple[str, tuple[float, ...]]] = []
+        self.plan_calls: list[tuple[str, tuple[float, ...], tuple[float, ...] | None]] = []
         self.commands: list[tuple[str, tuple[float, ...], tuple[float, ...], float]] = []
         self.ticks = 0
         self.rows = rows
@@ -50,8 +51,15 @@ class FakePort:
         right = ArmReading((0.4, -0.2, 0.3, 1.0, 0.0, 0.0, 0.0), 0.9, RIGHT_JOINTS)
         return Reading(left, right, (_frame(), _frame(), _frame()))
 
-    def plan(self, side: str, pose_wxyz: tuple[float, ...]) -> Trajectory:
-        self.plan_calls.append((side, tuple(pose_wxyz)))
+    def plan(
+        self,
+        side: str,
+        pose_wxyz: tuple[float, ...],
+        constraint: tuple[float, ...] | None = None,
+    ) -> Trajectory:
+        self.plan_calls.append(
+            (side, tuple(pose_wxyz), None if constraint is None else tuple(constraint))
+        )
         if self.fail_plan:
             raise RuntimeError("plan failed")
         q = tuple(tuple(float(i) + j for j in range(7)) for i in range(self.rows))
@@ -78,6 +86,61 @@ def test_plans_exactly_once_for_the_whole_motion():
     move_to(port, "left", target(), WORLD_TO_WORKCELL, settle_ticks=3)
     assert len(port.plan_calls) == 1
     assert port.plan_calls[0][0] == "left"
+
+
+def test_constraint_defaults_to_none_when_not_passed():
+    port = FakePort(rows=1)
+    move_to(port, "left", target(), WORLD_TO_WORKCELL, settle_ticks=0)
+    assert port.plan_calls[0][2] is None
+
+
+def test_constraint_is_forwarded_verbatim_to_plan():
+    port = FakePort(rows=1)
+    move_to(port, "left", target(), WORLD_TO_WORKCELL, settle_ticks=0, constraint=STRAIGHT_LINE)
+    assert port.plan_calls[0][2] == STRAIGHT_LINE
+
+
+def test_straight_line_holds_rotation_and_frees_translation():
+    assert len(STRAIGHT_LINE) == 6
+    assert STRAIGHT_LINE[:3] == (1.0, 1.0, 1.0)
+    assert STRAIGHT_LINE[3:] == (0.0, 0.0, 0.0)
+
+
+def test_slowdown_one_matches_todays_tick_count():
+    port = FakePort(rows=4)
+    motion = move_to(port, "left", target(), WORLD_TO_WORKCELL, settle_ticks=3, slowdown=1)
+    assert motion.ticks == 4 + 3
+    assert port.ticks == 4 + 3
+
+
+def test_slowdown_three_commands_and_logs_each_row_three_times():
+    port = FakePort(rows=4)
+    motion = move_to(port, "left", target(), WORLD_TO_WORKCELL, settle_ticks=3, slowdown=3)
+    assert motion.ticks == 4 * 3 + 3
+    assert port.ticks == 4 * 3 + 3
+    moving = [c for c in port.commands if c[0] == "left"]
+    planned_qs = [tuple(float(i) + j for j in range(7)) for i in range(4)]
+    commanded_qs = [q for _, q, _, _ in moving[: 4 * 3]]
+    expected_qs = [q for q in planned_qs for _ in range(3)]
+    assert commanded_qs == expected_qs
+
+
+def test_slowdown_three_scales_the_commanded_velocity_by_one_third():
+    port = FakePort(rows=2)
+    move_to(port, "left", target(), WORLD_TO_WORKCELL, settle_ticks=0, slowdown=3)
+    moving = [c for c in port.commands if c[0] == "left"]
+    for _, _, qdot, _ in moving:
+        assert qdot == pytest.approx(tuple(0.5 / 3 for _ in range(7)))
+
+
+def test_slowdown_zero_raises_motion_error():
+    with pytest.raises(MotionError, match="slowdown"):
+        move_to(FakePort(), "left", target(), WORLD_TO_WORKCELL, slowdown=0)
+
+
+def test_slowdown_negative_raises_motion_error():
+    with pytest.raises(MotionError, match="slowdown"):
+        move_to(FakePort(), "left", target(), WORLD_TO_WORKCELL, slowdown=-1)
 
 
 def test_executes_every_planned_row_in_order_then_settles_on_the_last():
@@ -123,7 +186,7 @@ def test_explicit_gripper_overrides_the_current_value():
 def test_target_is_converted_out_of_the_workcell_frame_before_planning():
     port = FakePort(rows=1)
     move_to(port, "left", target((0.0, 0.0, 0.74)), WORLD_TO_WORKCELL, settle_ticks=0)
-    (_, pose_wxyz) = port.plan_calls[0]
+    (_, pose_wxyz, _) = port.plan_calls[0]
     # Workcell (0,0,0.74) maps back to world (0,0,0) under this transform.
     assert pose_wxyz[:3] == pytest.approx((0.0, 0.0, 0.0), abs=1e-9)
 
