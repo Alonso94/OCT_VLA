@@ -760,6 +760,57 @@ and its base is at `x = -0.4`; the deck is wider (0.40 -> 0.60m) to hold a
 row; and every object in an episode is the same asset variant, so a row's
 geometry does not change size mid-sequence for reasons the policy cannot see.
 
+## Oracle: the episode state machine
+
+`oracle/expert.py` is the oracle proper. Everything before it was a piece --
+grasp candidates, placement, push geometry, motion primitives -- exercised
+only from a throwaway script, which meant the repo itself could not produce a
+demonstration. `ShelfRestockExpert.transfer` runs one atomic transfer and
+`run` drives `ShelfRestockManager` until the lower shelf is empty, returning a
+`TransferRecord` per transfer: the `TaskContext`, and every motion actually
+commanded paired with its phase label.
+
+It is written against the `NativePort` protocol and an injected `observe`
+callable rather than against SAPIEN, so the whole sequence is unit-testable
+with fakes -- which phases run, in what order, on which arm, with which
+`allow_contact_with` and `ignore_object`. Those last two are the arguments
+most likely to be silently wrong and the hardest to observe, since `move_to`
+consumes both internally rather than forwarding them to the port; testing them
+needs a fake that schedules contacts per call. That is a seam worth
+revisiting.
+
+Two things are injected rather than hardcoded, both deliberately. `home_poses`
+are each arm's *measured* rest pose, read at reset: a measured pose is
+known-reachable by construction where a hand-chosen constant is not.
+`body_names` maps track_id to SAPIEN body name, because the planner's world is
+keyed by track_id while contact reports use body names -- two identifiers for
+the same object, and conflating them would let a collision with any object be
+excused as contact with the held one.
+
+`ExpertError` is separate from `MotionError`: the first means the plan is not
+viable (no grasp fits, the geometry is unreachable, the object is missing),
+the second means a motion was attempted and failed. `run` lets both propagate
+-- a partial episode is a failed demonstration, not a shorter successful one.
+
+Live at seed 0, first run: three transfers, two compactions, the lower shelf
+emptied, compaction gaps of 0.0029m and 0.0049m, and 61 seconds of execution
+for the whole episode. That last number matters for data collection: the
+minutes-long figure this work had been assuming was cuRobo's warmup at reset
+(~41s), not the episode itself.
+
+### Not yet done, from the plan's oracle description
+
+Three steps the research plan lists are still missing: **verify grasp**,
+**verify support**, and **attach**. The held object is currently *deleted*
+from the planner's world while carried (`ignore_object`) rather than attached
+to the arm, so its volume is not accounted for during transport.
+
+The recording contract is also not implemented. The plan calls for freezing an
+`ExpertEpisodePlan` after generation and validation, then resetting and
+replaying that exact plan without replanning, so that generation success and
+physical replay success are measured separately. The expert currently plans
+and executes in one pass and cannot distinguish them.
+
 ## Action, frame, and timing contracts
 
 The sole learned action is a 14-D Cartesian step:
