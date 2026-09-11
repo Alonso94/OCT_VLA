@@ -59,6 +59,39 @@ variants and documented geometry.
 Reserve seed ranges before collection. Do not revise membership after observing
 policy scores.
 
+### Reserved seed ranges
+
+Fixed before any collection run. A seed belongs to exactly one split, so a
+scene can never move between train and test after the fact.
+
+| Split | Profile | Reserved seeds | Successes needed |
+| --- | --- | --- | ---: |
+| Train | `three_object` | 100-199 | 30 |
+| IID validation | `three_object` | 200-249 | 10 |
+| Final offline test | `three_object` | 250-349 | 20 |
+| Count-shift validation | `two_object` | 400-449 | 10 |
+| Final offline test | `two_object` | 450-549 | 20 |
+| Count-shift validation | `four_object` | 600-649 | 10 |
+| Final offline test | `four_object` | 650-749 | 20 |
+
+Selection rule, fixed in advance: within a block, take successful seeds in
+ascending order until the split's target is met and ignore the remainder.
+That is what makes a top-up safe -- extending into the unused tail of a block
+cannot change which scenes are already in the split.
+
+Seeds below 100 are not reserved: they were used by the superseded 27-clip
+development dataset and by ad-hoc feasibility runs.
+
+Every reserved seed is under 1000 on purpose. `collect_shelf_restock_array.sbatch`
+uses the Slurm array index as the scene seed, and Slurm's default
+`MaxArraySize` is 1001, so a seed of e.g. 10000 is rejected at submission with
+an invalid job array specification. Keep any future block under that ceiling,
+or give the array script its own seed base.
+
+A discarded seed is spent. Replace it by extending into the same block's
+unused tail, never by re-running it -- the failure does not depend on how many
+times the seed is asked.
+
 | Set | Profile | Successful source scenes | Use |
 | --- | --- | ---: | --- |
 | Train | 3 objects | 30 | Fit both policies |
