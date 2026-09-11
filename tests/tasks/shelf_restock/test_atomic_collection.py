@@ -16,9 +16,11 @@ from oct_vla.data.episode import Episode
 from oct_vla.data.recording import CapturedFrame, build_episode, label_spans
 from oct_vla.data.store import read_episode
 from oct_vla.tasks.shelf_restock.collect import (
+    CollectionError,
     atomic_clips,
     collect_dataset,
     collect_n_atomic_demonstrations,
+    profile_name,
 )
 from oct_vla.tasks.shelf_restock.oracle.expert import TransferRecord
 from oct_vla.tasks.shelf_restock.oracle.motion import ExecutedMotion
@@ -281,3 +283,21 @@ def test_collect_dataset_attempts_exactly_the_given_seeds_once_each(tmp_path, mo
     assert statuses[1] == "discarded"
     assert statuses[0] == "ok"
     assert statuses[2] == "ok"
+
+
+@pytest.mark.parametrize(
+    "object_count,expected",
+    [(2, "two_object"), (3, "three_object"), (4, "four_object")],
+)
+def test_profile_name_maps_each_supported_object_count(object_count, expected):
+    """Every profile shares one geometry and differs only in object count, so
+    the count names the profile exactly -- this is recorded into episode
+    metadata and is what a split audit keys on."""
+    assert profile_name(object_count) == expected
+
+
+def test_profile_name_rejects_a_count_no_profile_spawns():
+    """Better to fail loudly than to silently label an unknown scene as one of
+    the real profiles -- mislabelled provenance is invisible downstream."""
+    with pytest.raises(CollectionError, match="6"):
+        profile_name(6)

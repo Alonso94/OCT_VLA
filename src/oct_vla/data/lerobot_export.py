@@ -8,11 +8,14 @@ documented in ``docs/setup.md``.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 
 from oct_vla.data.episode import Episode, validate_episode
+from oct_vla.data.object_tokens import ObjectTokenSpec, object_tokens
 from oct_vla.data.store import read_episode
 
 CAMERA_FEATURES = {
@@ -56,7 +59,9 @@ def _state_vector(episode: Episode, index: int) -> tuple[float, ...]:
     )
 
 
-def _features(episode: Episode) -> dict[str, dict]:
+def _features(
+    episode: Episode, *, object_token_spec: ObjectTokenSpec | None = None
+) -> dict[str, dict]:
     observation = episode.samples[0].observation
     features = {
         "observation.state": {
@@ -92,6 +97,17 @@ def _features(episode: Episode) -> dict[str, dict]:
             "shape": (frame.height, frame.width, 3),
             "names": ["height", "width", "channel"],
         }
+    if object_token_spec is not None:
+        features["observation.object_tokens"] = {
+            "dtype": "float32",
+            "shape": (object_token_spec.max_objects, object_token_spec.token_dim),
+        }
+        # Float avoids an Arrow bool/nested-array incompatibility in LeRobot v3
+        # and is converted to bool by the policy branch.
+        features["observation.object_token_mask"] = {
+            "dtype": "float32",
+            "shape": (object_token_spec.max_objects,),
+        }
     return features
 
 
@@ -108,6 +124,18 @@ def _fps(episode: Episode) -> int:
     return rounded
 
 
+def _source_manifest_entry(index: int, source: Path, episode: Episode) -> dict:
+    payload = (source / "episode.json").read_bytes()
+    return {
+        "lerobot_episode_index": index,
+        "source_episode": source.name,
+        "episode_json_sha256": sha256(payload).hexdigest(),
+        "seed": episode.seed,
+        "samples": len(episode.samples),
+        "metadata": dict(episode.metadata),
+    }
+
+
 def export_episodes(
     sources: Iterable[str | Path],
     output: str | Path,
@@ -116,6 +144,7 @@ def export_episodes(
     robot_type: str = "robotwin_franka_bimanual",
     include_unsuccessful: bool = False,
     append: bool = False,
+    object_token_spec: ObjectTokenSpec | None = None,
 ) -> ExportReport:
     """Convert canonical episode directories into a new local LeRobot dataset.
 
@@ -161,7 +190,7 @@ def export_episodes(
             root=destination,
             fps=fps,
             robot_type=robot_type,
-            features=_features(accepted[0][1]),
+            features=_features(accepted[0][1], object_token_spec=object_token_spec),
             use_videos=True,
         )
     for _, episode in accepted:
@@ -171,6 +200,10 @@ def export_episodes(
                 "action": np.asarray(sample.action.to_vector(), dtype=np.float32),
                 "task": sample.context.instruction,
             }
+            if object_token_spec is not None:
+                tokens, mask = object_tokens(sample.scene, sample.context, spec=object_token_spec)
+                frame["observation.object_tokens"] = np.asarray(tokens, dtype=np.float32)
+                frame["observation.object_token_mask"] = np.asarray(mask, dtype=np.float32)
             for attr, feature_name in CAMERA_FEATURES.items():
                 rgb = getattr(sample.observation, attr)
                 frame[feature_name] = np.frombuffer(rgb.data, dtype=np.uint8).reshape(
@@ -179,4 +212,13 @@ def export_episodes(
             dataset.add_frame(frame)
         dataset.save_episode(parallel_encoding=False)
     dataset.finalize()
+    manifest = {
+        "format": "oct-vla-episode-provenance-v1",
+        "repo_id": repo_id,
+        "episodes": [
+            _source_manifest_entry(index, source, episode)
+            for index, (source, episode) in enumerate(accepted)
+        ],
+    }
+    (destination / "octvla_episode_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     return ExportReport(destination, tuple(source for source, _ in accepted), tuple(skipped))

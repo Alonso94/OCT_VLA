@@ -33,6 +33,20 @@ def _range(value: tuple[float, float], name: str) -> tuple[float, float]:
     return lo, hi
 
 
+# The hand is wider than the object it grasps: cuRobo's own collision spheres
+# put panda_hand's outermost centres at y=+-0.08 with radius 0.023, so it is
+# ~0.10m from the grasp axis to the outside of the hand. Spawning objects
+# closer than that means descending onto one shoves its neighbour -- observed
+# live as panda_hand <-> restock_object_1 during a descent, which the oracle's
+# contact check now rejects outright (docs/architecture.md).
+#
+# It lives here rather than in robotwin_env because it is task geometry, not
+# simulator wiring: the spawn span in DEFAULT_SPEC is sized directly against
+# it, and this module imports nothing from RoboTwin so that invariant can be
+# asserted in a unit test.
+MIN_OBJECT_SEPARATION = 0.15
+
+
 def _positive(value: float, name: str) -> float:
     (value,) = finite_values((value,), 1)
     if value <= 0:
@@ -143,13 +157,24 @@ class ShelfRestockSpec:
             raise ValueError("instruction must be a nonempty string")
 
 
-# Objects now spawn only on the left half (x in [-0.34, 0.0]): ROLE_ARMS
-# (oracle/arms.py) fixes the left arm as the one that both grasps and places,
-# with its base at x=-0.4 (the right arm's base is at x=+0.4), and spawning
-# across the full width forced that arm into cross-body reaches. lower_shelf's
-# x half-extent grew to 0.36 purely so `contains()` still covers the whole
-# spawn range -- it is the region test widening, not new physical deck
-# geometry.
+# Objects spawn on the left half: ROLE_ARMS (oracle/arms.py) fixes the left
+# arm as the one that both grasps and places, with its base at x=-0.4 (the
+# right arm's base is at x=+0.4), and spawning across the full width forced
+# that arm into cross-body reaches. lower_shelf's x half-extent is sized
+# purely so `contains()` still covers the whole spawn range -- it is the
+# region test widening, not new physical deck geometry.
+#
+# The spawn span is deliberately sized for the LARGEST profile rather than the
+# default one. Every profile -- two, three and four objects -- shares this one
+# spec and differs only in `object_count` (robotwin_env.py), so that a
+# count-shift evaluation result attributes to the object count alone. Sizing
+# per profile instead, as an earlier revision did, meant the four-object
+# profile also moved the spawn region, and a policy evaluated on it faced a
+# combined count-and-position shift that could not be attributed to either.
+# Four objects at MIN_OBJECT_SEPARATION reserve 0.45m
+# of gap, so the span carries margin above that -- the sampler subtracts the
+# reserved gaps and must not reject a harmless floating-point residual as
+# negative. Two and three objects fit trivially inside the same span.
 #
 # The upper deck must also not overhang where objects spawn: a top-down grasp
 # puts the wrist links above the object, so an object under the deck cannot be
@@ -161,12 +186,13 @@ class ShelfRestockSpec:
 # deliberately not moved further forward than that: the deck's near edge is
 # now y=-0.12 and the spawn zone starts at y=-0.24, preserving the same 0.12m
 # of clearance the original placement was chosen to guarantee. The deck is
-# also wider in x (0.40 -> 0.60) to hold a row of objects.
+# unchanged by the spawn widening -- a four-object placement chain was
+# verified live against exactly this deck (seed 1004, 4/4 clips).
 DEFAULT_SPEC = ShelfRestockSpec(
-    lower_shelf=ShelfRegion("lower_shelf", (0.0, -0.25, 0.74), (0.36, 0.10, 0.01)),
+    lower_shelf=ShelfRegion("lower_shelf", (-0.07, -0.25, 0.74), (0.50, 0.10, 0.01)),
     upper_shelf=ShelfRegion("upper_shelf", (0.0, -0.06, 0.92), (0.30, 0.06, 0.015)),
     object_variation=ObjectVariation(
-        position_x_range=(-0.34, 0.0),
+        position_x_range=(-0.49, -0.02),
         position_y_range=(-0.32, -0.24),
         yaw_range=(-0.4, 0.4),
         size_xyz_range=((0.03, 0.06), (0.03, 0.06), (0.03, 0.08)),

@@ -4,6 +4,7 @@ import pytest
 
 from oct_vla.tasks.shelf_restock.spec import (
     DEFAULT_SPEC,
+    MIN_OBJECT_SEPARATION,
     ObjectVariation,
     ShelfRegion,
     ShelfRestockSpec,
@@ -124,3 +125,14 @@ def test_object_spawn_zone_lies_within_the_lower_shelf():
         region_lo = lower.center_xyz[axis] - lower.half_extent_xyz[axis]
         region_hi = lower.center_xyz[axis] + lower.half_extent_xyz[axis]
         assert region_lo <= lo and hi <= region_hi
+
+
+@pytest.mark.parametrize("object_count", [2, 3, 4])
+def test_the_shared_spawn_span_fits_every_profiles_object_count(object_count):
+    """One spawn span serves every profile, so it has to be sized for the
+    largest -- four objects need three MIN_OBJECT_SEPARATION gaps. The sampler
+    subtracts the reserved gaps and raises on a negative residual, so a span
+    that only just fits would fail on floating-point noise."""
+    low, high = DEFAULT_SPEC.object_variation.position_x_range
+    reserved = MIN_OBJECT_SEPARATION * (object_count - 1)
+    assert (high - low) - reserved > 0.0

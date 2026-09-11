@@ -48,6 +48,24 @@ class CollectionError(RuntimeError):
     """The episode could not be recorded at all."""
 
 
+#: Collection profile names, keyed by how many objects the scene spawns.
+#: Every profile shares one geometry and differs only in object count (see
+#: spec.DEFAULT_SPEC), so the count identifies the profile exactly rather than
+#: standing in for it.
+PROFILE_NAMES = {2: "two_object", 3: "three_object", 4: "four_object"}
+
+
+def profile_name(object_count: int) -> str:
+    """The collection profile a scene of `object_count` objects belongs to."""
+    try:
+        return PROFILE_NAMES[object_count]
+    except KeyError:
+        raise CollectionError(
+            f"no collection profile spawns {object_count} objects; "
+            f"known profiles are {sorted(PROFILE_NAMES)}"
+        ) from None
+
+
 def atomic_clips(
     frames: Sequence[CapturedFrame], records: Sequence[TransferRecord]
 ) -> tuple[tuple[TransferRecord, tuple[CapturedFrame, ...]], ...]:
@@ -191,6 +209,8 @@ def collect_episode(
             success=True,
             metadata={
                 "task": type(task).__name__,
+                "task_profile": profile_name(len(tracked)),
+                "object_count": str(len(tracked)),
                 "episode_kind": "atomic_restock",
                 "transfers": "1",
                 "transfer_index": str(index),

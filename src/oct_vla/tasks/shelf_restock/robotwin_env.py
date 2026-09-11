@@ -29,15 +29,12 @@ from oct_vla.robots.robotwin.assets import (
 )
 from oct_vla.robots.robotwin.backend import decode_pose, encode_pose
 from oct_vla.tasks.shelf_restock.oracle.world import install_world_patch, register_objects
-from oct_vla.tasks.shelf_restock.spec import DEFAULT_SPEC, ShelfRestockSpec
+from oct_vla.tasks.shelf_restock.spec import (
+    DEFAULT_SPEC,
+    MIN_OBJECT_SEPARATION,
+    ShelfRestockSpec,
+)
 
-# The hand is wider than the object it grasps: cuRobo's own collision spheres
-# put panda_hand's outermost centres at y=+-0.08 with radius 0.023, so it is
-# ~0.10m from the grasp axis to the outside of the hand. Spawning objects
-# closer than that means descending onto one shoves its neighbour -- observed
-# live as panda_hand <-> restock_object_1 during a descent, which the oracle's
-# contact check now rejects outright (docs/architecture.md).
-MIN_OBJECT_SEPARATION = 0.15
 #: Head-camera placement, overriding the embodiment's stock pose. RoboTwin's
 #: default framing was chosen for tabletop tasks and does not see the upper
 #: shelf; this pulls the camera back and up so both shelf levels and the
@@ -47,9 +44,19 @@ MIN_OBJECT_SEPARATION = 0.15
 #: RoboTwin reads the static camera list from `left_embodiment_config` only
 #: (envs/camera/camera.py), so overriding that one list is sufficient --
 #: writing to the right arm's copy as well would have no effect.
+#:
+#: Framed against the widest profile (four objects), not the default one. The
+#: previous values were chosen when objects spawned within x in [-0.34, 0.0];
+#: once the spawn span widened to cover four objects, a rendered frame showed
+#: the row pushed onto the bottom edge with the outermost object clipped, so
+#: an RGB-only policy had no view of the object it was being asked to restock.
+#: Shifting the camera to the scene's own x centre and tilting slightly
+#: further down puts every spawned object and the whole deck inside the frame
+#: with margin. Checked by rendering a reset frame per profile rather than
+#: derived -- see outputs/camera_check.
 HEAD_CAMERA_OVERRIDE = {
-    "position": [-0.032, -0.9, 1.7],
-    "forward": [0, 0.75, -0.66],
+    "position": [-0.11, -0.95, 1.75],
+    "forward": [0, 0.72, -0.70],
     "left": [-1, 0, 0],
 }
 
@@ -209,6 +216,23 @@ class ShelfRestockTask(Base_Task):
             measured.position, measured.orientation, entry.upright_rotation, entry.center_offset
         )
         return position
+
+
+# Count-shift profiles. They deliberately inherit `spec` rather than defining
+# their own: the shared spawn span is already sized for the largest of them
+# (see DEFAULT_SPEC), so `object_count` is the only thing that differs and a
+# count-shift result cannot be confounded by a change of geometry. Never used
+# for training data -- ShelfRestockTask itself is the training profile.
+class ShelfRestockTwoObjectTask(ShelfRestockTask):
+    """Sparse count-shift evaluation profile."""
+
+    object_count = 2
+
+
+class ShelfRestockFourObjectTask(ShelfRestockTask):
+    """Crowded count-shift evaluation profile."""
+
+    object_count = 4
 
 
 class TrackedObject:
