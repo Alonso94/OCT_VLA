@@ -290,8 +290,44 @@ def test_push_is_computed_from_the_reobserved_pose_not_the_planned_one():
     push_pose = decoded_pose(port.plan_calls[push_index][1])
 
     assert contact_pose.position == pytest.approx(expected_push.start_pose.position, abs=1e-6)
-    assert push_pose.position == pytest.approx(expected_push.end_pose.position, abs=1e-6)
+    # Travel axis (x) comes from the re-observed object, which is the point of
+    # this test. y and z deliberately do not: they are re-aimed at the arm's
+    # own achieved pose so the straight-push constraint is satisfiable from
+    # the first waypoint (see _straight_push_to).
+    assert push_pose.position[0] == pytest.approx(expected_push.end_pose.position[0], abs=1e-6)
     assert contact_pose.position != pytest.approx(naive_push.start_pose.position, abs=1e-6)
+
+
+def test_the_push_goal_ends_on_the_row_line_at_the_arms_achieved_height():
+    """A closed gripper is a narrow nub against a much wider object face, so
+    an off-centre contact torques the object and it walks toward the shelf's
+    front edge as it slides -- measured at ~20mm over a ~100mm push. Ending
+    the push on the row's own y turns what lateral motion the blade has into
+    a correction toward the line the row sits on. Height still comes from the
+    arm, which is the authority on where it actually is."""
+    target = target_obj()
+    neighbor = neighbor_obj()
+    scene = ObjectScene(0.0, (target, neighbor))
+    port = FakePort()
+    expert = make_expert(port, lambda: scene)
+    context = TaskContext(
+        instruction=DEFAULT_SPEC.instruction,
+        target_track_id="target",
+        previous_neighbor_track_id="neighbor",
+    )
+    expert.transfer(context)
+
+    move_phases = (
+        NO_COMPACTION_PHASES[1:3]
+        + NO_COMPACTION_PHASES[4:7]
+        + (NO_COMPACTION_PHASES[8],)
+        + tuple(phase for phase in COMPACTION_PHASES if phase != "compact close")
+    )
+    push_pose = decoded_pose(port.plan_calls[move_phases.index("compact push")][1])
+    achieved = WORLD_TO_WORKCELL.apply_pose(decode_pose(port.read().right.pose_wxyz))
+
+    assert push_pose.position[1] == pytest.approx(DEFAULT_SPEC.upper_shelf.center_xyz[1], abs=1e-6)
+    assert push_pose.position[2] == pytest.approx(achieved.position[2], abs=1e-6)
 
 
 def test_ignore_object_is_the_targets_track_id_on_carrying_phases():

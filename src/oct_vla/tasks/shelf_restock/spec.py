@@ -171,7 +171,7 @@ class ShelfRestockSpec:
 # per profile instead, as an earlier revision did, meant the four-object
 # profile also moved the spawn region, and a policy evaluated on it faced a
 # combined count-and-position shift that could not be attributed to either.
-# Four objects at MIN_OBJECT_SEPARATION reserve 0.45m
+# Four objects at MIN_OBJECT_SEPARATION (0.15m, defined above) reserve 0.45m
 # of gap, so the span carries margin above that -- the sampler subtracts the
 # reserved gaps and must not reject a harmless floating-point residual as
 # negative. Two and three objects fit trivially inside the same span.
@@ -183,17 +183,28 @@ class ShelfRestockSpec:
 # (-0.05, oracle/arms.py): at y=-0.02, every placement past |x|=0.15 fell
 # inside a measured cross-body-unreachable region, making it impossible for
 # the right arm (compaction) to reach what the left arm had placed. It is
-# deliberately not moved further forward than that: the deck's near edge is
-# now y=-0.12 and the spawn zone starts at y=-0.24, preserving the same 0.12m
-# of clearance the original placement was chosen to guarantee. The deck is
-# unchanged by the spawn widening -- a four-object placement chain was
-# verified live against exactly this deck (seed 1004, 4/4 clips).
+# deliberately not moved further forward than that.
+#
+# The deck's near edge sits at y=-0.12 and the spawn zone now starts at
+# y=-0.20, so the grasp clearance between them is 0.08m -- down from the 0.12m
+# the deck's position was originally chosen to guarantee, because the spawn
+# rows were later moved forward. `contains()`-level overhang is still ruled
+# out (tests/tasks/shelf_restock/test_spec.py asserts it), but the margin is
+# thinner than it was; moving the spawn any further forward eats into the room
+# the wrist needs above a spawned object.
+#
+# upper_shelf's x centre is offset to -0.06 rather than sitting on the
+# workcell midline. The placement chain starts one step to the -x side of that
+# centre and grows +x (see plan_placement), so with a centre of 0.0 a
+# four-object row put its last placement near x=+0.13 -- past where the left
+# arm could plan to at the deck's y, and the fourth transfer failed on both
+# seeds tried. Offsetting the centre moves the whole row back into reach.
 DEFAULT_SPEC = ShelfRestockSpec(
     lower_shelf=ShelfRegion("lower_shelf", (-0.07, -0.25, 0.74), (0.50, 0.10, 0.01)),
-    upper_shelf=ShelfRegion("upper_shelf", (0.0, -0.06, 0.92), (0.30, 0.06, 0.015)),
+    upper_shelf=ShelfRegion("upper_shelf", (-0.06, -0.06, 0.92), (0.30, 0.06, 0.015)),
     object_variation=ObjectVariation(
         position_x_range=(-0.49, -0.02),
-        position_y_range=(-0.32, -0.24),
+        position_y_range=(-0.28, -0.20),
         yaw_range=(-0.4, 0.4),
         size_xyz_range=((0.03, 0.06), (0.03, 0.06), (0.03, 0.08)),
     ),

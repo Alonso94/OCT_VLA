@@ -5,7 +5,11 @@ import pytest
 from oct_vla.core.frames import WORKCELL_FRAME, Pose
 from oct_vla.core.geometry import exp, rotate
 from oct_vla.core.objects import ObjectScene, ObjectState, TaskContext
-from oct_vla.tasks.shelf_restock.oracle.grasps import GRASP_TCP_OFFSET
+from oct_vla.tasks.shelf_restock.oracle.grasps import (
+    DEFAULT_GRASP_DEPTH,
+    GRASP_TCP_OFFSET,
+    holding_tcp_pose,
+)
 from oct_vla.tasks.shelf_restock.oracle.placement import (
     COMPACTED_GAP,
     CONTACT_CLEARANCE,
@@ -188,7 +192,7 @@ def test_a_three_object_chain_stays_within_reach_of_the_deck_centre():
 
 
 def test_commanded_pose_accounts_for_the_tcp_offset_and_object_height():
-    height, depth = 0.05, 0.015
+    height, depth = 0.05, DEFAULT_GRASP_DEPTH
     placement = plan_placement(
         DEFAULT_SPEC, obj(size=(0.04, 0.04, height)), 0.0, None, standoff=0.09
     )
@@ -322,38 +326,39 @@ def test_push_axis_half_extent_is_half_the_y_size_when_yawed_a_quarter_turn():
     assert push_axis_half_extent(yawed) == pytest.approx(0.015)
 
 
-def test_push_path_constraint_pins_all_rotation_and_leaves_two_translations_free():
+def test_push_path_constraint_frees_rotation_and_pins_two_translations():
+    """Rotational freedom is not incidental: every variant that pins the
+    rotations as well as both translations is refused outright by cuRobo."""
     assert len(PUSH_PATH_CONSTRAINT) == 6
-    assert PUSH_PATH_CONSTRAINT[0:3] == (1.0, 1.0, 1.0)
-    assert sum(PUSH_PATH_CONSTRAINT[3:6]) == pytest.approx(1.0)
-    assert PUSH_PATH_CONSTRAINT[3:6].count(1.0) == 1
+    assert PUSH_PATH_CONSTRAINT[0:3] == (0.0, 0.0, 0.0)
+    assert sum(PUSH_PATH_CONSTRAINT[3:6]) == pytest.approx(2.0)
+    assert PUSH_PATH_CONSTRAINT[3:6].count(0.0) == 1
 
 
-def test_push_path_constraint_pins_exactly_the_vertical_axis():
-    """Derivation, not restatement: find which local axis actually maps onto
-    world-vertical (z) under the push's own orientation, and check that
-    PUSH_PATH_CONSTRAINT holds exactly that translation index (plus all
-    three rotations) and frees the other two. This is the test that would
-    catch someone changing the push orientation without re-deriving the
-    constraint -- the fully strict vector that also held the travel axis
-    was tried and cuRobo refused to plan it, so height is the one component
-    this constraint can afford to pin."""
+def test_push_path_constraint_frees_exactly_the_axis_the_push_travels_along():
+    """Derivation, not restatement: find which local axis actually carries the
+    travel under the push's own orientation, and check the constraint frees
+    that one and pins the other two translations. Leaving a non-travel
+    translation free is what let a logged push wander 43mm toward the shelf's
+    front edge. This is the test that would catch someone changing the push
+    orientation without re-deriving the constraint."""
     target = obj(position=(-0.004, -0.02, 0.96))
     push = plan_push(target, -0.062, standoff=0.1)
     orientation = push.start_pose.orientation
+    travel = tuple(
+        e - s for s, e in zip(push.start_pose.position, push.end_pose.position, strict=True)
+    )
 
-    vertical_axes = []
+    travel_axes = []
     for i, local_axis in enumerate([(1, 0, 0), (0, 1, 0), (0, 0, 1)]):
         world_axis = rotate(orientation, local_axis)
-        if abs(world_axis[2]) == pytest.approx(1.0, abs=1e-6):
-            vertical_axes.append(i)
+        if abs(sum(a * b for a, b in zip(world_axis, travel, strict=True))) > 1e-9:
+            travel_axes.append(i)
 
-    assert len(vertical_axes) == 1
-    vertical_axis = vertical_axes[0]
+    assert len(travel_axes) == 1
     for i in range(3):
-        expected = 1.0 if i == vertical_axis else 0.0
+        expected = 0.0 if i == travel_axes[0] else 1.0
         assert PUSH_PATH_CONSTRAINT[3 + i] == pytest.approx(expected)
-    assert PUSH_PATH_CONSTRAINT[0:3] == (1.0, 1.0, 1.0)
 
 
 def test_plan_push_populates_the_push_with_the_path_constraint():
@@ -371,3 +376,42 @@ def test_push_axis_half_extent_exceeds_horizontal_radius_for_a_box_yawed_45_degr
         "target", Pose(position, exp((0.0, 0.0, pi / 4))), (0.054, 0.0479, 0.0774), 1.0, 1.0
     )
     assert push_axis_half_extent(yawed) > horizontal_radius(yawed)
+
+
+def test_a_yawed_object_is_placed_upright_regardless_of_its_spawn_tilt():
+    """The object is rigid with the gripper from grasp to release, so
+    commanding the grasp's own wrist yaw at place time would set it down at
+    whatever angle it spawned at. plan_placement instead cancels the
+    object's spawn yaw out of the place wrist yaw so it always lands
+    axis-aligned with the shelf."""
+    spawn_yaw = 0.3265
+    tilted = ObjectState(
+        "target", Pose((0.0, -0.02, 0.96), exp((0.0, 0.0, spawn_yaw))), (0.04, 0.04, 0.05), 1.0, 1.0
+    )
+    grasp_wrist_yaw = spawn_yaw  # a real grasp candidate's wrist_yaw = object_yaw + offset
+    placement = plan_placement(DEFAULT_SPEC, tilted, grasp_wrist_yaw, None, standoff=0.1)
+
+    assert placement.object_pose.orientation == pytest.approx((0.0, 0.0, 0.0, 1.0))
+    # The commanded wrist yaw must differ from the grasp's own by exactly the
+    # object's spawn yaw -- that is what un-rotates the held object to upright.
+    straight_pose = holding_tcp_pose(
+        placement.object_pose.position, tilted.size_xyz[2], 0.0, grasp_depth=DEFAULT_GRASP_DEPTH
+    )
+    assert rotate(placement.place_pose.orientation, (0, 0, 1)) == pytest.approx(
+        rotate(straight_pose.orientation, (0, 0, 1)), abs=1e-9
+    )
+
+
+def test_a_chained_placement_holds_the_rows_nominal_y_not_the_neighbours_observed_y():
+    """A neighbour's re-observed y can drift a little from where it was
+    commanded (real placement noise), and letting that drift carry into the
+    next object's target would compound down a chain. The row instead always
+    targets the shelf's own nominal y -- the same value the first,
+    no-neighbour placement uses -- so every object in the row lands on one
+    line."""
+    shelf_y = DEFAULT_SPEC.upper_shelf.center_xyz[1]
+    drifted_neighbour = obj("neighbor", position=(-0.05, shelf_y + 0.01, 0.96))
+    placement = plan_placement(DEFAULT_SPEC, obj(), 0.0, drifted_neighbour, standoff=0.1)
+
+    assert placement.object_pose.position[1] == pytest.approx(shelf_y)
+    assert placement.compacted_object_pose.position[1] == pytest.approx(shelf_y)

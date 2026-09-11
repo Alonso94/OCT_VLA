@@ -56,7 +56,12 @@ _HAND_REACH_BELOW_TCP = 0.0397 + 0.045 + 0.022
 MAX_GRASP_DEPTH = GRASP_TCP_OFFSET - _HAND_REACH_BELOW_TCP
 
 #: Default pad depth below the top face, comfortably inside MAX_GRASP_DEPTH.
-DEFAULT_GRASP_DEPTH = 0.015
+#: Raised from 0.015: at 15mm the pads sit ~62mm above a 77mm object's base,
+#: a high grip with a long lever arm under it, so an off-centre catch tilts
+#: the object and it swings while being carried. 18mm is as low as this can
+#: usefully go -- MAX_GRASP_DEPTH is 20.4mm, past which panda_hand's own body
+#: reaches the object during the descent.
+DEFAULT_GRASP_DEPTH = 0.018
 
 
 @dataclass(frozen=True)

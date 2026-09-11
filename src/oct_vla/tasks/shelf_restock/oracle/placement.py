@@ -43,7 +43,7 @@ PLACEMENT_GAP = 0.06
 
 #: Surface gap after compaction: close enough to read as "pushed together",
 #: with a little clearance so the nudge does not rely on interpenetration.
-COMPACTED_GAP = 0.005
+COMPACTED_GAP = 0.002
 
 #: Lateral gap left between the closed gripper's own pushing face and the
 #: object's trailing face while descending beside it, so the descent does not
@@ -110,10 +110,19 @@ def resting_z(spec: ShelfRestockSpec, obj: ObjectState) -> float:
 
 
 def _offset_position(
-    neighbour: ObjectState, obj: ObjectState, gap: float, direction: float, z: float
+    neighbour: ObjectState, obj: ObjectState, gap: float, direction: float, y: float, z: float
 ):
+    """`obj`'s x,z beside `neighbour`, at `y` -- not the neighbour's own y.
+
+    A chained row must hold to one fixed y line, or each object's real
+    placement noise carries into where the next one is aimed: y here is
+    always the row's own nominal y (spec.upper_shelf.center_xyz[1], the same
+    value the first, no-neighbour placement uses), so every object in the row
+    lands on the same line as the first, not wherever its neighbour actually
+    settled.
+    """
     reach = horizontal_radius(neighbour) + horizontal_radius(obj) + gap
-    return (neighbour.pose.position[0] + direction * reach, neighbour.pose.position[1], z)
+    return (neighbour.pose.position[0] + direction * reach, y, z)
 
 
 def _placement_direction(
@@ -199,66 +208,74 @@ def plan_placement(
         compacted = None
     else:
         direction = _placement_direction(spec, neighbour, obj, side)
-        position = _offset_position(neighbour, obj, PLACEMENT_GAP, direction, z)
-        compacted = _offset_position(neighbour, obj, COMPACTED_GAP, direction, z)
+        row_y = spec.upper_shelf.center_xyz[1]
+        position = _offset_position(neighbour, obj, PLACEMENT_GAP, direction, row_y, z)
+        compacted = _offset_position(neighbour, obj, COMPACTED_GAP, direction, row_y, z)
 
     if not spec.upper_shelf.contains(position):
         raise PlacementError(
             f"placement {tuple(round(v, 3) for v in position)} is not on the upper shelf"
         )
 
-    place_pose = holding_tcp_pose(position, obj.size_xyz[2], wrist_yaw, grasp_depth=grasp_depth)
+    # `wrist_yaw` is the grasp's own wrist yaw (object_yaw + a 0 or pi/2
+    # gripper-face offset, see generate_top_down_grasps): commanding that same
+    # yaw at place time would set the object down at whatever angle it
+    # happened to spawn at, since the object is rigid with the gripper from
+    # grasp to release. Subtracting the object's own spawn yaw cancels that
+    # out and leaves only the gripper-face offset, which is exactly upright
+    # -- so every placed object lands axis-aligned with the shelf instead of
+    # carrying its random spawn tilt forward.
+    object_yaw = log(obj.pose.orientation)[2]
+    upright_wrist_yaw = wrist_yaw - object_yaw
+    place_pose = holding_tcp_pose(
+        position, obj.size_xyz[2], upright_wrist_yaw, grasp_depth=grasp_depth
+    )
+    upright = (0.0, 0.0, 0.0, 1.0)
     return Placement(
-        object_pose=Pose(position, obj.pose.orientation, WORKCELL_FRAME),
+        object_pose=Pose(position, upright, WORKCELL_FRAME),
         place_pose=place_pose,
         preplace_pose=backed_off(place_pose, standoff),
-        compacted_object_pose=(
-            Pose(compacted, obj.pose.orientation, WORKCELL_FRAME) if compacted else None
-        ),
+        compacted_object_pose=(Pose(compacted, upright, WORKCELL_FRAME) if compacted else None),
     )
 
 
 #: cuRobo `hold_vec_weight` for a push, evaluated in the goal (end-effector)
 #: frame since `PoseCostConfig.project_distance` defaults True and nothing
-#: here overrides it. This lives here, coupled to `plan_push`'s orientation,
-#: rather than alongside `motion.STRAIGHT_LINE`: which index means the
-#: vertical depends entirely on which local axis maps to world-up under THIS
-#: orientation, so the mapping and the constraint have to move together or
-#: they will silently drift apart.
+#: here overrides it. Indices 0-2 are rotation, 3-5 translation.
 #:
-#: Under `multiply(exp((0.0, 0.0, pi / 2)), POINTING_DOWN)` the local axes
-#: map to world as:
-#:   local +X -> (0, 0, -1)   the vertical -- this is the one to hold
-#:   local +Y -> (0, -1, 0)
+#: Under `multiply(exp((0.0, 0.0, pi / 2)), POINTING_DOWN)` the local axes map
+#: to world as:
+#:   local +X -> (0, 0, -1)   the vertical
+#:   local +Y -> (0, -1, 0)   the lateral -- toward the shelf's front edge
 #:   local +Z -> (-1, 0, 0)   the world x travel axis (sign doesn't matter)
 #:
-#: The fully strict vector (1,1,1,1,1,0) -- holding all but the travel axis
-#: -- was tried first and is what we actually want, but cuRobo reproducibly
-#: refused to plan it (`right arm global plan failed: 'Fail'`). The likely
-#: cause (not isolated directly): `hold_partial_pose` pins held components to
-#: the GOAL pose's values for the whole path, but the arm arrives at its
-#: contact pose a few millimetres off what was commanded -- measured,
-#: commanded (0.0529, -0.0584, 1.1008) vs. achieved (0.0509, -0.0592,
-#: 1.1045). With five of six components pinned to the commanded values, the
-#: problem is infeasible from the very first waypoint, since the achieved
-#: start already violates them.
+#: So this pins both non-travel translations and frees all three rotations.
+#: That combination was found by logging the blade's actual executed
+#: trajectory, which is the only thing that settled a long argument about
+#: this constant.
 #:
-#: (1,1,1,1,0,0) -- all three rotations plus local +X, i.e. world-vertical --
-#: plans and works well: the blade held its height to 0.2mm across the whole
-#: push (z 1.1045 -> 1.1043), leaving a neighbour gap of 0.0035m against a
-#: 0.04m threshold, the best of any push variant tried. Height is the part
-#: that matters because the failure mode this replaced was an arc that let
-#: the blade ride up over the object (an earlier run stalled 62mm high and
-#: only nudged the box 3mm) -- vertical drift breaks a push; a few
-#: millimetres of lateral bow through the horizontal plane does not, and the
-#: planner needs that plane free (the two remaining translation entries) to
-#: stay feasible at all.
+#: The history matters, because the obvious vectors are the wrong ones. Every
+#: variant that pins the rotations *and* both translations -- (1,1,1,1,1,0),
+#: (1,1,0,1,1,0), (1,0,0,1,1,0) -- is refused outright by cuRobo, three
+#: separate attempts including one that re-aimed the goal at the arm's
+#: measured pose specifically to rule out the "achieved start violates the
+#: pinned values" explanation. The arm needs rotational redundancy to
+#: traverse a translationally pinned line at all.
 #:
-#: `motion.STRAIGHT_LINE` (1,1,1,0,0,0) is not tight enough for a push: it
-#: holds the wrist orientation but leaves all three translation axes free, so
-#: the path can still bow -- including vertically -- through the contact
-#: instead of holding height, which is the arc failure above.
-PUSH_PATH_CONSTRAINT = (1.0, 1.0, 1.0, 1.0, 0.0, 0.0)
+#: The previous value, (1,1,1,1,0,0), pinned the rotations and the vertical
+#: and left the whole horizontal plane free. It plans, and it holds height to
+#: 0.2mm, but "free" is exactly what it sounds like: a logged push wandered
+#: 43mm sideways toward the shelf's front edge and 24mm *backwards* along the
+#: travel axis before curving back to the goal. The object records the
+#: extremum of that loop and stays there, so a row compacted this way ends up
+#: creeping toward the front edge -- visible on video, and measured at 17-21mm
+#: of object drift per push.
+#:
+#: With rotations freed and both translations pinned, the same pushes log a
+#: y excursion of 4-20mm, and the larger figure is not a bow: it is monotonic,
+#: the blade being drawn onto the row line and held there for the rest of the
+#: stroke.
+PUSH_PATH_CONSTRAINT = (0.0, 0.0, 0.0, 1.0, 1.0, 0.0)
 
 
 @dataclass(frozen=True)

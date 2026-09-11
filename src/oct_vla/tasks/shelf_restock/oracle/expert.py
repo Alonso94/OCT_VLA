@@ -11,9 +11,9 @@ design, only the wiring between modules that already existed separately.
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-from oct_vla.core.frames import Pose, Transform
+from oct_vla.core.frames import WORKCELL_FRAME, Pose, Transform
 from oct_vla.core.objects import ObjectScene, TaskContext
-from oct_vla.robots.robotwin.backend import NativePort
+from oct_vla.robots.robotwin.backend import NativePort, decode_pose
 from oct_vla.tasks.shelf_restock.manager import ShelfRestockManager
 from oct_vla.tasks.shelf_restock.oracle.arms import Side, arm_for, is_cross_body_limited
 from oct_vla.tasks.shelf_restock.oracle.grasps import backed_off, generate_top_down_grasps
@@ -32,6 +32,29 @@ Observe = Callable[[], ObjectScene]
 #: "open"/"closed" instead of a bare float whose meaning depends on convention.
 OPEN = 1.0
 CLOSED = 0.0
+
+
+def _straight_push_to(planned_end: Pose, achieved_start: Pose, row_y: float) -> Pose:
+    """`planned_end`'s travel axis, the row's y, and the arm's achieved height.
+
+    A closed gripper is a narrow nub -- roughly 2cm across against a ~6cm
+    object face -- so a contact a few millimetres off the object's centre
+    line torques it, and it walks sideways as it slides. Measured over a
+    ~100mm push that was ~20mm of drift toward the shelf's front edge, every
+    time.
+
+    Ending the push on the row's own y is what corrects that: the blade is
+    still travelling almost entirely along x, but what little lateral motion
+    it has now runs toward the line the row is supposed to sit on instead of
+    leaving the object wherever the squirt put it. Height still comes from
+    the achieved pose -- the plan's z is a prediction, and the arm is the
+    authority on where it actually is.
+    """
+    return Pose(
+        (planned_end.position[0], row_y, achieved_start.position[2]),
+        planned_end.orientation,
+        WORKCELL_FRAME,
+    )
 
 
 class ExpertError(RuntimeError):
@@ -61,7 +84,7 @@ class ShelfRestockExpert:
         *,
         standoff: float = 0.10,
         gripper_max_width: float = 0.08,
-        push_slowdown: int = 5,
+        push_slowdown: int = 3,
     ) -> None:
         """`body_names` maps track_id -> SAPIEN actor body name. Two different
         identifiers name the same object: `allow_contact_with` matches contact
@@ -98,6 +121,16 @@ class ShelfRestockExpert:
 
     def _set_gripper(self, side: Side, value: float) -> ExecutedMotion:
         return set_gripper(self._port, side, value)
+
+    def _achieved_pose(self, side: Side) -> Pose:
+        """Where `side`'s end effector actually is, in the workcell frame.
+
+        Commanded and achieved differ by a few millimetres here, and for the
+        push that difference is the whole ball game -- see `_straight_push_to`.
+        """
+        reading = self._port.read()
+        arm = reading.left if side == "left" else reading.right
+        return self._world_to_workcell.apply_pose(decode_pose(arm.pose_wxyz))
 
     def transfer(self, context: TaskContext) -> TransferRecord:
         scene = self._observe()
@@ -233,12 +266,20 @@ class ShelfRestockExpert:
                 ),
             )
         )
+        # One continuous move. Cutting the push into segments to force a
+        # straighter line was tried and reverted: each segment decelerates to
+        # a stop at its waypoint, so the blade visibly stutters across the
+        # shelf instead of sliding the object in one stroke.
         motions.append(
             (
                 "compact push",
                 self._move(
                     compactor,
-                    push.end_pose,
+                    _straight_push_to(
+                        push.end_pose,
+                        self._achieved_pose(compactor),
+                        self._spec.upper_shelf.center_xyz[1],
+                    ),
                     gripper=CLOSED,
                     allow_contact_with=(body,),
                     ignore_object=track_id,
