@@ -40,9 +40,13 @@ export HF_HOME="${HF_HOME:?Set HF_HOME}"
 export HF_HUB_OFFLINE=1
 export PYTHONUNBUFFERED=1
 export MPLCONFIGDIR="${TMPDIR:-/tmp}/matplotlib-$SLURM_JOB_ID"
-# torchcodec decodes ~9.5x faster than the PyAV fallback here; without this the
-# dataloader, not the GPU, sets the training throughput. See ~/octvla/env.sh.
-export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+# torchcodec decodes ~9.5x faster than the PyAV fallback; without it the
+# dataloader, not the GPU, sets training throughput. Opt in here rather than
+# globally: these libraries belong to the policy environment, and exposing them
+# to the simulator environment stops SAPIEN importing at all.
+if [ -n "${OCTVLA_TORCHCODEC_LIBS:-}" ]; then
+  export LD_LIBRARY_PATH="$OCTVLA_TORCHCODEC_LIBS${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
 
 echo "dataset    : $DATASET"
 echo "variant    : $TRAIN_VARIANT"
@@ -51,12 +55,11 @@ echo "output     : $OUTPUT"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
 # pi0.5 was pretrained with openpi's camera names, and make_policy hard-fails on
-# any mismatch rather than guessing which of our views is the base view. Map our
-# canonical names onto its expected ones; the same map must be used at
-# evaluation time, or the policy silently receives a wrist view as its base.
-RENAME_MAP='{"observation.images.head": "observation.images.base_0_rgb",
-             "observation.images.left_wrist": "observation.images.left_wrist_0_rgb",
-             "observation.images.right_wrist": "observation.images.right_wrist_0_rgb"}'
+# any mismatch rather than guessing which of our views is the base view. Read the
+# map from the package rather than restating it here: evaluation must use the
+# same one, and inference would not complain about a wrong one.
+RENAME_MAP=$(PYTHONPATH="$OCTVLA_REPO/src" "$OCTVLA_POLICY_PYTHON" -c \
+  "import json; from oct_vla.data.policy_inputs import PI05_RENAME_MAP; print(json.dumps(PI05_RENAME_MAP))")
 
 srun "$OCTVLA_POLICY_PYTHON" -u -m lerobot.scripts.lerobot_train \
   --dataset.repo_id="local/oct-vla-shelf-restock-three_object-${TRAIN_VARIANT}" \

@@ -39,11 +39,6 @@ PROFILE_TASKS = {
     "four_object": "ShelfRestockFourObjectTask",
 }
 
-#: Zero joint velocity: IK gives a position target per control step, and the
-#: arm is commanded to hold it rather than to pass through it at speed.
-_STATIONARY = (0.0,) * 7
-
-
 class EvalServerError(RuntimeError):
     """The episode cannot continue; the client is told and the socket stays up."""
 
@@ -201,7 +196,21 @@ class ShelfRestockEvalServer:
         for side, arm in (("left", target.left), ("right", target.right)):
             world = encode_pose(WORLD_TO_WORKCELL.inverse().apply_pose(arm.pose))
             joints = self._port.ik(side, world)
-            self._port.command(side, joints, _STATIONARY[: len(joints)], arm.gripper)
+            # Velocity feedforward, not zero. RoboTwin's set_arm_joints drives
+            # both a position and a velocity target, so commanding zero velocity
+            # asks the arm to *arrive at rest* at the new pose: within one 15 Hz
+            # control step it decelerates and covers only a fraction of the
+            # commanded displacement. Because each step's target is rebuilt from
+            # the freshly measured pose, that shortfall does not accumulate into
+            # a lag -- it silently rescales every action, so a policy replaying
+            # its training actions would crawl. Asking for the speed that
+            # actually covers the gap in one step removes the built-in brake.
+            now = self._port.arm_joints(side)
+            rate = self._hz
+            velocity = tuple(
+                (goal - start) * rate for goal, start in zip(joints, now, strict=True)
+            )
+            self._port.command(side, joints, velocity, arm.gripper)
 
         episode.tick_debt += 1.0 / (self._hz * self._port.dt)
         ticks, episode.tick_debt = divmod(episode.tick_debt, 1.0)

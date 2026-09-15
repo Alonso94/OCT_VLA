@@ -132,6 +132,14 @@ every member of the group.
   mangled filenames that `dlopen` cannot match; a directory of plain-SONAME
   symlinks onto those libraries, on `LD_LIBRARY_PATH`, restores torchcodec.
 
+  **Scope that `LD_LIBRARY_PATH` to policy-side processes only.** The symlinks
+  point into the policy virtualenv, and exporting them globally stops SAPIEN
+  importing at all: the simulator resolves the policy environment's `libxcb`,
+  whose `DT_NEEDED` names a sibling `libXau` that is not on the path. The
+  symlink set must also be the whole bundle rather than just the five libraries
+  torchcodec opens directly — those five need the rest transitively. Breadth is
+  fine; global scope is not.
+
 ## Validating the result
 
 `octvla doctor` reports discovery only. Run it on a **GPU node**, where

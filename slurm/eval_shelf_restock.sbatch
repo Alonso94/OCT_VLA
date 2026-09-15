@@ -25,6 +25,11 @@ case "$EVAL_VARIANT" in rgb|object) ;; *) echo "Invalid EVAL_VARIANT" >&2; exit 
 export PYTHONPATH="$OCTVLA_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONUNBUFFERED=1
 export MPLCONFIGDIR="${TMPDIR:-/tmp}/matplotlib-$SLURM_JOB_ID"
+# No LD_LIBRARY_PATH here, deliberately. This job runs the simulator, and the
+# torchcodec FFmpeg symlinks belong to the policy virtualenv -- exposing them to
+# SAPIEN stops it importing. The policy client needs them anyway: video is
+# decoded at training time, while here frames arrive over the bridge as raw RGB.
+unset LD_LIBRARY_PATH
 
 # A free port per job, so two evaluations on one node cannot collide.
 EVAL_PORT="${EVAL_PORT:-$((20000 + SLURM_JOB_ID % 20000))}"

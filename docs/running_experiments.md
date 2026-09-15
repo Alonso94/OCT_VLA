@@ -144,7 +144,38 @@ small end-effector increment per control step; planning a fresh trajectory each
 step would be far too slow and wrong in kind, since the planner is free to reach
 the target along any path.
 
-> **Not yet validated against a live simulator.** The transport and client are
-> covered by tests, but `ik()` and the server step loop have not run against
-> SAPIEN. Exercise them with a scripted action sequence on a GPU node before
-> treating any success rate as a measurement.
+### Validating the bridge
+
+```bash
+$OCTVLA_ROBOTWIN_PYTHON scripts/validate_eval_bridge.py \
+  --robotwin-root $OCTVLA_ROBOTWIN_ROOT --seed 1000 --profile three_object
+```
+
+Run this on a GPU node after any change to `ik()`, the step loop or the frame
+conventions, and before trusting a success rate. It drives the real socket,
+protocol and server with **scripted** actions rather than a policy — deliberately,
+because a policy rollout cannot distinguish "the controller is wrong" from "the
+policy is untrained". It checks that a zero-displacement action does not move the
+arm, that a commanded translation is achieved in the right direction and
+magnitude, that the gripper reaches an absolute target, and that the simulation
+clock advances at the control rate.
+
+Current result, all three profiles: 0.0 mm hold drift, 120.3 mm achieved against
+120 mm commanded, 3.3 mm lateral, 1.132 s over 17 control steps (exactly
+17 / 15 Hz).
+
+Two defects it caught, both invisible to unit tests and neither of which would
+have crashed an evaluation:
+
+* cuRobo solves over the whole robot model and returns **nine** joint values for
+  a Panda — seven arm joints plus two gripper fingers — where `set_arm_joints`
+  wants the planner's seven. `ik()` therefore selects by joint *name*; taking the
+  first seven would work here and break silently on any differently-ordered
+  embodiment.
+* `set_arm_joints` drives a position target **and a velocity target**. Commanding
+  zero velocity asks the arm to arrive at rest, so within one 15 Hz step it
+  decelerates and covers roughly a fifth of the commanded displacement. Because
+  each step rebuilds its target from the freshly measured pose, that never
+  accumulates into a visible lag -- it just rescales every action, and a policy
+  replaying its own training actions would crawl. The server now commands the
+  velocity that covers the gap in one step.

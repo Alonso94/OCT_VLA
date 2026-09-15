@@ -210,6 +210,23 @@ class RoboTwinNativePort:
         velocity = tuple(tuple(float(v) for v in row) for row in result["velocity"])
         return Trajectory(position, velocity)
 
+    def arm_joints(self, side: str) -> tuple[float, ...]:
+        """Current positions of one arm's active joints, in the planner's order.
+
+        The same ordering `command` expects and `ik` returns, so a caller can
+        difference the two to work out how fast the arm has to move.
+        """
+        self._require_task()
+        robot = self._task.robot
+        planner = robot.left_planner if side == "left" else robot.right_planner
+        entity = robot.left_entity if side == "left" else robot.right_entity
+        qpos = entity.get_qpos()
+        return tuple(
+            float(qpos[planner.all_joints.index(name)])
+            for name in planner.active_joints_name
+            if name in planner.all_joints
+        )
+
     def ik(self, side: str, pose_wxyz: tuple[float, ...]) -> tuple[float, ...]:
         """Joint positions reaching `pose_wxyz` (world frame), seeded from now.
 
@@ -241,7 +258,6 @@ class RoboTwinNativePort:
                 "planners in separate processes (per-arm curobo yml paths differ)"
             )
         planner = robot.left_planner if side == "left" else robot.right_planner
-        entity = robot.left_entity if side == "left" else robot.right_entity
         motion_gen = getattr(planner, "motion_gen", None)
         if motion_gen is None:
             raise NativePortError(f"{side} planner is not a cuRobo planner; IK is unavailable")
@@ -260,14 +276,9 @@ class RoboTwinNativePort:
             bias = np.asarray(planner.frame_bias, dtype=float)
             position = np.asarray(position, dtype=float) + bias
 
-            qpos = entity.get_qpos()
-            indices = [
-                planner.all_joints.index(name)
-                for name in planner.active_joints_name
-                if name in planner.all_joints
-            ]
+            current = self.arm_joints(side)
             seed = torch.tensor(
-                [round(float(qpos[index]), 5) for index in indices], dtype=torch.float32
+                [round(value, 5) for value in current], dtype=torch.float32
             ).cuda().reshape(1, -1)
             result = motion_gen.ik_solver.solve_single(
                 CuroboPose.from_list(list(position) + list(orientation)),
@@ -280,15 +291,28 @@ class RoboTwinNativePort:
                 f"{side} arm IK failed for world pose "
                 f"{tuple(round(float(v), 4) for v in pose_wxyz)}"
             )
-        solution = result.js_solution.position.view(-1).tolist()
-        # Guard the assumption that IK returns joints in active-joint order;
-        # a silent mismatch would command the arm to a different configuration.
-        if len(solution) != len(planner.active_joints_name):
+        # Select by joint name, never by position. cuRobo solves over the whole
+        # robot model, so for a Panda it returns nine values -- seven arm joints
+        # plus two gripper fingers -- while `set_arm_joints` wants exactly the
+        # planner's active arm joints, in the planner's order. Slicing the first
+        # seven would happen to work here and break silently on any embodiment
+        # whose model orders joints differently, commanding the arm to a
+        # configuration nobody asked for.
+        values = result.js_solution.position.view(-1).tolist()
+        names = list(getattr(result.js_solution, "joint_names", None) or [])
+        if len(names) != len(values):
             raise NativePortError(
-                f"IK returned {len(solution)} joints; expected "
-                f"{len(planner.active_joints_name)} active joints"
+                f"IK returned {len(values)} joint values but "
+                f"{len(names)} joint names; cannot match them to arm joints"
             )
-        return tuple(float(v) for v in solution)
+        by_name = dict(zip(names, values, strict=True))
+        missing = [name for name in planner.active_joints_name if name not in by_name]
+        if missing:
+            raise NativePortError(
+                f"IK solution is missing arm joints {missing}; "
+                f"it solved for {names}"
+            )
+        return tuple(float(by_name[name]) for name in planner.active_joints_name)
 
     def command(
         self, side: str, q: tuple[float, ...], qdot: tuple[float, ...], gripper: float

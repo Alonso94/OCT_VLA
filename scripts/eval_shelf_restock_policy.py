@@ -104,6 +104,7 @@ def main() -> int:
     from lerobot.policies import make_policy, make_pre_post_processors
 
     from oct_vla.data.object_tokens import ObjectTokenSpec
+    from oct_vla.data.policy_inputs import PI05_RENAME_MAP
     from oct_vla.serve.client import ShelfRestockEvalClient
 
     parser = argparse.ArgumentParser()
@@ -131,10 +132,19 @@ def main() -> int:
     config = PreTrainedConfig.from_pretrained(args.checkpoint)
     config.pretrained_path = args.checkpoint
     metadata = LeRobotDatasetMetadata(args.repo_id, root=args.dataset_root)
-    policy = make_policy(cfg=config, ds_meta=metadata)
+    policy = make_policy(cfg=config, ds_meta=metadata, rename_map=PI05_RENAME_MAP)
     policy.eval()
+    # The same rename map training used. Unlike training, inference would not
+    # complain about getting this wrong: the cameras share shape and dtype, so a
+    # wrong mapping just feeds the policy a wrist view as its scene view and
+    # shows up only as a mysteriously poor success rate.
     preprocessor, postprocessor = make_pre_post_processors(
-        policy_cfg=config, pretrained_path=args.checkpoint
+        policy_cfg=config,
+        pretrained_path=args.checkpoint,
+        preprocessor_overrides={
+            "device_processor": {"device": str(policy.config.device)},
+            "rename_observations_processor": {"rename_map": PI05_RENAME_MAP},
+        },
     )
     spec = ObjectTokenSpec() if args.object_tokens else None
 
