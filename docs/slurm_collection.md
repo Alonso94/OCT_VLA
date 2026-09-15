@@ -22,6 +22,13 @@ export OCTVLA_DATASET_ROOT=/scratch/$USER/octvla-datasets
 ./slurm/submit_shelf_restock_collection.sh three_object a100 1000 --finalize
 ```
 
+Cluster prerequisites worth checking once, both of which stop submission
+outright rather than failing later: some GPU clusters reject an explicit
+`--mem` ("memory is allocated in proportion to the GPU count") and require every
+job to request at least one GPU. The `slurm/` files here assume both. Also make
+sure `submit_shelf_restock_collection.sh` is executable -- it is invoked as
+`./slurm/...` above.
+
 After reviewing the resulting video, submit a seed range, for example
 `1000-1009`. A discarded seed is recorded in that seed directory and contributes
 no clip; expect to lose a fraction of seeds this way (a five-seed three-object
@@ -58,7 +65,27 @@ Pass `--finalize` on the *last* submission for a profile, not on every one: the
 finalizer exports a whole profile's canonical clips in one pass, and it refuses
 to overwrite an existing dataset root. Splitting a profile's clips into train,
 validation and test happens afterwards, from the seed recorded for each episode
-in `octvla_episode_manifest.json` -- collection itself is split-agnostic.
+in `octvla_episode_manifest.json` -- collection itself is split-agnostic. See
+[running_experiments.md](running_experiments.md) for the script that does it.
+
+### `--finalize` is hostage to every array task
+
+The finalizer is chained with `--dependency=afterok`, which fires only if *all*
+array tasks succeed. A single infrastructure failure therefore strands it
+forever: observed on a 60-seed submission where two tasks hit `NODE_FAIL` and the
+exporter sat in `DependencyNeverSatisfied` until it was noticed days later, with
+58 perfectly good seeds already on disk.
+
+For a large block, prefer submitting without `--finalize` and running the
+exporter yourself once collection has finished. If a finalizer does get stranded,
+nothing is lost -- cancel it and submit
+`finalize_shelf_restock_dataset.sbatch` directly with the same environment.
+
+A `NODE_FAIL` is also not a discarded seed. A discarded seed was evaluated and
+its run rejected; a `NODE_FAIL` seed was never evaluated at all and wrote no
+report. Re-running it is legitimate, but weigh that against the selection rule
+below -- a late success at a low seed number displaces a higher one already in
+the split.
 
 Check yield per block before finalizing:
 

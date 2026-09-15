@@ -41,7 +41,14 @@ in both the existing Python 3.10 simulator and Python 3.12 policy processes.
 This does not imply that their dependency stacks can share one environment.
 Wheel builds use Hatchling; development tools are declared in the `dev` extra.
 See [setup](docs/setup.md) for manual fresh-install guidance, observed dependency
-revisions, path configuration, and the limits of current validation.
+revisions, path configuration, and the limits of current validation. For an
+installation that was actually executed and validated on a GPU node, with its
+resolved versions and two silently-failing version traps, see
+[verified setup](docs/setup_nhr_alex.md).
+
+See [running experiments](docs/running_experiments.md) for the full path from
+collection through the train/validation split and LoRA finetuning to closed-loop
+evaluation across object counts.
 
 ## External resources
 

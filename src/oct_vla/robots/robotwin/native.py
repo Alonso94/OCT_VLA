@@ -210,6 +210,86 @@ class RoboTwinNativePort:
         velocity = tuple(tuple(float(v) for v in row) for row in result["velocity"])
         return Trajectory(position, velocity)
 
+    def ik(self, side: str, pose_wxyz: tuple[float, ...]) -> tuple[float, ...]:
+        """Joint positions reaching `pose_wxyz` (world frame), seeded from now.
+
+        Closed-loop policy rollout needs this instead of `plan`: a policy emits a
+        small end-effector increment every control step, and motion planning a
+        fresh trajectory per step is both far too slow and wrong in kind -- the
+        planner is free to reach the target along any collision-free path, while
+        the policy is specifying the step itself.
+
+        Everything RoboTwin-specific stays here rather than in the caller. The
+        target passes through the same two frame changes `plan` relies on, by
+        calling RoboTwin's own helpers rather than reimplementing them:
+        gripper-to-endlink on the robot, then world-to-base on the planner, plus
+        the same non-aloha `frame_bias` offset `plan_path` applies. Reusing them
+        is the point -- a second, drifting copy of these transforms is exactly
+        how a policy ends up evaluated against subtly different kinematics than
+        the oracle that produced its training data.
+
+        Seeding and regularising on the current configuration makes this IK
+        *servoing*: of the many joint solutions reaching a pose, it returns the
+        one nearest where the arm already is, so consecutive steps do not jump
+        between elbow configurations.
+        """
+        self._require_task()
+        robot = self._task.robot
+        if getattr(robot, "communication_flag", False):
+            raise NativePortError(
+                "IK needs an in-process cuRobo planner, but this embodiment runs its "
+                "planners in separate processes (per-arm curobo yml paths differ)"
+            )
+        planner = robot.left_planner if side == "left" else robot.right_planner
+        entity = robot.left_entity if side == "left" else robot.right_entity
+        motion_gen = getattr(planner, "motion_gen", None)
+        if motion_gen is None:
+            raise NativePortError(f"{side} planner is not a cuRobo planner; IK is unavailable")
+
+        import numpy as np
+        import torch
+        from curobo.types.math import Pose as CuroboPose
+
+        with _chdir(self.root):
+            endlink = robot._trans_from_gripper_to_endlink(list(pose_wxyz), arm_tag=side)
+            base = np.concatenate(
+                [np.array(planner.robot_origion_pose.p), np.array(planner.robot_origion_pose.q)]
+            )
+            target = np.concatenate([np.array(endlink.p), np.array(endlink.q)])
+            position, orientation = planner._trans_from_world_to_base(base, target)
+            bias = np.asarray(planner.frame_bias, dtype=float)
+            position = np.asarray(position, dtype=float) + bias
+
+            qpos = entity.get_qpos()
+            indices = [
+                planner.all_joints.index(name)
+                for name in planner.active_joints_name
+                if name in planner.all_joints
+            ]
+            seed = torch.tensor(
+                [round(float(qpos[index]), 5) for index in indices], dtype=torch.float32
+            ).cuda().reshape(1, -1)
+            result = motion_gen.ik_solver.solve_single(
+                CuroboPose.from_list(list(position) + list(orientation)),
+                retract_config=seed,
+                seed_config=seed.unsqueeze(0),
+            )
+
+        if not bool(result.success.any()):
+            raise NativePortError(
+                f"{side} arm IK failed for world pose "
+                f"{tuple(round(float(v), 4) for v in pose_wxyz)}"
+            )
+        solution = result.js_solution.position.view(-1).tolist()
+        # Guard the assumption that IK returns joints in active-joint order;
+        # a silent mismatch would command the arm to a different configuration.
+        if len(solution) != len(planner.active_joints_name):
+            raise NativePortError(
+                f"IK returned {len(solution)} joints; expected "
+                f"{len(planner.active_joints_name)} active joints"
+            )
+        return tuple(float(v) for v in solution)
+
     def command(
         self, side: str, q: tuple[float, ...], qdot: tuple[float, ...], gripper: float
     ) -> None:

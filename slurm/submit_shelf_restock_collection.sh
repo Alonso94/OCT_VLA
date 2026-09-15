@@ -15,13 +15,18 @@ case "$FINALIZE" in ""|--finalize) ;; *) echo "Only --finalize is supported" >&2
 
 : "${SLURM_ACCOUNT:?Set cluster account}"
 : "${SLURM_PARTITION:?Set cluster partition}"
-: "${OCTVLA_REPO:=$(cd "$(dirname "$0")/.." && pwd)}"
 : "${OCTVLA_ROBOTWIN_ROOT:?Set RoboTwin checkout path}"
 : "${OCTVLA_ROBOTWIN_PYTHON:?Set RoboTwin Python executable}"
 : "${OCTVLA_COLLECTION_ROOT:?Set durable canonical collection root}"
 : "${OCTVLA_DATASET_ROOT:?Set durable LeRobot dataset root}"
 : "${OCTVLA_POLICY_PYTHON:?Set LeRobot Python executable}"
-: "${DATASET_REPO_PREFIX:=local/oct-vla-shelf-restock-$PROFILE}"
+# Both defaults must be exported, not merely assigned: `sbatch --export=ALL`
+# propagates the environment, and `${VAR:=default}` only creates a shell
+# variable. Without `export` the job's own `${VAR:?}` assertion fails -- which
+# made every `--finalize` submission die at the dependent job unless the caller
+# happened to export DATASET_REPO_PREFIX by hand.
+export OCTVLA_REPO="${OCTVLA_REPO:-$(cd "$(dirname "$0")/.." && pwd)}"
+export DATASET_REPO_PREFIX="${DATASET_REPO_PREFIX:-local/oct-vla-shelf-restock-$PROFILE}"
 
 mkdir -p "$OCTVLA_COLLECTION_ROOT/slurm_logs"
 JOB_ID=$(sbatch --parsable \
@@ -34,7 +39,10 @@ JOB_ID=$(sbatch --parsable \
 echo "collection job: $JOB_ID"
 
 if [ "$FINALIZE" = "--finalize" ]; then
-  sbatch --account="$SLURM_ACCOUNT" --partition="$SLURM_PARTITION" \
+  # --gres even though finalizing is CPU work: some GPU clusters (NHR@FAU Alex
+  # among them) reject any job on a GPU partition that requests no GPU --
+  # "Jobs on Alex must always allocate at least one GPU with --gres=gpu".
+  sbatch --account="$SLURM_ACCOUNT" --partition="$SLURM_PARTITION" --gres="gpu:$GPU:1" \
     --dependency="afterok:$JOB_ID" --job-name="octvla-finalize-$PROFILE" \
     --output="$OCTVLA_COLLECTION_ROOT/slurm_logs/%x-%j.out" \
     --error="$OCTVLA_COLLECTION_ROOT/slurm_logs/%x-%j.err" \

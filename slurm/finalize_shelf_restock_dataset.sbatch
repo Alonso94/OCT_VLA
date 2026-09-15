@@ -3,8 +3,10 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
 #SBATCH --time=02:00:00
+# No --mem: this job is submitted to the same (GPU) partition as collection,
+# where an explicit --mem is rejected and submission fails. See the matching
+# note in collect_shelf_restock_array.sbatch.
 
 set -euo pipefail
 

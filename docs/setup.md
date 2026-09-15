@@ -139,9 +139,17 @@ concluding that a driver installation is broken.
 
 ## Fresh installation on a new machine (manual only)
 
-These steps are for a researcher without existing installations. They were not
-executed during this rebuild. The snapshot below records the inspected old
-workspace, not a fully validated clean-install lockfile for the new backend.
+These steps are for a researcher without existing installations. The snapshot
+below records the inspected old workspace, not a fully validated clean-install
+lockfile for the new backend.
+
+> An installation following this outline **has since been executed and validated
+> on a GPU node**, and its resolved versions, required upstream patches, and two
+> silent failure modes are recorded in
+> [setup_nhr_alex.md](setup_nhr_alex.md). Read that alongside this section: it
+> supersedes the caveats below about unverified reproduction, and documents a
+> gated third-party dependency (pi0.5's tokenizer) that this table does not
+> mention.
 
 | Component | Observed reference |
 | --- | --- |
@@ -168,7 +176,10 @@ workspace, not a fully validated clean-install lockfile for the new backend.
    Create a separate Python 3.10 environment and review that revision's native
    requirements/build scripts. The inspected workspace changed requirements and
    XPolicyLab files: those changes must be reviewed and captured before claiming
-   exact reproduction. There is no verified patch bundle in this rebuild yet.
+   exact reproduction. A clean checkout of the reference revision has since been
+   shown to need no OCT-VLA-specific patch: only RoboTwin's own two documented
+   upstream edits (mplib, SAPIEN's URDF loader). See
+   [setup_nhr_alex.md](setup_nhr_alex.md).
 3. Install the selected SAPIEN and cuRobo native stack in that simulator environment.
    Keep the NumPy ABI consistent with its extensions. Obtain robot URDFs, meshes,
    calibration/configuration, and object assets through the selected RoboTwin

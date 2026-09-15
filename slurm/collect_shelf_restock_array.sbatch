@@ -3,8 +3,12 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=48G
 #SBATCH --time=01:00:00
+# No --mem: on GPU clusters that allocate memory in proportion to the GPU
+# count (NHR@FAU Alex among them) an explicit --mem is rejected outright --
+# "Do not specify --mem for GPU jobs!" -- and submission fails. One a40/a100
+# GPU carries ~64 GB there, comfortably above the ~3 GB a collection task
+# actually uses. Add --mem at submission time on sites that require it.
 
 set -euo pipefail
 

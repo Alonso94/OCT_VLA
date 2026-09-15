@@ -1,0 +1,152 @@
+#!/usr/bin/env python
+"""Export one LeRobot dataset per variant whose episode order encodes the split.
+
+Collection is split-agnostic (docs/slurm_collection.md): every seed of a profile
+lands under one canonical root, and the split is recovered afterwards from the
+seed recorded for each episode. This script is that recovery step.
+
+It exports train episodes first, then validation, each block in ascending seed
+order, because LeRobot's own offline-validation path
+(`lerobot.datasets.factory.make_train_eval_datasets`) does not read seeds: it
+holds out the *last* ``ceil(n_episodes * eval_split)`` episodes per task. Laying
+the episodes out in that order makes that positional rule select exactly the
+reserved validation seeds, so `lerobot-train --dataset.eval_split=...` reproduces
+the protocol split rather than an arbitrary tail.
+
+The resulting fraction is therefore a derived quantity, not a tuning knob. It is
+computed and verified here, and written to split_manifest.json next to the
+dataset. A boundary that does not land exactly on the train/validation seed
+division is a hard error: silently training on validation clips is precisely the
+failure this script exists to prevent.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+#: Reserved seed blocks from docs/dataset_protocol.md. A seed belongs to exactly
+#: one split, fixed before collection, so a scene can never move between splits.
+SPLIT_BLOCKS: dict[str, dict[str, range]] = {
+    "three_object": {"train": range(100, 200), "val": range(200, 250)},
+    "two_object": {"val": range(400, 450)},
+    "four_object": {"val": range(600, 650)},
+}
+
+
+def seed_of(clip_dir: Path) -> int:
+    """Seed owning a clip, read from its ``seed_<n>/`` parent directory."""
+    for part in clip_dir.parts[::-1]:
+        if part.startswith("seed_"):
+            return int(part.removeprefix("seed_"))
+    raise ValueError(f"No seed_<n> component in {clip_dir}")
+
+
+def collect_clips(canonical_root: Path, blocks: dict[str, range]) -> dict[str, list[Path]]:
+    """Group canonical clip directories by the split their seed is reserved for."""
+    grouped: dict[str, list[Path]] = {name: [] for name in blocks}
+    unreserved: list[int] = []
+    for episode in canonical_root.rglob("episode.json"):
+        clip = episode.parent
+        seed = seed_of(clip)
+        for name, block in blocks.items():
+            if seed in block:
+                grouped[name].append(clip)
+                break
+        else:
+            unreserved.append(seed)
+    if unreserved:
+        print(f"note: ignoring {len(unreserved)} clip(s) from unreserved seeds "
+              f"{sorted(set(unreserved))}", file=sys.stderr)
+    # Ascending seed, then clip name, so transfer order within a scene is kept.
+    for name in grouped:
+        grouped[name].sort(key=lambda p: (seed_of(p), p.name))
+    return grouped
+
+
+def main() -> int:
+    from oct_vla.data.lerobot_export import export_episodes
+    from oct_vla.data.object_tokens import ObjectTokenSpec
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--canonical-root", required=True, type=Path)
+    parser.add_argument("--output", required=True, type=Path, help="Dataset root to create")
+    parser.add_argument("--repo-id", required=True)
+    parser.add_argument("--profile", default="three_object", choices=sorted(SPLIT_BLOCKS))
+    parser.add_argument("--object-tokens", action="store_true")
+    args = parser.parse_args()
+
+    blocks = SPLIT_BLOCKS[args.profile]
+    grouped = collect_clips(args.canonical_root, blocks)
+    train, val = grouped.get("train", []), grouped.get("val", [])
+    if not train:
+        raise SystemExit(f"No train clips found under {args.canonical_root}")
+
+    ordered = train + val
+    total, n_val = len(ordered), len(val)
+
+    # Invert LeRobot's rule: it holds out ceil(total * eval_split) episodes. Take
+    # the midpoint of the interval of fractions that yield exactly n_val so the
+    # value is robust to float representation at either end.
+    if n_val:
+        lo, hi = (n_val - 1) / total, n_val / total
+        eval_split = (lo + hi) / 2
+        if math.ceil(total * eval_split) != n_val:
+            raise SystemExit(f"Could not derive an eval_split selecting exactly {n_val} episodes")
+    else:
+        eval_split = 0.0
+
+    spec = ObjectTokenSpec() if args.object_tokens else None
+    report = export_episodes(ordered, args.output, repo_id=args.repo_id, object_token_spec=spec)
+    print(f"exported {len(report.exported)} episodes to {report.output}")
+    for source, reason in report.skipped:
+        print(f"skipped {source}: {reason}")
+    if len(report.exported) != total:
+        raise SystemExit(
+            f"{total - len(report.exported)} clip(s) were skipped; the positional "
+            f"eval_split boundary would no longer match the seed boundary"
+        )
+
+    # The boundary must fall exactly between the last train seed and the first
+    # validation seed, or the held-out tail is not the reserved block.
+    boundary = total - n_val
+    if n_val:
+        last_train, first_val = seed_of(ordered[boundary - 1]), seed_of(ordered[boundary])
+        if last_train >= first_val:
+            raise SystemExit(f"Split boundary is not ordered: {last_train} >= {first_val}")
+
+    manifest = {
+        "profile": args.profile,
+        "repo_id": args.repo_id,
+        "total_episodes": total,
+        "eval_split": eval_split,
+        "train": {
+            "episodes": [0, boundary - 1],
+            "count": boundary,
+            "seeds": sorted({seed_of(p) for p in train}),
+        },
+        "val": {
+            "episodes": [boundary, total - 1] if n_val else None,
+            "count": n_val,
+            "seeds": sorted({seed_of(p) for p in val}),
+        },
+    }
+    (args.output / "split_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+
+    print(f"\ntrain: {boundary} episodes from {len(manifest['train']['seeds'])} seeds")
+    print(f"val:   {n_val} episodes from {len(manifest['val']['seeds'])} seeds")
+    if n_val:
+        print(f"boundary: episode {boundary - 1} (seed {last_train}) | "
+              f"episode {boundary} (seed {first_val})")
+    print(f"\nlerobot-train --dataset.eval_split={eval_split!r}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

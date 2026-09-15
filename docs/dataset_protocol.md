@@ -80,7 +80,35 @@ That is what makes a top-up safe -- extending into the unused tail of a block
 cannot change which scenes are already in the split.
 
 Seeds below 100 are not reserved: they were used by the superseded 27-clip
-development dataset and by ad-hoc feasibility runs.
+development dataset and by ad-hoc feasibility runs. Seeds at and above 1000 are
+likewise unreserved and are the right place for feasibility runs and for
+closed-loop evaluation scenes, which must never have been trained on.
+
+### Collected so far
+
+| Split | Seeds submitted | Evaluated | Successful | Clips |
+| --- | --- | ---: | ---: | ---: |
+| Train (`three_object`) | 100-159 | 58 | 30 | 90 |
+| IID validation (`three_object`) | 200-219 | 20 | 11 | 33 |
+
+Yield is 52% and 55% respectively, against the ~60% the block sizes were
+provisioned for. Every successful `three_object` scene contributes exactly three
+clips. Measured footprint: 172 KB per sample canonical, ~29 MB per clip average,
+and ~0.7 MB per clip once exported to LeRobot -- canonical dominates by more than
+an order of magnitude because it stores gzipped raw RGB rather than H.264.
+
+Seeds 100 and 101 were never evaluated: both array tasks hit an infrastructure
+`NODE_FAIL` and wrote no report. They were deliberately not re-run. The train
+split already held its full target of 30 successful scenes, and the selection
+rule takes successes in ascending order -- so a late success at seed 100 or 101
+would have displaced a higher-numbered scene already in the split. The
+consequence for reproducibility is that re-running block 100-199 from scratch
+could produce different membership; the seeds actually used are recorded per
+episode in `octvla_episode_manifest.json`, which is the authoritative record.
+
+The two- and four-object blocks are unused. Count-shift generalization is
+measured closed-loop in simulation rather than from pre-collected clips, so those
+profiles need scenes at evaluation time, not demonstrations.
 
 Every reserved seed is under 1000 on purpose. `collect_shelf_restock_array.sbatch`
 uses the Slurm array index as the scene seed, and Slurm's default
@@ -147,6 +175,27 @@ Check that RGB and object exports have identical shared state/action/timestamp
 rows before paired training. `octvla_episode_manifest.json` maps LeRobot index
 to canonical source name, seed, sample count, metadata, and `episode.json`
 SHA-256. It is the split-audit record.
+
+Verified on the current export: all of `timestamp`, `frame_index`,
+`episode_index`, `index`, `task_index`, `observation.state[16]` and
+`action[14]` are identical across the paired datasets, so the only difference
+between the two training arms is the presence of object tokens.
+
+### Split layout inside the dataset
+
+LeRobot's offline validation splits **one** dataset positionally --
+`make_train_eval_datasets` holds out the last `ceil(n * eval_split)` episodes per
+task and never looks at seeds. `scripts/build_shelf_restock_splits.py` therefore
+exports train episodes first, then validation, each in ascending seed order, and
+derives the fraction that makes that positional rule select exactly the reserved
+validation block. The value lands in `split_manifest.json` next to the dataset,
+and the training job reads it from there rather than restating it.
+
+For the current export that is 123 episodes, 90 train / 33 validation, with the
+boundary between episode 89 (seed 159, last train) and episode 90 (seed 202,
+first validation). The exporter fails rather than proceeding if the boundary does
+not fall on that division -- silently training on validation clips is the failure
+this arrangement exists to prevent.
 
 For split experiments, normalization statistics must be calculated from train
 episodes only. Never normalize using validation or test scenes.
