@@ -15,6 +15,8 @@ from lerobot.utils.constants import ACTION, OBS_LANGUAGE_ATTENTION_MASK, OBS_LAN
 from lerobot.utils.import_utils import require_package
 from torch import Tensor, nn
 
+from oct_vla.data.token_transforms import apply_token_mode
+
 from .configuration_control_pi05 import ControlPI05Config
 
 
@@ -40,8 +42,8 @@ class ObjectExpert(nn.Module):
     def __init__(self, config: ControlPI05Config, width: int) -> None:
         super().__init__()
         self.token_projection = nn.Sequential(
-            nn.LayerNorm(config.object_token_dim),
-            nn.Linear(config.object_token_dim, width),
+            nn.LayerNorm(config.effective_object_token_dim),
+            nn.Linear(config.effective_object_token_dim, width),
             nn.GELU(),
         )
         self.queries = nn.Parameter(torch.empty(config.object_queries, width))
@@ -136,10 +138,16 @@ class ControlPI05Policy(PI05Policy):
         return state_dict
 
     def _set_object_inputs(self, batch: dict[str, Tensor]) -> None:
-        self.model.set_object_inputs(
+        # The single place tokens enter the model, so the arm's ablation is
+        # applied here: training and evaluation then cannot disagree about the
+        # layout, and the mode travels with the checkpoint's config.
+        tokens, mask = apply_token_mode(
             _batched(batch.get(self.config.object_token_key), unbatched_ndim=2),
             _batched(batch.get(self.config.object_token_mask_key), unbatched_ndim=1),
+            mode=self.config.object_token_mode,
+            shuffle=self.config.object_token_shuffle,
         )
+        self.model.set_object_inputs(tokens, mask)
 
     @torch.no_grad()
     def predict_action_chunk(self, batch: dict[str, Tensor], **kwargs: Any) -> Tensor:

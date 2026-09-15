@@ -119,6 +119,14 @@ def main() -> int:
     parser.add_argument("--seeds", required=True, help="Comma-separated, or FIRST-LAST")
     parser.add_argument("--max-steps", type=int, default=600)
     parser.add_argument("--object-tokens", action="store_true")
+    parser.add_argument(
+        "--shuffle-tokens",
+        action="store_true",
+        help="Permute object tokens across objects. The control for 'does the "
+        "policy use the tokens at all?': a policy that reads them degrades, one "
+        "that ignores them scores the same. Evaluation only -- it overrides the "
+        "checkpoint's own setting and never changes the weights.",
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
@@ -139,6 +147,14 @@ def main() -> int:
 
     config = PreTrainedConfig.from_pretrained(args.checkpoint)
     config.pretrained_path = args.checkpoint
+    if args.shuffle_tokens:
+        if not hasattr(config, "object_token_shuffle"):
+            raise SystemExit(
+                "--shuffle-tokens needs an object-conditioned checkpoint; "
+                f"{args.checkpoint} is a {getattr(config, 'type', 'unknown')} policy, "
+                "which has no object tokens to shuffle."
+            )
+        config.object_token_shuffle = True
     metadata = LeRobotDatasetMetadata(args.repo_id, root=args.dataset_root)
     policy = make_policy(cfg=config, ds_meta=metadata, rename_map=PI05_RENAME_MAP)
     policy.eval()
@@ -181,6 +197,12 @@ def main() -> int:
     report = {
         "checkpoint": str(args.checkpoint),
         "object_tokens": args.object_tokens,
+        # Recorded, not inferred later from the checkpoint path: the shuffled
+        # control reuses arm B's weights, so the path alone cannot distinguish
+        # the two and aggregation would silently merge them into one arm.
+        "token_mode": getattr(config, "object_token_mode", None),
+        "shuffled_tokens": bool(args.shuffle_tokens),
+        "max_steps": args.max_steps,
         "seeds": seeds,
         "summary": summary,
         "episodes": results,
