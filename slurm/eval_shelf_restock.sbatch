@@ -34,7 +34,11 @@ unset LD_LIBRARY_PATH
 # A free port per job, so two evaluations on one node cannot collide.
 EVAL_PORT="${EVAL_PORT:-$((20000 + SLURM_JOB_ID % 20000))}"
 READY="${TMPDIR:-/tmp}/octvla-eval-ready-$SLURM_JOB_ID"
-RESULTS="$OCTVLA_OUTPUT_ROOT/eval/${EVAL_VARIANT}_${SLURM_JOB_ID}.json"
+# EVAL_TAG names the result after the cell it scores, not after the job that
+# happened to run it. A sweep produces dozens of these, and a job id alone
+# cannot say which arm, seed or profile a file describes once the Slurm
+# accounting database has aged out.
+RESULTS="$OCTVLA_OUTPUT_ROOT/eval/${EVAL_TAG:-${EVAL_VARIANT}_${SLURM_JOB_ID}}.json"
 rm -f "$READY"
 
 cd "$OCTVLA_ROBOTWIN_ROOT"
@@ -58,6 +62,14 @@ echo "server ready on port $EVAL_PORT"
 
 OBJECT_FLAG=()
 [ "$EVAL_VARIANT" = "object" ] && OBJECT_FLAG=(--object-tokens)
+# The shuffled control: same weights as the object arm, tokens permuted across
+# objects. A policy that genuinely reads them degrades; one that ignores them
+# scores the same. Evaluation only -- training with shuffled tokens would teach
+# the policy to ignore them, which is the opposite of what this detects.
+if [ "${EVAL_SHUFFLE_TOKENS:-0}" = "1" ]; then
+  [ "$EVAL_VARIANT" = "object" ] || { echo "EVAL_SHUFFLE_TOKENS needs EVAL_VARIANT=object" >&2; exit 2; }
+  OBJECT_FLAG+=(--shuffle-tokens)
+fi
 
 cd "$OCTVLA_REPO"
 "$OCTVLA_POLICY_PYTHON" -u -B scripts/eval_shelf_restock_policy.py \
