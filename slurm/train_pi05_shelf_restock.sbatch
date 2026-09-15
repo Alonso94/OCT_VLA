@@ -17,6 +17,19 @@ set -euo pipefail
 
 case "$TRAIN_VARIANT" in rgb|object) ;; *) echo "Invalid TRAIN_VARIANT" >&2; exit 2 ;; esac
 
+# Arm C of the sweep ("is the object win real, or task-state leakage?") trains
+# on the *same* dataset as arm B and differs only in how the policy reads the
+# stored tokens, so this is a separate knob from TRAIN_VARIANT rather than a
+# third variant with a dataset of its own.
+OBJECT_TOKEN_MODE="${OBJECT_TOKEN_MODE:-full}"
+case "$OBJECT_TOKEN_MODE" in full|role_stripped) ;; *) echo "Invalid OBJECT_TOKEN_MODE" >&2; exit 2 ;; esac
+if [ "$TRAIN_VARIANT" = "rgb" ] && [ "$OBJECT_TOKEN_MODE" != "full" ]; then
+  echo "OBJECT_TOKEN_MODE=$OBJECT_TOKEN_MODE is meaningless for TRAIN_VARIANT=rgb" >&2
+  exit 2
+fi
+
+TRAIN_SEED="${TRAIN_SEED:-1000}"
+
 DATASET="$OCTVLA_DATASET_ROOT/three_object_${TRAIN_VARIANT}"
 [ -d "$DATASET" ] || { echo "No dataset at $DATASET" >&2; exit 2; }
 
@@ -45,12 +58,27 @@ if [ "$TRAIN_VARIANT" = "object" ]; then
     --policy.type=control_pi05
     --policy.pretrained_path="${OCTVLA_BASE_MODEL:-lerobot/pi05_base}"
     --policy.discover_packages_path=oct_vla.policies
+    --policy.object_token_mode="$OBJECT_TOKEN_MODE"
   )
 else
   POLICY_ARGS=(--policy.path="${OCTVLA_BASE_MODEL:-lerobot/pi05_base}")
 fi
 
-OUTPUT="$OCTVLA_OUTPUT_ROOT/pi05_lora_three_object_${TRAIN_VARIANT}_${SLURM_JOB_ID}"
+# Name the cell, not the job. A job-id-only directory makes a sweep's runs
+# mutually indistinguishable after the fact -- you cannot tell arm B seed 1001
+# from arm C seed 1002 without going back to the Slurm accounting database,
+# and aggregation has nothing to group by. Job id goes in run_metadata.json
+# below instead, where it is still available but is not the identity.
+RUN_NAME="pi05_${TRAIN_VARIANT}_${OBJECT_TOKEN_MODE}_s${TRAIN_SEED}"
+OUTPUT="$OCTVLA_OUTPUT_ROOT/$RUN_NAME"
+# Refuse to touch an existing cell rather than resuming or overwriting it.
+# Two runs of one cell silently sharing a directory is the failure that would
+# quietly corrupt the whole comparison, and it is cheap to rule out here.
+if [ -e "$OUTPUT" ]; then
+  echo "Run directory already exists: $OUTPUT" >&2
+  echo "Remove it to re-run this cell, or change TRAIN_SEED." >&2
+  exit 2
+fi
 # Create only the parent: lerobot-train refuses to start if its own output
 # directory already exists and resume is False, so pre-creating it fails the
 # run at cfg.validate() before anything loads.
@@ -72,9 +100,31 @@ fi
 
 echo "dataset    : $DATASET"
 echo "variant    : $TRAIN_VARIANT"
+echo "token_mode : $OBJECT_TOKEN_MODE"
+echo "seed       : $TRAIN_SEED"
 echo "eval_split : $EVAL_SPLIT"
 echo "output     : $OUTPUT"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+
+# The cell's identity, recorded rather than left in a job log that ages out of
+# the Slurm database; aggregate_eval.py reads it to group evaluations by arm
+# and seed. Deliberately written to a sibling registry, NOT into $OUTPUT --
+# creating $OUTPUT here is exactly what the note above says fails the run at
+# cfg.validate() before anything loads.
+mkdir -p "$OCTVLA_OUTPUT_ROOT/run_metadata"
+cat > "$OCTVLA_OUTPUT_ROOT/run_metadata/${RUN_NAME}.json" <<JSON
+{
+  "run_name": "$RUN_NAME",
+  "backbone": "pi05",
+  "conditioning": "$TRAIN_VARIANT",
+  "token_mode": "$OBJECT_TOKEN_MODE",
+  "seed": $TRAIN_SEED,
+  "steps": ${TRAIN_STEPS:-20000},
+  "batch_size": ${BATCH_SIZE:-4},
+  "dataset": "$DATASET",
+  "job_id": "${SLURM_JOB_ID:-none}"
+}
+JSON
 
 # pi0.5 was pretrained with openpi's camera names, and make_policy hard-fails on
 # any mismatch rather than guessing which of our views is the base view. Read the
@@ -106,7 +156,7 @@ srun "$OCTVLA_POLICY_PYTHON" -u -m lerobot.scripts.lerobot_train \
   --max_eval_samples="${MAX_EVAL_SAMPLES:-256}" \
   --save_freq="${SAVE_FREQ:-2000}" \
   --log_freq=100 \
-  --seed=1000 \
+  --seed="$TRAIN_SEED" \
   --output_dir="$OUTPUT" \
   --job_name="pi05_lora_three_object_${TRAIN_VARIANT}" \
   --wandb.enable=false
