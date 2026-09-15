@@ -27,6 +27,18 @@ class NativePortError(RuntimeError):
     """RoboTwin planning or execution failure; callers must not swallow this."""
 
 
+class UnreachablePose(NativePortError):
+    """The solver found no configuration reaching a commanded pose.
+
+    Split out from its parent because the two mean opposite things during a
+    closed-loop evaluation. A `NativePortError` is a broken simulator and must
+    stop the run; an `UnreachablePose` is the *policy* asking for somewhere the
+    arm cannot go, which is an ordinary -- and for an undertrained policy,
+    frequent -- episode outcome. Left merged, a single bad action aborts the
+    entire evaluation and discards every episode scored before it.
+    """
+
+
 def _prepare_import_path(root: Path) -> None:
     """Give our own cuRobo/RoboTwin paths priority over a stale editable install.
 
@@ -287,7 +299,7 @@ class RoboTwinNativePort:
             )
 
         if not bool(result.success.any()):
-            raise NativePortError(
+            raise UnreachablePose(
                 f"{side} arm IK failed for world pose "
                 f"{tuple(round(float(v), 4) for v in pose_wxyz)}"
             )

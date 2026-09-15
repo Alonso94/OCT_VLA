@@ -25,6 +25,7 @@ from oct_vla.core.state import ArmState, EEFState
 from oct_vla.perception.ground_truth import GroundTruthObjectStateEstimator
 from oct_vla.perception.robotwin.evidence import RoboTwinObjectEvidenceSource, TrackedActor
 from oct_vla.robots.robotwin.backend import decode_pose, encode_pose
+from oct_vla.robots.robotwin.native import UnreachablePose
 from oct_vla.serve import protocol
 from oct_vla.serve.codec import context_to_json, eef_to_json, scene_to_json
 from oct_vla.tasks.shelf_restock.collect import DEFAULT_HZ, WORLD_TO_WORKCELL
@@ -186,6 +187,21 @@ class ShelfRestockEvalServer:
         header, blobs, _ = self._snapshot()
         return header, blobs
 
+    def _terminate(
+        self, episode: _Episode, reason: str, detail: str
+    ) -> tuple[dict, tuple[protocol.Blob, ...]]:
+        """End the episode unsuccessfully, reporting why, without advancing sim."""
+        header, blobs, scene = self._snapshot()
+        header.update(
+            success=False,
+            done=True,
+            reason=reason,
+            detail=detail,
+            transfers_completed=len(objects_on_upper_shelf(scene, episode.spec)),
+            steps=episode.steps,
+        )
+        return header, blobs
+
     def step(self, action_vector: list[float]) -> tuple[dict, tuple[protocol.Blob, ...]]:
         if self._episode is None:
             raise EvalServerError("step before reset")
@@ -193,24 +209,40 @@ class ShelfRestockEvalServer:
 
         current = self._observe().eef
         target = apply_action(current, Action.from_vector(action_vector))
-        for side, arm in (("left", target.left), ("right", target.right)):
-            world = encode_pose(WORLD_TO_WORKCELL.inverse().apply_pose(arm.pose))
-            joints = self._port.ik(side, world)
-            # Velocity feedforward, not zero. RoboTwin's set_arm_joints drives
-            # both a position and a velocity target, so commanding zero velocity
-            # asks the arm to *arrive at rest* at the new pose: within one 15 Hz
-            # control step it decelerates and covers only a fraction of the
-            # commanded displacement. Because each step's target is rebuilt from
-            # the freshly measured pose, that shortfall does not accumulate into
-            # a lag -- it silently rescales every action, so a policy replaying
-            # its training actions would crawl. Asking for the speed that
-            # actually covers the gap in one step removes the built-in brake.
-            now = self._port.arm_joints(side)
-            rate = self._hz
-            velocity = tuple(
-                (goal - start) * rate for goal, start in zip(joints, now, strict=True)
-            )
-            self._port.command(side, joints, velocity, arm.gripper)
+        # Solve both arms before commanding either. A policy that asks for an
+        # unreachable pose must leave the scene untouched, or the right arm's
+        # failure would still have moved the left and the episode would end in
+        # a state no action produced.
+        commands = []
+        try:
+            for side, arm in (("left", target.left), ("right", target.right)):
+                world = encode_pose(WORLD_TO_WORKCELL.inverse().apply_pose(arm.pose))
+                joints = self._port.ik(side, world)
+                # Velocity feedforward, not zero. RoboTwin's set_arm_joints drives
+                # both a position and a velocity target, so commanding zero velocity
+                # asks the arm to *arrive at rest* at the new pose: within one 15 Hz
+                # control step it decelerates and covers only a fraction of the
+                # commanded displacement. Because each step's target is rebuilt from
+                # the freshly measured pose, that shortfall does not accumulate into
+                # a lag -- it silently rescales every action, so a policy replaying
+                # its training actions would crawl. Asking for the speed that
+                # actually covers the gap in one step removes the built-in brake.
+                now = self._port.arm_joints(side)
+                rate = self._hz
+                velocity = tuple(
+                    (goal - start) * rate for goal, start in zip(joints, now, strict=True)
+                )
+                commands.append((side, joints, velocity, arm.gripper))
+        except UnreachablePose as failure:
+            # An outcome, not an error: score the episode as failed here and let
+            # the evaluation move on to the next seed. Raising instead would
+            # abort the whole run and discard every episode already scored --
+            # and an undertrained policy commands unreachable poses routinely,
+            # so the arms that most need measuring are the ones that never
+            # produce a result.
+            return self._terminate(episode, "unreachable_pose", str(failure))
+        for side, joints, velocity, gripper in commands:
+            self._port.command(side, joints, velocity, gripper)
 
         episode.tick_debt += 1.0 / (self._hz * self._port.dt)
         ticks, episode.tick_debt = divmod(episode.tick_debt, 1.0)
