@@ -129,6 +129,14 @@ def main() -> int:
         seeds = [int(v) for v in args.seeds.split(",") if v.strip()]
     profiles = [p.strip() for p in args.profiles.split(",") if p.strip()]
 
+    # Registers any policy plugin this repo defines (control_pi05) before the
+    # checkpoint's own config is resolved. LeRobot maps a saved policy type to
+    # a class through its draccus registry, and a plugin only enters that
+    # registry when its module is imported -- so without this an
+    # object-conditioned checkpoint fails to load with an unknown-type error,
+    # while an RGB checkpoint is unaffected.
+    import oct_vla.policies  # noqa: F401
+
     config = PreTrainedConfig.from_pretrained(args.checkpoint)
     config.pretrained_path = args.checkpoint
     metadata = LeRobotDatasetMetadata(args.repo_id, root=args.dataset_root)

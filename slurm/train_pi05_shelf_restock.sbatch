@@ -28,6 +28,28 @@ SPLIT_MANIFEST="$DATASET/split_manifest.json"
 [ -f "$SPLIT_MANIFEST" ] || { echo "No split_manifest.json in $DATASET" >&2; exit 2; }
 EVAL_SPLIT=$("$OCTVLA_POLICY_PYTHON" -c "import json,sys; print(json.load(open(sys.argv[1]))['eval_split'])" "$SPLIT_MANIFEST")
 
+# The variant selects the policy CLASS, not just the dataset. `object` swaps in
+# the object-conditioned plugin, which reads the dataset's object-token columns
+# through a zero-initialised residual; `rgb` is stock pi0.5 and ignores them.
+# Getting this wrong is silent and costly: pointing the object run at stock
+# pi0.5 trains a second RGB model on a dataset that merely *contains* tokens,
+# and the comparison then reports "object conditioning does not help" when it
+# was never enabled. The two arms must differ here, not only in --dataset.root.
+#
+# Stock pi0.5 loads via --policy.path (type comes from the checkpoint). The
+# plugin cannot: its type is not in LeRobot's registry until its package is
+# imported, so it needs --policy.type plus --policy.discover_packages_path,
+# with the base weights supplied separately as --policy.pretrained_path.
+if [ "$TRAIN_VARIANT" = "object" ]; then
+  POLICY_ARGS=(
+    --policy.type=control_pi05
+    --policy.pretrained_path="${OCTVLA_BASE_MODEL:-lerobot/pi05_base}"
+    --policy.discover_packages_path=oct_vla.policies
+  )
+else
+  POLICY_ARGS=(--policy.path="${OCTVLA_BASE_MODEL:-lerobot/pi05_base}")
+fi
+
 OUTPUT="$OCTVLA_OUTPUT_ROOT/pi05_lora_three_object_${TRAIN_VARIANT}_${SLURM_JOB_ID}"
 # Create only the parent: lerobot-train refuses to start if its own output
 # directory already exists and resume is False, so pre-creating it fails the
@@ -61,12 +83,16 @@ nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 RENAME_MAP=$(PYTHONPATH="$OCTVLA_REPO/src" "$OCTVLA_POLICY_PYTHON" -c \
   "import json; from oct_vla.data.policy_inputs import PI05_RENAME_MAP; print(json.dumps(PI05_RENAME_MAP))")
 
+# The plugin lives in this repo, so the training process itself needs src on
+# the path -- previously only the rename-map subshell above did.
+export PYTHONPATH="$OCTVLA_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
+
 srun "$OCTVLA_POLICY_PYTHON" -u -m lerobot.scripts.lerobot_train \
   --dataset.repo_id="local/oct-vla-shelf-restock-three_object-${TRAIN_VARIANT}" \
   --dataset.root="$DATASET" \
   --dataset.eval_split="$EVAL_SPLIT" \
   --rename_map="$RENAME_MAP" \
-  --policy.path=lerobot/pi05_base \
+  "${POLICY_ARGS[@]}" \
   --policy.dtype=bfloat16 \
   --policy.gradient_checkpointing=true \
   --policy.push_to_hub=false \

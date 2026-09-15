@@ -75,6 +75,20 @@ sbatch --account=$SLURM_ACCOUNT --partition=$SLURM_PARTITION --gres=gpu:a40:1 \
 
 Train both variants together so everything except the conditioning is identical.
 
+`TRAIN_VARIANT` selects the **policy class**, not only the dataset:
+
+| Variant | Policy | Reads object tokens |
+| --- | --- | --- |
+| `rgb` | stock `pi05`, loaded with `--policy.path` | no |
+| `object` | `control_pi05` (`src/oct_vla/policies/`), loaded with `--policy.type` + `--policy.pretrained_path` + `--policy.discover_packages_path` | yes |
+
+The plugin needs the three-flag form because its type only enters LeRobot's
+registry once its package is imported; `--policy.path` would take the type from
+the base checkpoint and silently give a second stock pi0.5. That failure is
+worth naming, because it does not look like a failure: the object arm would
+train to a healthy loss on a dataset that merely *contains* token columns and
+report that object conditioning does not help, having never been enabled.
+
 Notes that are easy to get wrong:
 
 * **Camera names.** pi0.5 was pretrained with openpi's `base_0_rgb`,
@@ -95,6 +109,38 @@ Smoke-test any change to the training path with `TRAIN_STEPS=6` first. Every
 failure mode found so far surfaced within six steps, and two of them —
 `push_to_hub` demanding a Hub repo id, and the transformers pin silently
 skipping the pretrained vision tower — would otherwise have cost a full run.
+
+### Verifying the conditioning is actually live
+
+`ControlPI05Pytorch.object_injection` is zero-initialised, so the object path
+contributes nothing at step 0 by construction — and contributes nothing ever if
+the tokens fail to arrive, since the policy reads them with `batch.get(...)`
+and a missing key is `None` rather than an error. Loss curves look identical
+either way, so check the weights instead of the curve:
+
+```bash
+python -c "
+from safetensors.torch import load_file
+w = load_file('CHECKPOINT/pretrained_model/adapter_model.safetensors')
+k = [x for x in w if 'object_injection.weight' in x][0]
+print(k, 'max|w| =', w[k].float().abs().max().item())"
+```
+
+Non-zero means gradients reached the injection, which can only happen if real
+tokens flowed through the object expert. Zero after training means the
+conditioning never ran. Verified on a 6-step run: `9.36e-05`, with all 13
+object-module tensors present in the checkpoint and its saved type recorded as
+`control_pi05`.
+
+One shape trap sits between training and evaluation. LeRobot's preprocessor
+adds a batch dimension to the features declared on the policy config, and the
+object tokens are not among them — they pass through untouched. Under training
+the dataloader has already collated, so this is invisible; at evaluation a live
+observation arrives as `observation.state (1,16)` alongside
+`observation.object_tokens (8,15)`, and the object expert rejects the rank-2
+tensor. `ControlPI05Policy` therefore batches them itself. A policy that
+trains for a day and then dies on its first eval step is the failure this
+avoids.
 
 ## 4. Evaluate closed-loop
 
@@ -179,3 +225,26 @@ have crashed an evaluation:
   accumulates into a visible lag -- it just rescales every action, and a policy
   replaying its own training actions would crawl. The server now commands the
   velocity that covers the gap in one step.
+
+## LoRA adapter verification
+
+Carried over from the RGB baseline work, because the same adapter machinery
+backs both variants.
+
+| Requirement | Status | Evidence |
+| --- | --- | --- |
+| LoRA parameter selection | Verified | 1,287,168 / 4,144,691,984 trainable (0.031%), all on `gemma_expert.*.self_attn.{q,v}_proj` — pi0.5's documented default targets. |
+| Base behaviour preserved at init | Verified at the layer level | The same fixed input through one target `q_proj` before and after `wrap_with_peft` matches bit-exactly, and `lora_B` is all zero. Every touched layer is provably an identity wrapper at init, so the whole model is, by composition. |
+| Two-episode overfit | Verified | Loss 0.451 → ~0.09 over 1500 steps. Needed the LR raised to `1e-4`; at pi0.5's default `2.5e-5` the loss oscillates flat and looks broken when it is merely slow. |
+| Checkpoint round trip | Verified | A `control_pi05` checkpoint reloads through `PreTrainedConfig.from_pretrained` and runs single-observation inference (`select_action → (1,14)`). |
+
+**A caveat worth keeping.** An earlier attempt to verify "preservation at init"
+compared `base_policy.select_action(...)` against `wrapped.select_action(...)`
+end to end and found a ~4.7% action difference, stable across dtypes (0.0453
+bf16, 0.0446 fp32), which rules out numerical precision. That is **not**
+evidence the adapter changes behaviour: `wrap_with_peft` mutates the policy in
+place rather than returning an independent copy, so the two calls dispatch
+through overlapping state, with two `torch.manual_seed()` resets around a
+stochastic 10-step flow-matching sampler — not a controlled comparison. The
+layer-level check isolates the actual question and is unambiguous. Recorded so
+the number is not rediscovered and mistaken for a real discrepancy.
