@@ -34,3 +34,26 @@ python scripts/hub_dataset.py download YOUR_ORG/oct-vla-shelf-restock-rgb \
 ```
 
 Use the downloaded directory directly as `--dataset.root` in LeRobot training.
+
+## Published releases
+
+| Repository | Release | Episodes | Frames | Size |
+| --- | --- | ---: | ---: | ---: |
+| `3liyounes/oct-vla-shelf-restock-three_object-rgb` | `v1.0.0` | 123 | 17311 | ~137 MB |
+| `3liyounes/oct-vla-shelf-restock-three_object-object` | `v1.0.0` | 123 | 17311 | ~138 MB |
+
+Both are private. Each holds 90 train and 33 validation episodes in the episode
+order described in [dataset_protocol.md](dataset_protocol.md#split-layout-inside-the-dataset),
+so `split_manifest.json` travels with the data and `eval_split` needs no
+restating at the download site. `octvla_episode_manifest.json` carries the source
+seed and `episode.json` SHA-256 for every clip.
+
+Verified after upload by downloading each release into a scratch directory and
+re-checking all ten files against `dataset_manifest.json`: no mismatches. Doing
+this round trip is worth the minute it takes -- it distinguishes a faithful
+upload from one that merely reported success.
+
+Note for anyone finetuning pi0.5 from these datasets: the policy's tokenizer
+comes from the licence-gated `google/paligemma-3b-pt-224`, so a Hugging Face
+account that has accepted that licence is required. The datasets themselves carry
+no such restriction. See [setup_nhr_alex.md](setup_nhr_alex.md).
