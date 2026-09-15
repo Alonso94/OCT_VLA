@@ -21,17 +21,18 @@ set -euo pipefail
 LINE=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" "$SWEEP_MANIFEST")
 [ -n "$LINE" ] || { echo "No manifest row for array task $SLURM_ARRAY_TASK_ID" >&2; exit 2; }
 
-IFS=$'\t' read -r TRAIN_VARIANT OBJECT_TOKEN_MODE TRAIN_SEED <<< "$LINE"
+IFS=$'\t' read -r BACKBONE TRAIN_VARIANT OBJECT_TOKEN_MODE TRAIN_SEED <<< "$LINE"
+: "${BACKBONE:?Malformed manifest row: $LINE}"
 : "${TRAIN_VARIANT:?Malformed manifest row: $LINE}"
 : "${OBJECT_TOKEN_MODE:?Malformed manifest row: $LINE}"
 : "${TRAIN_SEED:?Malformed manifest row: $LINE}"
-export TRAIN_VARIANT OBJECT_TOKEN_MODE TRAIN_SEED
+export BACKBONE TRAIN_VARIANT OBJECT_TOKEN_MODE TRAIN_SEED
 
-echo "sweep cell : task=$SLURM_ARRAY_TASK_ID variant=$TRAIN_VARIANT mode=$OBJECT_TOKEN_MODE seed=$TRAIN_SEED"
+echo "sweep cell : task=$SLURM_ARRAY_TASK_ID backbone=$BACKBONE variant=$TRAIN_VARIANT mode=$OBJECT_TOKEN_MODE seed=$TRAIN_SEED"
 
 # Hand off to the single-run script rather than duplicating its body. That
 # script is the one that has actually been run end to end, and a sweep whose
 # cells were trained by a near-copy of it would be comparing against a baseline
 # nobody verified. Its #SBATCH lines are inert comments when run this way; the
 # allocation is the one this array job already holds.
-exec bash "$OCTVLA_REPO/slurm/train_pi05_shelf_restock.sbatch"
+exec bash "$OCTVLA_REPO/slurm/train_shelf_restock.sbatch"

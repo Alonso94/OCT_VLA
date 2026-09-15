@@ -104,7 +104,7 @@ def main() -> int:
     from lerobot.policies import make_policy, make_pre_post_processors
 
     from oct_vla.data.object_tokens import ObjectTokenSpec
-    from oct_vla.data.policy_inputs import PI05_RENAME_MAP
+    from oct_vla.data.policy_inputs import rename_map_for
     from oct_vla.serve.client import ShelfRestockEvalClient
 
     parser = argparse.ArgumentParser()
@@ -147,6 +147,10 @@ def main() -> int:
 
     config = PreTrainedConfig.from_pretrained(args.checkpoint)
     config.pretrained_path = args.checkpoint
+    # Derived from the checkpoint, not assumed: pi0.5 needs openpi's camera
+    # names, SmolVLA takes the dataset's own, and hard-coding either one would
+    # silently feed the other backbone a wrist view as its scene view.
+    rename_map = rename_map_for(config.type)
     if args.shuffle_tokens:
         if not hasattr(config, "object_token_shuffle"):
             raise SystemExit(
@@ -156,7 +160,7 @@ def main() -> int:
             )
         config.object_token_shuffle = True
     metadata = LeRobotDatasetMetadata(args.repo_id, root=args.dataset_root)
-    policy = make_policy(cfg=config, ds_meta=metadata, rename_map=PI05_RENAME_MAP)
+    policy = make_policy(cfg=config, ds_meta=metadata, rename_map=rename_map)
     policy.eval()
     # The same rename map training used. Unlike training, inference would not
     # complain about getting this wrong: the cameras share shape and dtype, so a
@@ -167,7 +171,7 @@ def main() -> int:
         pretrained_path=args.checkpoint,
         preprocessor_overrides={
             "device_processor": {"device": str(policy.config.device)},
-            "rename_observations_processor": {"rename_map": PI05_RENAME_MAP},
+            "rename_observations_processor": {"rename_map": rename_map},
         },
     )
     spec = ObjectTokenSpec() if args.object_tokens else None

@@ -26,17 +26,25 @@ export OCTVLA_REPO="${OCTVLA_REPO:-$(cd "$(dirname "$0")/.." && pwd)}"
 # two arms compared at different seeds are not comparable.
 SEEDS=(${SWEEP_SEEDS:-1000 1001 1002})
 
-# Cells as "variant<TAB>token_mode". The arms are stated here, once, so the
-# manifest and the write-up cannot disagree about what was run.
+# Cells as "backbone<TAB>variant<TAB>token_mode". The arms are stated here,
+# once, so the manifest and the write-up cannot disagree about what was run.
+#
+# A: RGB baseline. B: full object tokens -- the headline claim. C:
+# role-stripped -- is B real, or task-state leakage? Without C a win for B is
+# uninterpretable, so C is part of a stage, not an extra.
 case "$STAGE" in
   stage2)
-    # A: RGB baseline. B: full object tokens -- the headline claim.
-    # C: role-stripped -- is B real, or task-state leakage? Without C a win
-    # for B is uninterpretable, so C is part of the stage, not an extra.
-    ARMS=("rgb	full" "object	full" "object	role_stripped")
+    ARMS=("pi05	rgb	full" "pi05	object	full" "pi05	object	role_stripped")
+    ;;
+  stage3-smolvla)
+    # Deliberately the same three arms as stage2, so the backbone is the only
+    # thing that differs between the two stages. Six cells (dropping C) would
+    # be cheaper, but then a SmolVLA win could not be checked for the same
+    # leakage the pi0.5 arm has to rule out.
+    ARMS=("smolvla	rgb	full" "smolvla	object	full" "smolvla	object	role_stripped")
     ;;
   *)
-    echo "Unknown stage: $STAGE (known: stage2)" >&2; exit 2 ;;
+    echo "Unknown stage: $STAGE (known: stage2, stage3-smolvla)" >&2; exit 2 ;;
 esac
 
 MANIFEST="$OCTVLA_OUTPUT_ROOT/sweeps/${STAGE}.tsv"
@@ -53,13 +61,13 @@ echo "stage    : $STAGE"
 echo "cells    : $CELLS"
 echo "steps    : ${TRAIN_STEPS:-20000}"
 echo "manifest : $MANIFEST"
-awk -F'\t' '{printf "  [%d] pi05_%s_%s_s%s\n", NR-1, $1, $2, $3}' "$MANIFEST"
+awk -F'\t' '{printf "  [%d] %s_%s_%s_s%s\n", NR-1, $1, $2, $3, $4}' "$MANIFEST"
 
 # Refuse to submit a stage whose cells already exist, rather than letting each
 # array task discover it and fail. One partly-submitted array is far harder to
 # reason about afterwards than a refusal now.
 CLASHES=$(awk -F'\t' -v root="$OCTVLA_OUTPUT_ROOT" \
-  '{d = root "/pi05_" $1 "_" $2 "_s" $3; if (system("[ -e \"" d "\" ]") == 0) print "  " d}' "$MANIFEST")
+  '{d = root "/" $1 "_" $2 "_" $3 "_s" $4; if (system("[ -e \"" d "\" ]") == 0) print "  " d}' "$MANIFEST")
 if [ -n "$CLASHES" ]; then
   echo "Refusing to submit; these run directories already exist:" >&2
   echo "$CLASHES" >&2
@@ -106,7 +114,7 @@ echo "eval arrays   : ${EVAL_JOBS[*]}"
 # and is submitted over exactly those cells. Cheap, and it is the only check
 # that the policy reads the tokens at all rather than having learned to ignore
 # a channel that never helped.
-SHUFFLE_CELLS=$(awk -F'\t' '$1 == "object" && $2 == "full" {print NR - 1}' "$MANIFEST" | paste -sd,)
+SHUFFLE_CELLS=$(awk -F'\t' '$2 == "object" && $3 == "full" {print NR - 1}' "$MANIFEST" | paste -sd,)
 if [ -n "$SHUFFLE_CELLS" ]; then
   for profile in "${EVAL_PROFILES_LIST[@]}"; do
     EVAL_JOBS+=("$(sbatch --parsable \

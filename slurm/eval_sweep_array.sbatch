@@ -25,9 +25,9 @@ set -euo pipefail
 
 LINE=$(sed -n "$((SLURM_ARRAY_TASK_ID + 1))p" "$SWEEP_MANIFEST")
 [ -n "$LINE" ] || { echo "No manifest row for array task $SLURM_ARRAY_TASK_ID" >&2; exit 2; }
-IFS=$'\t' read -r VARIANT TOKEN_MODE SEED <<< "$LINE"
+IFS=$'\t' read -r BACKBONE VARIANT TOKEN_MODE SEED <<< "$LINE"
 
-RUN_NAME="pi05_${VARIANT}_${TOKEN_MODE}_s${SEED}"
+RUN_NAME="${BACKBONE}_${VARIANT}_${TOKEN_MODE}_s${SEED}"
 RUN_DIR="$OCTVLA_OUTPUT_ROOT/$RUN_NAME"
 
 # `last` rather than a hard-coded step: it is whatever the run actually reached.

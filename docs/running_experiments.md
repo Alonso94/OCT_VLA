@@ -69,7 +69,7 @@ Confirm the reported boundary straddles the two blocks, e.g.
 ```bash
 TRAIN_VARIANT=rgb BATCH_SIZE=16 TRAIN_STEPS=20000 \
 sbatch --account=$SLURM_ACCOUNT --partition=$SLURM_PARTITION --gres=gpu:a40:1 \
-       --time=24:00:00 --export=ALL slurm/train_pi05_shelf_restock.sbatch
+       --time=24:00:00 --export=ALL slurm/train_shelf_restock.sbatch
 # then the same with TRAIN_VARIANT=object
 ```
 

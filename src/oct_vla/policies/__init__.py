@@ -5,5 +5,6 @@ imports remain lazy until LeRobot resolves the selected policy type.
 """
 
 from .control_pi05.configuration_control_pi05 import ControlPI05Config
+from .control_smolvla.configuration_control_smolvla import ControlSmolVLAConfig
 
-__all__ = ["ControlPI05Config"]
+__all__ = ["ControlPI05Config", "ControlSmolVLAConfig"]

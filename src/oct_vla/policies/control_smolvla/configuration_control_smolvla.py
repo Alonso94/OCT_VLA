@@ -1,19 +1,24 @@
-"""Configuration for the offline-object-conditioned π0.5 policy."""
+"""Configuration for the offline-object-conditioned SmolVLA policy.
+
+Deliberately the same knobs, names and defaults as the π0.5 arm: the sweep
+compares backbones, so any difference here would be a confound rather than a
+result.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 from lerobot.configs import PreTrainedConfig
-from lerobot.policies.pi05.configuration_pi05 import PI05Config
+from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
 
 from oct_vla.policies.object_conditioning import ObjectTokenConfigMixin
 
 
-@PreTrainedConfig.register_subclass("control_pi05")
+@PreTrainedConfig.register_subclass("control_smolvla")
 @dataclass
-class ControlPI05Config(ObjectTokenConfigMixin, PI05Config):
-    """π0.5 with a zero-initialized residual from precomputed scene tokens."""
+class ControlSmolVLAConfig(ObjectTokenConfigMixin, SmolVLAConfig):
+    """SmolVLA with a zero-initialized residual from precomputed scene tokens."""
 
     object_token_key: str = "observation.object_tokens"
     object_token_mask_key: str = "observation.object_token_mask"
@@ -22,9 +27,7 @@ class ControlPI05Config(ObjectTokenConfigMixin, PI05Config):
     #: "full", or "role_stripped" to drop the role one-hot and the
     #: target-first ordering. See oct_vla.data.token_transforms.
     object_token_mode: str = "full"
-    #: Evaluation-only control: permute tokens across objects. Training with
-    #: this on would teach the policy to ignore the tokens, which is the
-    #: opposite of what the control is meant to detect.
+    #: Evaluation-only control: permute tokens across objects.
     object_token_shuffle: bool = False
     object_queries: int = 4
     object_attention_heads: int = 8
