@@ -116,3 +116,34 @@ def test_shuffle_runs_after_role_stripping():
     out, _ = apply_token_mode(tokens, mask, mode="role_stripped", shuffle=True)
     assert out.shape[-1] == 15 - ROLE_DIMS
     assert sorted(out[0, :2, 0].tolist()) == pytest.approx([0.1, 0.9])
+
+
+def test_a_stable_rank_survives_objects_moving():
+    """The flaw this replaces: sorting on each frame's positions re-permutes the
+    tokens whenever two objects cross, so the policy's input layout changes for
+    reasons it cannot observe."""
+    tokens, mask = _scene([((0.9, 0.0, 0.0), TARGET), ((0.1, 0.0, 0.0), OTHER)])
+    moved, _ = _scene([((0.05, 0.0, 0.0), TARGET), ((0.1, 0.0, 0.0), OTHER)])
+    rank = torch.tensor([[1.0, 0.0, 8.0, 8.0]])
+
+    before, _ = strip_roles(tokens, mask, rank)
+    after, _ = strip_roles(moved, mask, rank)
+    # Slot assignment is identical: the token that was rank 0 leads both times.
+    assert before[0, 0, 0].item() == pytest.approx(0.1)
+    assert after[0, 0, 0].item() == pytest.approx(0.1)
+
+
+def test_position_sorting_does_re_permute_which_is_why_rank_exists():
+    """Documents the old behaviour, so the regression is visible if rank is lost."""
+    a, mask = _scene([((0.9, 0.0, 0.0), TARGET), ((0.1, 0.0, 0.0), OTHER)])
+    b, _ = _scene([((0.05, 0.0, 0.0), TARGET), ((0.1, 0.0, 0.0), OTHER)])
+    lead_a = strip_roles(a, mask)[0][0, 0, 0].item()
+    lead_b = strip_roles(b, mask)[0][0, 0, 0].item()
+    assert lead_a != lead_b, "without a rank the leading slot changes as objects move"
+
+
+def test_rank_still_sorts_padding_last():
+    tokens, mask = _scene([((0.9, 0.0, 0.0), TARGET), ((0.1, 0.0, 0.0), OTHER)], slots=4)
+    rank = torch.tensor([[1.0, 0.0, 8.0, 8.0]])
+    _, out_mask = strip_roles(tokens, mask, rank)
+    assert out_mask.tolist() == [[1.0, 1.0, 0.0, 0.0]]

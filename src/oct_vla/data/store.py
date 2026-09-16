@@ -19,7 +19,7 @@ from oct_vla.core.action import Action
 from oct_vla.core.frames import Pose
 from oct_vla.core.objects import ObjectScene, ObjectState, TaskContext
 from oct_vla.core.observation import RGBFrame, RobotObservation
-from oct_vla.core.state import ArmState, EEFState
+from oct_vla.core.state import ArmJoints, ArmState, EEFState, JointState
 
 from .episode import Episode, Sample
 
@@ -45,6 +45,14 @@ def _pose_from_json(data: dict) -> Pose:
 
 def _arm_to_json(arm: ArmState) -> dict:
     return {"pose": _pose_to_json(arm.pose), "gripper": arm.gripper}
+
+
+def _joints_to_json(joints: ArmJoints) -> dict:
+    return {"positions": list(joints.positions), "gripper": joints.gripper}
+
+
+def _joints_from_json(data: dict) -> ArmJoints:
+    return ArmJoints(tuple(data["positions"]), data["gripper"])
 
 
 def _arm_from_json(data: dict) -> ArmState:
@@ -129,6 +137,18 @@ def write_episode(episode: Episode, directory: str | Path) -> Path:
                     "left": _arm_to_json(observation.eef.left),
                     "right": _arm_to_json(observation.eef.right),
                 },
+                # Optional: recordings made before joint capture have no
+                # "joints" key, and must stay readable.
+                **(
+                    {}
+                    if observation.joints is None
+                    else {
+                        "joints": {
+                            "left": _joints_to_json(observation.joints.left),
+                            "right": _joints_to_json(observation.joints.right),
+                        }
+                    }
+                ),
                 "scene": _scene_to_json(sample.scene),
             }
         )
@@ -173,12 +193,21 @@ def read_episode(directory: str | Path) -> Episode:
         # sample.timestamp doubles as the observation's own timestamp: both
         # are derived from the same tick clock at capture time (see
         # EpisodeRecorder), so there is nothing to reconcile between them.
+        raw_joints = record.get("joints")
+        joints = (
+            None
+            if raw_joints is None
+            else JointState(
+                _joints_from_json(raw_joints["left"]), _joints_from_json(raw_joints["right"])
+            )
+        )
         observation = RobotObservation(
             record["timestamp"],
             eef,
             frames["head_camera"],
             frames["left_wrist_camera"],
             frames["right_wrist_camera"],
+            joints=joints,
         )
         samples.append(
             Sample(

@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from math import isfinite
 
-from .state import EEFState
+from .state import EEFState, JointState
 
 
 @dataclass(frozen=True)
@@ -32,12 +32,19 @@ class RobotObservation:
     head_rgb: RGBFrame
     left_wrist_rgb: RGBFrame
     right_wrist_rgb: RGBFrame
+    #: Measured joint configuration, when the backend reports one. Optional so
+    #: that observations reconstructed from older recordings -- which predate
+    #: joint capture -- remain constructible, and so a backend without joint
+    #: feedback stays usable. Consumers that need joints must say so.
+    joints: JointState | None = None
 
     def __post_init__(self) -> None:
         if not isfinite(self.timestamp) or self.timestamp < 0:
             raise ValueError("Timestamp must be finite and nonnegative")
         if not isinstance(self.eef, EEFState):
             raise ValueError("Expected measured EEFState")
+        if self.joints is not None and not isinstance(self.joints, JointState):
+            raise ValueError("Expected measured JointState or None")
         if not all(
             isinstance(f, RGBFrame)
             for f in (self.head_rgb, self.left_wrist_rgb, self.right_wrist_rgb)

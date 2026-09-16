@@ -17,6 +17,8 @@ class ControlPI05Config(ObjectTokenConfigMixin, PI05Config):
 
     object_token_key: str = "observation.object_tokens"
     object_token_mask_key: str = "observation.object_token_mask"
+    #: Episode-stable slot ordering, used only by the role-stripped mode.
+    object_token_rank_key: str = "observation.object_token_rank"
     #: Width of the tokens *as stored in the dataset*, before any ablation.
     object_token_dim: int = 15
     #: "full", or "role_stripped" to drop the role one-hot and the

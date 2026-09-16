@@ -161,6 +161,9 @@ class ObjectConditionedPolicyMixin:
             batched(batch.get(self.config.object_token_mask_key), unbatched_ndim=1),
             mode=self.config.object_token_mode,
             shuffle=self.config.object_token_shuffle,
+            # Absent on datasets exported before the stable ordering existed;
+            # apply_token_mode then falls back to per-frame position sorting.
+            rank=batched(batch.get(self.config.object_token_rank_key), unbatched_ndim=1),
         )
         self.model.set_object_inputs(tokens, mask)
 

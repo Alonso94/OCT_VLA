@@ -44,8 +44,8 @@ def state_vector(eef) -> list[float]:
     ]
 
 
-def build_observation(obs, *, object_token_spec, torch, np):
-    from oct_vla.data.object_tokens import object_tokens
+def build_observation(obs, *, object_token_spec, torch, np, ranks=None):
+    from oct_vla.data.object_tokens import object_token_ranks, object_tokens
 
     batch = {}
     for camera, feature in CAMERA_FEATURES.items():
@@ -63,6 +63,17 @@ def build_observation(obs, *, object_token_spec, torch, np):
         batch["observation.object_token_mask"] = torch.tensor(
             [[float(v) for v in mask]], dtype=torch.float32
         )
+        if ranks is not None:
+            # The same episode-stable ordering the exporter wrote, rebuilt here
+            # from this episode's first scene. Training and evaluation must sort
+            # the role-stripped arm identically or the model sees a layout it
+            # was never fit on.
+            batch["observation.object_token_rank"] = torch.tensor(
+                [list(object_token_ranks(
+                    obs.scene, ranks, spec=object_token_spec, context=obs.context
+                ))],
+                dtype=torch.float32,
+            )
     batch["task"] = [obs.context.instruction]
     return batch
 
@@ -73,6 +84,12 @@ def run_episode(
 ) -> dict:
     observation = client.reset(seed, profile)
     policy.reset()
+    # Fixed once, from the scene at reset -- exactly as the exporter does.
+    ranks = None
+    if object_token_spec is not None:
+        from oct_vla.data.object_tokens import stable_ranks
+
+        ranks = stable_ranks(observation.scene)
     result = {
         "seed": seed, "profile": profile, "success": False, "steps": 0,
         "transfers_completed": 0, "reason": "step_limit", "detail": "",
@@ -80,7 +97,7 @@ def run_episode(
     }
     for step in range(max_steps):
         batch = build_observation(
-            observation, object_token_spec=object_token_spec, torch=torch, np=np
+            observation, object_token_spec=object_token_spec, torch=torch, np=np, ranks=ranks
         )
         with torch.no_grad():
             action = policy.select_action(preprocessor(batch))

@@ -28,6 +28,53 @@ class ObjectTokenSpec:
 DEFAULT_OBJECT_TOKEN_SPEC = ObjectTokenSpec()
 
 
+def stable_ranks(scene: ObjectScene) -> dict[str, int]:
+    """A per-episode ordering of track_ids, from geometry alone.
+
+    Built ONCE from the scene at an episode's first frame and reused for every
+    later frame, which is the whole point: the role-stripped arm needs an order
+    that carries no task state *and* does not permute as objects move. Sorting
+    each frame independently satisfies only the first, and the reordering it
+    causes when two objects cross measurably hurt that arm.
+
+    Keyed on position rather than track_id because the task's default selector
+    picks the lowest remaining track_id -- so a track_id ordering would hand
+    back a large part of the target information this mode exists to remove.
+    """
+    ordered = sorted(scene.objects, key=lambda obj: (obj.pose.position, obj.track_id))
+    return {obj.track_id: rank for rank, obj in enumerate(ordered)}
+
+
+def object_token_ranks(
+    scene: ObjectScene,
+    ranks: dict[str, int],
+    *,
+    spec: ObjectTokenSpec = DEFAULT_OBJECT_TOKEN_SPEC,
+    context: TaskContext | None = None,
+) -> tuple[int, ...]:
+    """`ranks` laid out in the same slot order `object_tokens` emits.
+
+    Padding slots take a rank beyond any real object so they sort last, matching
+    how the mask is handled.
+    """
+    if context is None:
+        raise ValueError("object_token_ranks needs the TaskContext used to order the tokens")
+    order = {ObjectRole.TARGET: 0, ObjectRole.PREVIOUS_NEIGHBOR: 1, ObjectRole.OTHER: 2}
+    ordered = sorted(
+        scene.objects,
+        key=lambda obj: (order[role_of(context, obj.track_id)], obj.track_id),
+    )
+    missing = [obj.track_id for obj in ordered if obj.track_id not in ranks]
+    if missing:
+        raise ValueError(
+            f"No stable rank for track_id(s) {missing}; ranks must come from the same "
+            "episode's first frame, which must contain every object."
+        )
+    encoded = tuple(ranks[obj.track_id] for obj in ordered)
+    padding = (spec.max_objects,) * (spec.max_objects - len(encoded))
+    return encoded + padding
+
+
 def object_tokens(
     scene: ObjectScene,
     context: TaskContext,

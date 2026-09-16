@@ -8,7 +8,7 @@ from oct_vla.core.action import Action, apply_action
 from oct_vla.core.frames import WORKCELL_FRAME, Pose, Transform
 from oct_vla.core.geometry import finite_values
 from oct_vla.core.observation import RGBFrame, RobotObservation
-from oct_vla.core.state import ArmState, EEFState
+from oct_vla.core.state import ArmJoints, ArmState, EEFState, JointState
 from oct_vla.robots.base import Health, StepResult
 
 
@@ -164,7 +164,13 @@ class RoboTwinBackend:
             ArmState(self.transform.apply_pose(decode_pose(arm.pose_wxyz)), arm.gripper)
             for arm in (reading.left, reading.right)
         ]
-        return RobotObservation(self._ticks * self.port.dt, EEFState(*arms), *reading.cameras)
+        joints = JointState(
+            ArmJoints(reading.left.joints, reading.left.gripper),
+            ArmJoints(reading.right.joints, reading.right.gripper),
+        )
+        return RobotObservation(
+            self._ticks * self.port.dt, EEFState(*arms), *reading.cameras, joints=joints
+        )
 
     def observe(self) -> RobotObservation:
         return self._observation(self.port.read())

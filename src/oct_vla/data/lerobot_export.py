@@ -15,7 +15,12 @@ from hashlib import sha256
 from pathlib import Path
 
 from oct_vla.data.episode import Episode, validate_episode
-from oct_vla.data.object_tokens import ObjectTokenSpec, object_tokens
+from oct_vla.data.object_tokens import (
+    ObjectTokenSpec,
+    object_token_ranks,
+    object_tokens,
+    stable_ranks,
+)
 from oct_vla.data.store import read_episode
 
 CAMERA_FEATURES = {
@@ -59,6 +64,42 @@ def _state_vector(episode: Episode, index: int) -> tuple[float, ...]:
     )
 
 
+def _joint_motor_names(observation) -> list[str] | None:
+    """Per-motor labels for the joint columns, or None if joints were not
+    recorded. Derived from the observation rather than hard-coded so a
+    different embodiment's joint count exports without editing this file."""
+    if observation.joints is None:
+        return None
+    names = []
+    for side, arm in (("left", observation.joints.left), ("right", observation.joints.right)):
+        names.extend(f"{side}_arm.j{i}" for i in range(len(arm.positions)))
+        names.append(f"{side}_arm.gripper")
+    return names
+
+
+def _joint_state_vector(episode: Episode, index: int) -> tuple[float, ...] | None:
+    joints = episode.samples[index].observation.joints
+    return None if joints is None else joints.to_vector()
+
+
+def _joint_action_vector(episode: Episode, index: int) -> tuple[float, ...] | None:
+    """The NEXT frame's measured joints: an absolute position target.
+
+    Absolute rather than a delta, matching RoboTwin's own `joint_action` format
+    and standard behaviour-cloning practice. An absolute target has no
+    integrator to drift and, unlike the Cartesian action, needs no inverse
+    kinematics to execute -- so a command the policy emits is always feasible
+    up to joint limits, which is precisely the failure mode the Cartesian
+    representation could not avoid.
+
+    The final sample has no successor, so it repeats its own configuration:
+    holding still is the only well-defined target there.
+    """
+    following = min(index + 1, len(episode.samples) - 1)
+    joints = episode.samples[following].observation.joints
+    return None if joints is None else joints.to_vector()
+
+
 def _features(
     episode: Episode, *, object_token_spec: ObjectTokenSpec | None = None
 ) -> dict[str, dict]:
@@ -90,6 +131,22 @@ def _features(
         },
         "action": {"dtype": "float32", "shape": (14,)},
     }
+    # Joint columns appear only when the recording captured them. Older
+    # episodes predate joint capture and must still export, so this is
+    # conditional rather than assumed -- and a dataset either has the columns
+    # for every frame or not at all, which _frame checks.
+    joint_names = _joint_motor_names(observation)
+    if joint_names is not None:
+        features["observation.joint_state"] = {
+            "dtype": "float32",
+            "shape": (len(joint_names),),
+            "names": {"motors": joint_names},
+        }
+        features["action.joint_position"] = {
+            "dtype": "float32",
+            "shape": (len(joint_names),),
+            "names": {"motors": joint_names},
+        }
     for attr, feature_name in CAMERA_FEATURES.items():
         frame = getattr(observation, attr)
         features[feature_name] = {
@@ -105,6 +162,13 @@ def _features(
         # Float avoids an Arrow bool/nested-array incompatibility in LeRobot v3
         # and is converted to bool by the policy branch.
         features["observation.object_token_mask"] = {
+            "dtype": "float32",
+            "shape": (object_token_spec.max_objects,),
+        }
+        # The episode-stable ordering the role-stripped arm sorts by. Exported
+        # rather than recomputed per frame because it is a property of the
+        # episode's first scene, which a single frame cannot recover.
+        features["observation.object_token_rank"] = {
             "dtype": "float32",
             "shape": (object_token_spec.max_objects,),
         }
@@ -185,25 +249,51 @@ def export_episodes(
         if dataset.fps != fps:
             raise ValueError(f"Cannot append {fps} Hz data to a {dataset.fps} Hz LeRobot dataset")
     else:
+        features = _features(accepted[0][1], object_token_spec=object_token_spec)
         dataset = LeRobotDataset.create(
             repo_id=repo_id,
             root=destination,
             fps=fps,
             robot_type=robot_type,
-            features=_features(accepted[0][1], object_token_spec=object_token_spec),
+            features=features,
             use_videos=True,
         )
     for _, episode in accepted:
+        episode_ranks = stable_ranks(episode.samples[0].scene) if object_token_spec else {}
         for index, sample in enumerate(episode.samples):
             frame = {
                 "observation.state": np.asarray(_state_vector(episode, index), dtype=np.float32),
                 "action": np.asarray(sample.action.to_vector(), dtype=np.float32),
                 "task": sample.context.instruction,
             }
+            joint_state = _joint_state_vector(episode, index)
+            if joint_state is not None:
+                frame["observation.joint_state"] = np.asarray(joint_state, dtype=np.float32)
+                frame["action.joint_position"] = np.asarray(
+                    _joint_action_vector(episode, index), dtype=np.float32
+                )
+            elif "observation.joint_state" in dataset.features:
+                # The feature set was declared from the first episode. A later
+                # episode without joints would write a ragged dataset that only
+                # fails much later, during training.
+                raise ValueError(
+                    "Joint columns were declared from the first episode but "
+                    f"episode seed {episode.seed} has no recorded joints; "
+                    "re-collect the whole set so every frame carries them."
+                )
             if object_token_spec is not None:
                 tokens, mask = object_tokens(sample.scene, sample.context, spec=object_token_spec)
                 frame["observation.object_tokens"] = np.asarray(tokens, dtype=np.float32)
                 frame["observation.object_token_mask"] = np.asarray(mask, dtype=np.float32)
+                frame["observation.object_token_rank"] = np.asarray(
+                    object_token_ranks(
+                        sample.scene,
+                        episode_ranks,
+                        spec=object_token_spec,
+                        context=sample.context,
+                    ),
+                    dtype=np.float32,
+                )
             for attr, feature_name in CAMERA_FEATURES.items():
                 rgb = getattr(sample.observation, attr)
                 frame[feature_name] = np.frombuffer(rgb.data, dtype=np.uint8).reshape(
