@@ -20,10 +20,24 @@ def main() -> int:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--repo-id", required=True)
     parser.add_argument("--object-tokens", action="store_true")
+    parser.add_argument(
+        "--control-space",
+        default="cartesian",
+        choices=["cartesian", "joint"],
+        help="'joint' makes observation.state the measured joint configuration and "
+        "action the next one, so the policy is proprioceptive in the space it "
+        "commands and no inverse kinematics sits between them.",
+    )
     args = parser.parse_args()
     sources = sorted(path.parent for path in args.canonical_root.rglob("episode.json"))
     spec = ObjectTokenSpec() if args.object_tokens else None
-    report = export_episodes(sources, args.output, repo_id=args.repo_id, object_token_spec=spec)
+    report = export_episodes(
+        sources,
+        args.output,
+        repo_id=args.repo_id,
+        object_token_spec=spec,
+        control_space=args.control_space,
+    )
     print(f"exported {len(report.exported)} episodes to {report.output}")
     for source, reason in report.skipped:
         print(f"skipped {source}: {reason}")

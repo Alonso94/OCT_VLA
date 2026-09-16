@@ -100,10 +100,50 @@ def _joint_action_vector(episode: Episode, index: int) -> tuple[float, ...] | No
     return None if joints is None else joints.to_vector()
 
 
+CONTROL_SPACES = ("cartesian", "joint")
+
+
+def _require_joints(episode: Episode, control_space: str) -> None:
+    if control_space == "joint" and episode.samples[0].observation.joints is None:
+        raise ValueError(
+            "control_space='joint' needs recorded joint positions, but episode "
+            f"seed {episode.seed} has none. Re-collect with a build that records "
+            "them (see oct_vla.core.state.JointState)."
+        )
+
+
 def _features(
-    episode: Episode, *, object_token_spec: ObjectTokenSpec | None = None
+    episode: Episode,
+    *,
+    object_token_spec: ObjectTokenSpec | None = None,
+    control_space: str = "cartesian",
 ) -> dict[str, dict]:
     observation = episode.samples[0].observation
+    if control_space not in CONTROL_SPACES:
+        raise ValueError(f"control_space must be one of {CONTROL_SPACES}, got {control_space!r}")
+    _require_joints(episode, control_space)
+    joint_names = _joint_motor_names(observation)
+    if control_space == "joint":
+        # A joint-space policy is proprioceptive in the same space it commands:
+        # `observation.state` carries joints, `action` is the next joint
+        # configuration. Feeding it a Cartesian state while asking for joint
+        # targets would make the policy learn inverse kinematics as a side job,
+        # which is the round-trip this change exists to remove. Matches
+        # RoboTwin's own joint_action format.
+        return {
+            "observation.state": {
+                "dtype": "float32",
+                "shape": (len(joint_names),),
+                "names": {"motors": joint_names},
+            },
+            "action": {
+                "dtype": "float32",
+                "shape": (len(joint_names),),
+                "names": {"motors": joint_names},
+            },
+            **_camera_features(observation),
+            **_object_features(object_token_spec),
+        }
     features = {
         "observation.state": {
             "dtype": "float32",
@@ -147,32 +187,38 @@ def _features(
             "shape": (len(joint_names),),
             "names": {"motors": joint_names},
         }
-    for attr, feature_name in CAMERA_FEATURES.items():
-        frame = getattr(observation, attr)
-        features[feature_name] = {
+    features.update(_camera_features(observation))
+    features.update(_object_features(object_token_spec))
+    return features
+
+
+def _camera_features(observation) -> dict[str, dict]:
+    return {
+        feature_name: {
             "dtype": "video",
-            "shape": (frame.height, frame.width, 3),
+            "shape": (getattr(observation, attr).height, getattr(observation, attr).width, 3),
             "names": ["height", "width", "channel"],
         }
-    if object_token_spec is not None:
-        features["observation.object_tokens"] = {
+        for attr, feature_name in CAMERA_FEATURES.items()
+    }
+
+
+def _object_features(spec: ObjectTokenSpec | None) -> dict[str, dict]:
+    if spec is None:
+        return {}
+    return {
+        "observation.object_tokens": {
             "dtype": "float32",
-            "shape": (object_token_spec.max_objects, object_token_spec.token_dim),
-        }
+            "shape": (spec.max_objects, spec.token_dim),
+        },
         # Float avoids an Arrow bool/nested-array incompatibility in LeRobot v3
         # and is converted to bool by the policy branch.
-        features["observation.object_token_mask"] = {
-            "dtype": "float32",
-            "shape": (object_token_spec.max_objects,),
-        }
+        "observation.object_token_mask": {"dtype": "float32", "shape": (spec.max_objects,)},
         # The episode-stable ordering the role-stripped arm sorts by. Exported
         # rather than recomputed per frame because it is a property of the
         # episode's first scene, which a single frame cannot recover.
-        features["observation.object_token_rank"] = {
-            "dtype": "float32",
-            "shape": (object_token_spec.max_objects,),
-        }
-    return features
+        "observation.object_token_rank": {"dtype": "float32", "shape": (spec.max_objects,)},
+    }
 
 
 def _fps(episode: Episode) -> int:
@@ -209,6 +255,7 @@ def export_episodes(
     include_unsuccessful: bool = False,
     append: bool = False,
     object_token_spec: ObjectTokenSpec | None = None,
+    control_space: str = "cartesian",
 ) -> ExportReport:
     """Convert canonical episode directories into a new local LeRobot dataset.
 
@@ -249,7 +296,11 @@ def export_episodes(
         if dataset.fps != fps:
             raise ValueError(f"Cannot append {fps} Hz data to a {dataset.fps} Hz LeRobot dataset")
     else:
-        features = _features(accepted[0][1], object_token_spec=object_token_spec)
+        features = _features(
+            accepted[0][1],
+            object_token_spec=object_token_spec,
+            control_space=control_space,
+        )
         dataset = LeRobotDataset.create(
             repo_id=repo_id,
             root=destination,
@@ -261,18 +312,32 @@ def export_episodes(
     for _, episode in accepted:
         episode_ranks = stable_ranks(episode.samples[0].scene) if object_token_spec else {}
         for index, sample in enumerate(episode.samples):
-            frame = {
-                "observation.state": np.asarray(_state_vector(episode, index), dtype=np.float32),
-                "action": np.asarray(sample.action.to_vector(), dtype=np.float32),
-                "task": sample.context.instruction,
-            }
-            joint_state = _joint_state_vector(episode, index)
+            _require_joints(episode, control_space)
+            if control_space == "joint":
+                frame = {
+                    "observation.state": np.asarray(
+                        _joint_state_vector(episode, index), dtype=np.float32
+                    ),
+                    "action": np.asarray(
+                        _joint_action_vector(episode, index), dtype=np.float32
+                    ),
+                    "task": sample.context.instruction,
+                }
+            else:
+                frame = {
+                    "observation.state": np.asarray(
+                        _state_vector(episode, index), dtype=np.float32
+                    ),
+                    "action": np.asarray(sample.action.to_vector(), dtype=np.float32),
+                    "task": sample.context.instruction,
+                }
+            joint_state = None if control_space == "joint" else _joint_state_vector(episode, index)
             if joint_state is not None:
                 frame["observation.joint_state"] = np.asarray(joint_state, dtype=np.float32)
                 frame["action.joint_position"] = np.asarray(
                     _joint_action_vector(episode, index), dtype=np.float32
                 )
-            elif "observation.joint_state" in dataset.features:
+            elif control_space != "joint" and "observation.joint_state" in dataset.features:
                 # The feature set was declared from the first episode. A later
                 # episode without joints would write a ragged dataset that only
                 # fails much later, during training.

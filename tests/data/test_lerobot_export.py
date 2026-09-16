@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from oct_vla.data.lerobot_export import CAMERA_FEATURES, _features, _state_vector
 from oct_vla.data.object_tokens import ObjectTokenSpec
 
@@ -80,3 +82,42 @@ def test_joint_motor_names_follow_the_embodiment_not_a_constant():
         samples=(SimpleNamespace(observation=_observation_with_joints(joints_per_arm=6)),)
     )
     assert _features(episode)["observation.joint_state"]["shape"] == (14,)
+
+
+def test_joint_control_space_makes_state_and_action_both_joints():
+    """A joint-space policy must be proprioceptive in the space it commands.
+    Giving it a Cartesian state while asking for joint targets would make it
+    learn inverse kinematics as a side job -- the round-trip this removes."""
+    episode = SimpleNamespace(samples=(SimpleNamespace(observation=_observation_with_joints()),))
+    features = _features(episode, control_space="joint")
+    assert features["observation.state"]["shape"] == (16,)
+    assert features["action"]["shape"] == (16,)
+    assert features["observation.state"]["names"]["motors"][0] == "left_arm.j0"
+    # The separate joint columns are redundant once they ARE state and action.
+    assert "observation.joint_state" not in features
+    assert "action.joint_position" not in features
+
+
+def test_cartesian_remains_the_default():
+    episode = SimpleNamespace(samples=(SimpleNamespace(observation=_observation_with_joints()),))
+    features = _features(episode)
+    assert features["action"]["shape"] == (14,)
+    assert features["observation.state"]["names"]["motors"][0] == "left_eef.x"
+
+
+def test_joint_control_space_refuses_a_recording_without_joints():
+    """Failing here is far cheaper than a dataset whose action column is
+    silently the wrong quantity."""
+    frame = SimpleNamespace(height=240, width=320)
+    observation = SimpleNamespace(
+        head_rgb=frame, left_wrist_rgb=frame, right_wrist_rgb=frame, joints=None
+    )
+    episode = SimpleNamespace(seed=7, samples=(SimpleNamespace(observation=observation),))
+    with pytest.raises(ValueError, match="needs recorded joint positions"):
+        _features(episode, control_space="joint")
+
+
+def test_an_unknown_control_space_is_rejected():
+    episode = SimpleNamespace(samples=(SimpleNamespace(observation=_observation_with_joints()),))
+    with pytest.raises(ValueError, match="control_space must be one of"):
+        _features(episode, control_space="torque")
