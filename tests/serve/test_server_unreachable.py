@@ -9,6 +9,8 @@ sweep most needs to measure were exactly the ones that produced no results.
 
 from __future__ import annotations
 
+import pytest
+
 from oct_vla.core.frames import Pose
 from oct_vla.core.objects import ObjectScene, ObjectState
 from oct_vla.core.observation import RGBFrame
@@ -151,10 +153,43 @@ def test_near_zero_pose_delta_holds_without_calling_ik():
 
 def test_measured_gripper_aperture_decodes_to_force_preserving_commands():
     """Contact aperture is an observation, not a weak motor target."""
-    assert _decode_gripper_target(0.79, 1.0) == 0.0
-    assert _decode_gripper_target(0.8333, 0.0) == 1.0
-    assert _decode_gripper_target(0.82, 0.0) == 0.0
-    assert _decode_gripper_target(0.82, 1.0) == 1.0
+    assert _decode_gripper_target(0.79) < 1e-6
+    assert _decode_gripper_target(0.8333) > 1 - 1e-6
+    assert _decode_gripper_target(0.0) == 0.0
+    assert _decode_gripper_target(1.0) == 1.0
+
+
+def test_the_gripper_command_never_lands_between_open_and_closed():
+    """An intermediate command is a weak grip -- the bug that made every
+    transfer fail. The sharpness is sized to the tightest gap in the recorded
+    apertures, so the nearest real sample on either side still saturates."""
+    from oct_vla.serve.server import GRIPPER_DECISION_CENTRE as C
+
+    # The closest observed samples either side of the decision point.
+    for aperture in (0.821989, 0.823055, 0.8095, 0.8250, 0.833317):
+        command = _decode_gripper_target(aperture)
+        assert min(command, 1.0 - command) < 1e-6, f"{aperture} decoded to {command}"
+    # Only an input at the centre itself is undecided, and no sample sits there.
+    assert _decode_gripper_target(C) == pytest.approx(0.5)
+
+
+def test_the_gripper_decode_is_memoryless():
+    """An earlier version returned the previous command inside a dead band,
+    making the command a function of history rather than the observation --
+    and the dead band was not empty: 0.34% of the corpus fell inside it."""
+    import inspect
+
+    from oct_vla.serve.server import _decode_gripper_target as decode
+
+    assert list(inspect.signature(decode).parameters) == ["requested"]
+    assert decode(0.82) == decode(0.82)
+
+
+def test_the_gripper_decode_is_monotonic():
+    """A wider aperture can never decode to a tighter grip."""
+    values = [0.0, 0.3, 0.65, 0.80, 0.8224, 0.8231, 0.8333, 1.0]
+    commands = [_decode_gripper_target(v) for v in values]
+    assert commands == sorted(commands)
 
 
 def arm(position, gripper=0.8):

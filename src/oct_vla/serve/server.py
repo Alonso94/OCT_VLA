@@ -14,6 +14,7 @@ measured success rate.
 
 from __future__ import annotations
 
+import math
 import socket
 import traceback
 from dataclasses import dataclass
@@ -50,17 +51,35 @@ IK_ROTATION_DEADBAND = 1e-5  # radians
 # all, so continuing to integrate describes a motion nothing is performing.
 COMMAND_REFERENCE_LEASH = 0.05  # metres
 
-# Canonical actions contain the *next measured* finger aperture, because they
-# are formed between two observations. That is not the actuator command used
-# to produce the demonstration: while grasping an object the measured aperture
-# stalls around 0.6--0.8 even though the oracle keeps commanding fully closed.
-# Sending that measured value back as a drive target removes the gripping
-# force. Decode the two actuator states with hysteresis around the empirical
-# open equilibrium (5/6 in these Panda scenes). Across the canonical corpus,
-# open labels are >= 0.833317; the gap below these thresholds is therefore
-# physical closure, not stationary noise.
-GRIPPER_CLOSE_THRESHOLD = 0.810
-GRIPPER_OPEN_THRESHOLD = 0.825
+# Actions carry the *next measured* finger aperture, because they are formed
+# between two observations. That is not the actuator command that produced the
+# demonstration: while grasping, the measured aperture stalls around 0.6--0.8
+# while the oracle keeps commanding fully closed. Sending the measured value
+# back as a drive target releases the object -- which is why the first sweep
+# recorded a mean of exactly 0.00 transfers across all 1080 episodes.
+#
+# So the aperture is decoded back to the binary actuator state with a steeply
+# scaled sigmoid about the decision point. Two properties matter:
+#
+#   Saturated. An intermediate command is a weak grip, i.e. the same bug. At
+#   this sharpness the output is within 3e-7 of 0 or 1 across the entire
+#   observed range, so nothing in between is ever commanded.
+#
+#   Memoryless. An earlier hysteresis version returned the *previous* command
+#   for apertures inside a dead band, which made the command a function of
+#   history rather than of the observation -- two identical observations could
+#   be driven differently, and the dead band was not empty: 0.34% of the
+#   corpus (38 of 11064 samples) falls inside it.
+#
+# Both constants are measured, not chosen. The recorded apertures are dense
+# through this region -- the widest empty interval anywhere in [0.78, 0.86] is
+# 0.00107 wide -- so a centre picked by eye lands on real data and maps it to a
+# half-open command. The centre is that interval's midpoint, and the sharpness
+# is set so the nearest observed sample on either side still decodes to within
+# 1e-8 of a binary command. Re-derive both if the embodiment or its gripper
+# calibration changes; `tests/serve` asserts the saturation property directly.
+GRIPPER_DECISION_CENTRE = 0.822522
+GRIPPER_DECISION_SHARPNESS = 37528.0
 
 #: Profile -> RoboTwin task class, identical to scripts/collect_shelf_restock.py.
 #: Evaluating count shift means running the same policy against these three.
@@ -101,9 +120,6 @@ class _Episode:
     #: retaining their intended endpoint prevents actuator residual from being
     #: discarded and compounded at every 15 Hz step.
     commanded_eef: EEFState | None = None
-    #: Latched actuator targets, distinct from measured apertures in the
-    #: learned action. See the gripper thresholds above.
-    gripper_targets: dict[str, float] | None = None
     #: Steps in which at least one arm's command was kinematically infeasible
     #: and was held instead. A diagnostic, not a termination condition.
     infeasible_steps: int = 0
@@ -159,13 +175,18 @@ def _split_joint_action(values: list[float]) -> dict[str, tuple[tuple[float, ...
     }
 
 
-def _decode_gripper_target(requested: float, previous: float) -> float:
-    """Map a measured-aperture label to a force-preserving binary command."""
-    if requested <= GRIPPER_CLOSE_THRESHOLD:
-        return 0.0
-    if requested >= GRIPPER_OPEN_THRESHOLD:
-        return 1.0
-    return previous
+def _decode_gripper_target(requested: float) -> float:
+    """Map a measured-aperture label to a force-preserving actuator command.
+
+    Written in the numerically stable branches rather than as one expression:
+    the sharpness makes the exponent large enough on real inputs (|x| ~ 300 at
+    a full grip) that the naive form overflows.
+    """
+    x = GRIPPER_DECISION_SHARPNESS * (requested - GRIPPER_DECISION_CENTRE)
+    if x >= 0.0:
+        return 1.0 / (1.0 + math.exp(-x))
+    positive = math.exp(x)
+    return positive / (1.0 + positive)
 
 
 class ShelfRestockEvalServer:
@@ -326,8 +347,6 @@ class ShelfRestockEvalServer:
         sending it back as a drive target would release the object.
         """
         commands = []
-        previous = episode.gripper_targets or {"left": 1.0, "right": 1.0}
-        next_grippers: dict[str, float] = {}
         for side, (positions, gripper) in _split_joint_action(action_vector).items():
             measured = self._port.arm_joints(side)
             if len(positions) != len(measured):
@@ -335,10 +354,7 @@ class ShelfRestockEvalServer:
                     f"{side} arm has {len(measured)} joints but the action supplies "
                     f"{len(positions)}; the policy's action space does not match this robot"
                 )
-            target = _decode_gripper_target(gripper, previous[side])
-            next_grippers[side] = target
-            commands.append((side, positions, target))
-        episode.gripper_targets = next_grippers
+            commands.append((side, positions, _decode_gripper_target(gripper)))
 
         episode.tick_debt += 1.0 / (self._hz * self._port.dt)
         ticks, episode.tick_debt = divmod(episode.tick_debt, 1.0)
@@ -375,11 +391,6 @@ class ShelfRestockEvalServer:
         # failure would still have moved the left and the episode would end in
         # a state no action produced.
         commands = []
-        previous_grippers = episode.gripper_targets or {
-            "left": 1.0 if current.left.gripper > 0.5 else 0.0,
-            "right": 1.0 if current.right.gripper > 0.5 else 0.0,
-        }
-        next_grippers: dict[str, float] = {}
         held: dict[str, bool] = {}
         for side, delta, arm in (
             ("left", correction.left, target.left),
@@ -409,9 +420,7 @@ class ShelfRestockEvalServer:
                     episode.infeasible_steps += 1
                     episode.last_infeasible = str(failure)
             held[side] = infeasible
-            gripper = _decode_gripper_target(arm.gripper, previous_grippers[side])
-            next_grippers[side] = gripper
-            commands.append((side, now, joints, gripper))
+            commands.append((side, now, joints, _decode_gripper_target(arm.gripper)))
         # Do not integrate a reference the arm was never commanded towards, or
         # the unreachable target is re-requested every step for the rest of the
         # episode and the arm never recovers.
@@ -419,7 +428,6 @@ class ShelfRestockEvalServer:
             current.left if held["left"] else target.left,
             current.right if held["right"] else target.right,
         )
-        episode.gripper_targets = next_grippers
 
         episode.tick_debt += 1.0 / (self._hz * self._port.dt)
         ticks, episode.tick_debt = divmod(episode.tick_debt, 1.0)
