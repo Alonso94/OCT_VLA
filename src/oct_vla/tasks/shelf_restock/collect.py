@@ -18,7 +18,7 @@ from typing import Any
 from oct_vla.core.frames import WORKCELL_FRAME, Transform
 from oct_vla.core.objects import ObjectScene
 from oct_vla.core.observation import RobotObservation
-from oct_vla.core.state import ArmState, EEFState
+from oct_vla.core.state import ArmJoints, ArmState, EEFState, JointState
 from oct_vla.data.episode import Episode, validate_episode
 from oct_vla.data.recording import (
     CapturedFrame,
@@ -140,6 +140,13 @@ def collect_episode(
                 ),
             ),
             *reading.cameras,
+            # The oracle plans and executes in joint space; the Cartesian action
+            # is derived from these. Recording them keeps the original control
+            # signal, rather than only its round-trip through IK.
+            joints=JointState(
+                ArmJoints(reading.left.joints, reading.left.gripper),
+                ArmJoints(reading.right.joints, reading.right.gripper),
+            ),
         )
 
     def observe_scene() -> ObjectScene:

@@ -1,4 +1,7 @@
 import gzip
+from dataclasses import replace
+
+import pytest
 
 from oct_vla.core.action import Action, ArmAction
 from oct_vla.core.frames import WORKCELL_FRAME, Pose
@@ -128,3 +131,31 @@ def test_read_episode_reconstructs_frame_i_from_a_known_byte_slice(tmp_path):
 
     for index, sample in enumerate(restored.samples):
         assert sample.observation.head_rgb == episode.samples[index].observation.head_rgb
+
+
+def test_joints_survive_a_write_read_round_trip(tmp_path):
+    """Joint positions are the oracle's actual control signal, so losing them
+    in serialization would silently produce a Cartesian-only dataset again."""
+    from oct_vla.core.state import ArmJoints, JointState
+
+    episode = _episode()
+    sample = episode.samples[0]
+    joints = JointState(ArmJoints(tuple(0.1 * i for i in range(7)), 0.8),
+                        ArmJoints(tuple(0.2 * i for i in range(7)), 0.3))
+    observation = replace(sample.observation, joints=joints)
+    with_joints = replace(episode, samples=(replace(sample, observation=observation),
+                                            *episode.samples[1:]))
+
+    write_episode(with_joints, tmp_path / "ep")
+    restored = read_episode(tmp_path / "ep")
+
+    assert restored.samples[0].observation.joints == joints
+    assert restored.samples[0].observation.joints.to_vector()[7] == pytest.approx(0.8)
+
+
+def test_a_recording_without_joints_still_round_trips(tmp_path):
+    """Episodes collected before joint capture must stay readable."""
+    episode = _episode()
+    assert episode.samples[0].observation.joints is None
+    write_episode(episode, tmp_path / "ep")
+    assert read_episode(tmp_path / "ep").samples[0].observation.joints is None
