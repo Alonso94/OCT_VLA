@@ -205,3 +205,75 @@ def test_the_first_step_uses_the_measured_pose():
 
     measured = EEFState(arm((0.0, 0.0, 0.9)), arm((0.5, 0.0, 0.9)))
     assert _leashed_reference(None, measured) is measured
+
+
+# ------------------------------------------------------- joint control space
+
+
+def joint_server() -> tuple[ShelfRestockEvalServer, FakePort]:
+    server, port = server_with_episode(AssertionError("IK must not be called in joint space"))
+    server._episode.control_space = "joint"
+    return server, port
+
+
+JOINT_ACTION = [0.1] * 7 + [0.0] + [0.2] * 7 + [1.0]
+
+
+def test_joint_actions_never_touch_ik():
+    """The point of the joint control space: with no solver in the loop, no
+    command can be kinematically infeasible. FakePort raises if ik() is called."""
+    server, port = joint_server()
+    header, _ = server.step(JOINT_ACTION)
+    assert header["infeasible_steps"] == 0
+    assert port.commands, "the arms are still commanded"
+
+
+def test_joint_targets_are_passed_through_unchanged():
+    """Absolute targets, so there is nothing to integrate and nothing to drift."""
+    server, port = joint_server()
+    server.step(JOINT_ACTION)
+    left = [c for c in port.commands if c[0] == "left"]
+    right = [c for c in port.commands if c[0] == "right"]
+    assert all(c[1] == (0.1,) * 7 for c in left)
+    assert all(c[1] == (0.2,) * 7 for c in right)
+
+
+def test_joint_gripper_still_decodes_to_a_force_preserving_command():
+    """The action carries the next *measured* aperture in either control space,
+    and it stalls mid-close while grasping -- so it needs the same decode."""
+    server, port = joint_server()
+    server.step(JOINT_ACTION)
+    assert [c[3] for c in port.commands if c[0] == "left"][0] == 0.0
+    assert [c[3] for c in port.commands if c[0] == "right"][0] == 1.0
+
+
+def test_a_joint_action_of_the_wrong_width_is_refused():
+    """A Cartesian policy pointed at a joint-space server would otherwise have
+    its 14 numbers silently reinterpreted as joint targets."""
+    from oct_vla.serve.server import EvalServerError
+
+    server, _ = joint_server()
+    try:
+        server.step([0.0] * 14)
+    except EvalServerError as error:
+        assert "does not match this robot" in str(error) or "joints" in str(error)
+    else:
+        raise AssertionError("a mismatched action width must be refused")
+
+
+def test_an_odd_length_joint_action_is_refused():
+    from oct_vla.serve.server import EvalServerError
+
+    server, _ = joint_server()
+    try:
+        server.step([0.0] * 15)
+    except EvalServerError as error:
+        assert "even length" in str(error)
+    else:
+        raise AssertionError("an odd-width joint action must be refused")
+
+
+def test_an_unknown_control_space_is_refused_at_reset():
+    from oct_vla.serve.server import CONTROL_SPACES
+
+    assert "joint" in CONTROL_SPACES and "cartesian" in CONTROL_SPACES

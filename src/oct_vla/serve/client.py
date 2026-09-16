@@ -14,9 +14,14 @@ from dataclasses import dataclass
 
 from oct_vla.core.objects import ObjectScene, TaskContext
 from oct_vla.core.observation import RGBFrame
-from oct_vla.core.state import EEFState
+from oct_vla.core.state import EEFState, JointState
 from oct_vla.serve import protocol
-from oct_vla.serve.codec import context_from_json, eef_from_json, scene_from_json
+from oct_vla.serve.codec import (
+    context_from_json,
+    eef_from_json,
+    joints_from_json,
+    scene_from_json,
+)
 
 #: Camera order is fixed by the wire format and matches the canonical episode
 #: schema, so a policy's image inputs line up with what it was trained on.
@@ -29,6 +34,9 @@ class RemoteObservation:
 
     timestamp: float
     eef: EEFState
+    #: Measured joint configuration, when the simulator reports one. What a
+    #: joint-space policy conditions on; None for an older server.
+    joints: JointState | None
     cameras: dict[str, RGBFrame]
     scene: ObjectScene
     context: TaskContext
@@ -72,6 +80,7 @@ def _observation(message: protocol.Message) -> RemoteObservation:
     return RemoteObservation(
         timestamp=header["timestamp"],
         eef=eef_from_json(header["eef"]),
+        joints=joints_from_json(header.get("joints")),
         cameras=cameras,
         scene=scene_from_json(header["scene"]),
         context=context_from_json(header["context"]),
@@ -90,6 +99,8 @@ class ShelfRestockEvalClient:
         self._address = (host, port)
         self._timeout = timeout
         self._sock: socket.socket | None = None
+        #: Set by reset(); step() validates the action width against it.
+        self._control_space = "cartesian"
 
     def __enter__(self) -> ShelfRestockEvalClient:
         self.connect()
@@ -117,14 +128,41 @@ class ShelfRestockEvalClient:
         protocol.send(self._connection, header)
         return protocol.raise_for_error(protocol.recv(self._connection))
 
-    def reset(self, seed: int, profile: str = "three_object") -> RemoteObservation:
-        """Start a fresh scene. Raises if the simulator cannot build that seed."""
-        return _observation(self._round_trip({"op": "reset", "seed": seed, "profile": profile}))
+    def reset(
+        self,
+        seed: int,
+        profile: str = "three_object",
+        control_space: str = "cartesian",
+    ) -> RemoteObservation:
+        """Start a fresh scene. Raises if the simulator cannot build that seed.
+
+        `control_space` tells the server how to read the actions that follow:
+        "cartesian" for 14-d canonical increments executed through IK, "joint"
+        for absolute joint targets commanded directly. Declared rather than
+        inferred from the vector's width, so a policy whose action space does
+        not match the robot fails loudly instead of being misread.
+        """
+        self._control_space = control_space
+        return _observation(
+            self._round_trip(
+                {
+                    "op": "reset",
+                    "seed": seed,
+                    "profile": profile,
+                    "control_space": control_space,
+                }
+            )
+        )
 
     def step(self, action: Sequence[float]) -> StepResult:
-        """Apply one 14-D canonical action (see docs/canonical_action.md)."""
+        """Apply one action in whatever space `reset` declared.
+
+        Cartesian is the 14-D canonical action (docs/canonical_action.md);
+        joint is an absolute configuration, whose width follows the embodiment
+        and is checked against the robot server-side.
+        """
         values = [float(v) for v in action]
-        if len(values) != 14:
+        if self._control_space == "cartesian" and len(values) != 14:
             raise ValueError(f"Canonical action must have 14 elements; got {len(values)}")
         message = self._round_trip({"op": "step", "action": values})
         return StepResult(

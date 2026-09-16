@@ -103,7 +103,12 @@ def test_reset_decodes_observation(connected):
     observation = client.reset(seed=1000, profile="three_object")
     thread.join()
 
-    assert requests[0] == {"op": "reset", "seed": 1000, "profile": "three_object"}
+    assert requests[0] == {
+        "op": "reset",
+        "seed": 1000,
+        "profile": "three_object",
+        "control_space": "cartesian",
+    }
     assert observation.timestamp == 1.5
     assert observation.eef.left.gripper == 0.25
     assert observation.eef.right.gripper == 0.75

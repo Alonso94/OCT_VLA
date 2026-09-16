@@ -21,13 +21,13 @@ from dataclasses import dataclass
 from oct_vla.core.action import Action, action_between, apply_action
 from oct_vla.core.objects import ObjectScene, TaskContext
 from oct_vla.core.observation import RobotObservation
-from oct_vla.core.state import ArmState, EEFState
+from oct_vla.core.state import ArmJoints, ArmState, EEFState, JointState
 from oct_vla.perception.ground_truth import GroundTruthObjectStateEstimator
 from oct_vla.perception.robotwin.evidence import RoboTwinObjectEvidenceSource, TrackedActor
 from oct_vla.robots.robotwin.backend import decode_pose, encode_pose
 from oct_vla.robots.robotwin.native import UnreachablePose
 from oct_vla.serve import protocol
-from oct_vla.serve.codec import context_to_json, eef_to_json, scene_to_json
+from oct_vla.serve.codec import context_to_json, eef_to_json, joints_to_json, scene_to_json
 from oct_vla.tasks.shelf_restock.collect import DEFAULT_HZ, WORLD_TO_WORKCELL
 from oct_vla.tasks.shelf_restock.manager import ShelfRestockManager, objects_on_upper_shelf
 from oct_vla.tasks.shelf_restock.spec import DEFAULT_SPEC, ShelfRestockSpec
@@ -108,6 +108,10 @@ class _Episode:
     #: and was held instead. A diagnostic, not a termination condition.
     infeasible_steps: int = 0
     last_infeasible: str = ""
+    #: "cartesian" (14-d canonical increments, executed through IK) or "joint"
+    #: (absolute joint targets, commanded directly). Declared at reset rather
+    #: than inferred, so a mismatch is an error instead of a misreading.
+    control_space: str = "cartesian"
 
 
 def _leashed_reference(commanded: EEFState | None, measured: EEFState) -> EEFState:
@@ -131,6 +135,28 @@ def _leashed_reference(commanded: EEFState | None, measured: EEFState) -> EEFSta
         ) ** 0.5
         arms.append(actual if gap > COMMAND_REFERENCE_LEASH else reference)
     return EEFState(arms[0], arms[1])
+
+
+CONTROL_SPACES = ("cartesian", "joint")
+
+
+def _split_joint_action(values: list[float]) -> dict[str, tuple[tuple[float, ...], float]]:
+    """Unpack a joint action into per-arm (positions, gripper).
+
+    Layout mirrors `JointState.to_vector`: each arm's joints followed by its
+    gripper, left then right. The width is not fixed at 16 because it follows
+    the embodiment -- but both arms must report the same count, so an odd
+    total or a mismatch is a caller error worth failing on.
+    """
+    if len(values) % 2 != 0:
+        raise EvalServerError(f"Joint action must have an even length; got {len(values)}")
+    half = len(values) // 2
+    if half < 2:
+        raise EvalServerError(f"Joint action needs at least one joint per arm; got {len(values)}")
+    return {
+        "left": (tuple(values[: half - 1]), values[half - 1]),
+        "right": (tuple(values[half : 2 * half - 1]), values[2 * half - 1]),
+    }
 
 
 def _decode_gripper_target(requested: float, previous: float) -> float:
@@ -161,6 +187,10 @@ class ShelfRestockEvalServer:
 
     def _observe(self) -> RobotObservation:
         reading = self._port.read()
+        joints = JointState(
+            ArmJoints(reading.left.joints, reading.left.gripper),
+            ArmJoints(reading.right.joints, reading.right.gripper),
+        )
         return RobotObservation(
             self._episode.sim_time if self._episode is not None else 0.0,
             EEFState(
@@ -174,6 +204,7 @@ class ShelfRestockEvalServer:
                 ),
             ),
             *reading.cameras,
+            joints=joints,
         )
 
     def _scene(self, observation: RobotObservation) -> ObjectScene:
@@ -209,6 +240,7 @@ class ShelfRestockEvalServer:
         header = {
             "timestamp": observation.timestamp,
             "eef": eef_to_json(observation.eef),
+            "joints": joints_to_json(observation.joints),
             "scene": scene_to_json(scene),
             "context": context_to_json(self._context(scene)),
         }
@@ -226,10 +258,14 @@ class ShelfRestockEvalServer:
     # ------------------------------------------------------------ operations
 
     def reset(
-        self, seed: int, profile: str, max_steps: int
+        self, seed: int, profile: str, max_steps: int, control_space: str = "cartesian"
     ) -> tuple[dict, tuple[protocol.Blob, ...]]:
         if profile not in PROFILE_TASKS:
             raise EvalServerError(f"Unknown profile {profile!r}; have {sorted(PROFILE_TASKS)}")
+        if control_space not in CONTROL_SPACES:
+            raise EvalServerError(
+                f"Unknown control_space {control_space!r}; have {sorted(CONTROL_SPACES)}"
+            )
         # Rebuild the port only when the profile changes: each one is a distinct
         # RoboTwin task class, but reconstructing SAPIEN per episode is slow and
         # leaks render contexts.
@@ -256,6 +292,7 @@ class ShelfRestockEvalServer:
                 RoboTwinObjectEvidenceSource(tracked), WORLD_TO_WORKCELL
             ),
             max_steps=max_steps,
+            control_space=control_space,
         )
         header, blobs, _ = self._snapshot()
         return header, blobs
@@ -275,10 +312,58 @@ class ShelfRestockEvalServer:
         )
         return header, blobs
 
+    def _step_joint(
+        self, episode: _Episode, action_vector: list[float]
+    ) -> tuple[dict, tuple[protocol.Blob, ...]]:
+        """Command absolute joint targets directly.
+
+        The whole Cartesian apparatus is absent here, and that is the point:
+        no inverse kinematics, so no pose can be infeasible; no integrated
+        reference, because an absolute target has nothing to accumulate; no
+        deadband, because holding still is just re-commanding the same
+        configuration. What remains is the gripper decode -- the action carries
+        the next *measured* aperture, which stalls mid-close while grasping, so
+        sending it back as a drive target would release the object.
+        """
+        commands = []
+        previous = episode.gripper_targets or {"left": 1.0, "right": 1.0}
+        next_grippers: dict[str, float] = {}
+        for side, (positions, gripper) in _split_joint_action(action_vector).items():
+            measured = self._port.arm_joints(side)
+            if len(positions) != len(measured):
+                raise EvalServerError(
+                    f"{side} arm has {len(measured)} joints but the action supplies "
+                    f"{len(positions)}; the policy's action space does not match this robot"
+                )
+            target = _decode_gripper_target(gripper, previous[side])
+            next_grippers[side] = target
+            commands.append((side, positions, target))
+        episode.gripper_targets = next_grippers
+
+        episode.tick_debt += 1.0 / (self._hz * self._port.dt)
+        ticks, episode.tick_debt = divmod(episode.tick_debt, 1.0)
+        ticks = int(ticks)
+        for tick in range(ticks):
+            remaining = (ticks - tick) * self._port.dt
+            for side, goal, gripper in commands:
+                measured = self._port.arm_joints(side)
+                velocity = tuple(
+                    (want - actual) / remaining
+                    for want, actual in zip(goal, measured, strict=True)
+                )
+                self._port.command(side, goal, velocity, gripper)
+            self._port.tick()
+        episode.steps += 1
+        episode.sim_time += ticks * self._port.dt
+        return self._report(episode)
+
     def step(self, action_vector: list[float]) -> tuple[dict, tuple[protocol.Blob, ...]]:
         if self._episode is None:
             raise EvalServerError("step before reset")
         episode = self._episode
+
+        if episode.control_space == "joint":
+            return self._step_joint(episode, action_vector)
 
         action = Action.from_vector(action_vector)
         current = self._observe().eef
@@ -362,6 +447,11 @@ class ShelfRestockEvalServer:
         episode.steps += 1
         episode.sim_time += ticks * self._port.dt
 
+        return self._report(episode)
+
+    def _report(self, episode: _Episode) -> tuple[dict, tuple[protocol.Blob, ...]]:
+        """Score the current scene. Shared by both control spaces, so the two
+        can never disagree about what counts as success."""
         header, blobs, scene = self._snapshot()
         # Restocked, not merely cleared: see ShelfRestockManager.is_restocked.
         done_task = episode.manager.is_restocked(scene)
@@ -375,7 +465,8 @@ class ShelfRestockEvalServer:
             # How often the policy asked for somewhere the arm cannot go. Now a
             # diagnostic rather than a cause of death, this separates "cannot do
             # the task" from "cannot be executed at all" -- which the first
-            # sweep's single unreachable_pose outcome could not.
+            # sweep's single unreachable_pose outcome could not. Always zero in
+            # the joint control space, where no command can be infeasible.
             infeasible_steps=episode.infeasible_steps,
             detail=episode.last_infeasible,
         )
@@ -410,6 +501,7 @@ class ShelfRestockEvalServer:
                         int(message.header["seed"]),
                         str(message.header["profile"]),
                         int(message.header.get("max_steps", 600)),
+                        str(message.header.get("control_space", "cartesian")),
                     )
                 elif op == "step":
                     header, blobs = self.step(list(message.header["action"]))

@@ -30,6 +30,20 @@ CAMERA_FEATURES = {
 }
 
 
+def joint_vector(joints) -> list[float]:
+    """`JointState.to_vector` layout: each arm's joints then its gripper.
+
+    Exactly what the joint control space exports as `observation.state`, so the
+    policy is conditioned on the vector it was fit on.
+    """
+    return [
+        *joints.left.positions,
+        joints.left.gripper,
+        *joints.right.positions,
+        joints.right.gripper,
+    ]
+
+
 def state_vector(eef) -> list[float]:
     """Exactly `lerobot_export._state_vector`'s layout: left pos/quat/gripper
     then right. Rebuilt from the same fields so evaluation conditions the
@@ -44,7 +58,7 @@ def state_vector(eef) -> list[float]:
     ]
 
 
-def build_observation(obs, *, object_token_spec, torch, np, ranks=None):
+def build_observation(obs, *, object_token_spec, torch, np, ranks=None, control_space="cartesian"):
     from oct_vla.data.object_tokens import object_token_ranks, object_tokens
 
     batch = {}
@@ -54,9 +68,16 @@ def build_observation(obs, *, object_token_spec, torch, np, ranks=None):
         # uint8 CHW with a leading batch axis: what LeRobotDataset yields with
         # return_uint8=True, which is how the training dataloader was built.
         batch[feature] = torch.from_numpy(image.copy()).permute(2, 0, 1).unsqueeze(0)
-    batch["observation.state"] = torch.tensor(
-        [state_vector(obs.eef)], dtype=torch.float32
-    )
+    if control_space == "joint":
+        if obs.joints is None:
+            raise SystemExit(
+                "The simulator reported no joint state, but this checkpoint is "
+                "joint-space. Its observation.state cannot be built."
+            )
+        state = joint_vector(obs.joints)
+    else:
+        state = state_vector(obs.eef)
+    batch["observation.state"] = torch.tensor([state], dtype=torch.float32)
     if object_token_spec is not None:
         tokens, mask = object_tokens(obs.scene, obs.context, spec=object_token_spec)
         batch["observation.object_tokens"] = torch.tensor([tokens], dtype=torch.float32)
@@ -80,9 +101,9 @@ def build_observation(obs, *, object_token_spec, torch, np, ranks=None):
 
 def run_episode(
     client, policy, preprocessor, postprocessor, *,
-    seed, profile, max_steps, object_token_spec, torch, np,
+    seed, profile, max_steps, object_token_spec, torch, np, control_space="cartesian",
 ) -> dict:
-    observation = client.reset(seed, profile)
+    observation = client.reset(seed, profile, control_space=control_space)
     policy.reset()
     # Fixed once, from the scene at reset -- exactly as the exporter does.
     ranks = None
@@ -97,7 +118,12 @@ def run_episode(
     }
     for step in range(max_steps):
         batch = build_observation(
-            observation, object_token_spec=object_token_spec, torch=torch, np=np, ranks=ranks
+            observation,
+            object_token_spec=object_token_spec,
+            torch=torch,
+            np=np,
+            ranks=ranks,
+            control_space=control_space,
         )
         with torch.no_grad():
             action = policy.select_action(preprocessor(batch))
@@ -181,7 +207,15 @@ def main() -> int:
                 "which has no object tokens to shuffle."
             )
         config.object_token_shuffle = True
+    # Derived from the dataset the checkpoint was fit on, not passed in: a
+    # joint-space policy emits absolute joint targets and a Cartesian one emits
+    # 14-d increments, and running either through the other's path would be
+    # silently wrong rather than an error.
     metadata = LeRobotDatasetMetadata(args.repo_id, root=args.dataset_root)
+    action_names = (metadata.features["action"].get("names") or {}).get("motors") or []
+    control_space = "joint" if any("_arm.j" in str(n) for n in action_names) else "cartesian"
+    width = metadata.features["action"]["shape"][0]
+    print(f"control space: {control_space} (action width {width})")
     policy = make_policy(cfg=config, ds_meta=metadata, rename_map=rename_map)
     policy.eval()
     # The same rename map training used. Unlike training, inference would not
@@ -206,6 +240,7 @@ def main() -> int:
                     client, policy, preprocessor, postprocessor,
                     seed=seed, profile=profile, max_steps=args.max_steps,
                     object_token_spec=spec, torch=torch, np=np,
+                    control_space=control_space,
                 )
                 results.append(outcome)
                 print(json.dumps(outcome), flush=True)
