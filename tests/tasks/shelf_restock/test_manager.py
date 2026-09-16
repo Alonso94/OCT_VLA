@@ -139,3 +139,32 @@ def test_placement_order_wins_over_a_bare_upper_shelf_object():
         ),
     )
     assert manager.next_context(scene).previous_neighbor_track_id == "obj_2"
+
+
+def test_sweeping_objects_off_the_shelf_is_not_a_success():
+    """`is_done` only asks whether the lower shelf is clear, which a policy can
+    satisfy by knocking everything onto the floor -- one did, and scored a
+    success with zero transfers. Success must require the objects to be
+    somewhere specific."""
+    s = spec()
+    floor = ObjectScene(0.0, (obj("a", (9.0, 9.0, 0.0)), obj("b", (9.0, 9.1, 0.0))))
+    manager = ShelfRestockManager(s)
+    assert manager.is_done(floor) is True, "the lower shelf is indeed clear"
+    assert manager.is_restocked(floor) is False, "but nothing was restocked"
+
+
+def test_all_objects_on_the_upper_shelf_is_a_success():
+    s = spec()
+    done = ObjectScene(0.0, (obj("a", (0.0, 0.10, 1.05)), obj("b", (0.05, 0.10, 1.05))))
+    assert ShelfRestockManager(s).is_restocked(done) is True
+
+
+def test_a_partial_transfer_is_not_a_success():
+    s = spec()
+    partial = ObjectScene(0.0, (obj("a", (0.0, 0.10, 1.05)), obj("b", (0.0, -0.15, 0.74))))
+    assert ShelfRestockManager(s).is_restocked(partial) is False
+
+
+def test_an_empty_scene_is_not_a_success():
+    """Vacuous truth would make a scene that lost every object look solved."""
+    assert ShelfRestockManager(spec()).is_restocked(ObjectScene(0.0, ())) is False

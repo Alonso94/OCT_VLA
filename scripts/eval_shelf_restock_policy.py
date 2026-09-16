@@ -73,8 +73,11 @@ def run_episode(
 ) -> dict:
     observation = client.reset(seed, profile)
     policy.reset()
-    result = {"seed": seed, "profile": profile, "success": False,
-              "steps": 0, "transfers_completed": 0, "reason": "step_limit"}
+    result = {
+        "seed": seed, "profile": profile, "success": False, "steps": 0,
+        "transfers_completed": 0, "reason": "step_limit", "detail": "",
+        "infeasible_steps": 0,
+    }
     for step in range(max_steps):
         batch = build_observation(
             observation, object_token_spec=object_token_spec, torch=torch, np=np
@@ -90,6 +93,8 @@ def run_episode(
             transfers_completed=outcome.transfers_completed,
             success=outcome.success,
             reason=outcome.reason or result["reason"],
+            detail=outcome.detail or result["detail"],
+            infeasible_steps=outcome.infeasible_steps,
         )
         if outcome.done:
             break

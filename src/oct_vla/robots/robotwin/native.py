@@ -248,6 +248,14 @@ class RoboTwinNativePort:
         planner is free to reach the target along any collision-free path, while
         the policy is specifying the step itself.
 
+        This is deliberately *kinematic* IK: environment obstacles are not
+        supplied to its solver. A local Cartesian policy command may end at a
+        contact pose (most importantly, a grasp), and asking collision-aware IK
+        to validate that endpoint rejects the interaction the policy is meant
+        to perform. SAPIEN executes the command and remains the authority on
+        environment contact. Joint limits and cuRobo's robot self-collision
+        constraints remain enabled.
+
         Everything RoboTwin-specific stays here rather than in the caller. The
         target passes through the same two frame changes `plan` relies on, by
         calling RoboTwin's own helpers rather than reimplementing them:
@@ -277,6 +285,40 @@ class RoboTwinNativePort:
         import numpy as np
         import torch
         from curobo.types.math import Pose as CuroboPose
+        from curobo.wrap.reacher.ik_solver import IKSolver, IKSolverConfig
+
+        # MotionGen's built-in IK solver shares its collision world. That is
+        # correct for the oracle's global planner, but wrong for the evaluation
+        # servo: the world includes the target object, so a valid grasp pose is
+        # classified as infeasible simply because the gripper is touching it.
+        # Cache one world-less solver on each live planner. A task reset creates
+        # new planners, so this cannot leak across robot instances.
+        ik_solver = getattr(planner, "_oct_vla_evaluation_ik_solver", None)
+        if ik_solver is None:
+            reference = motion_gen.ik_solver
+            config = IKSolverConfig.load_from_robot_config(
+                planner.yml_path,
+                world_model=None,
+                tensor_args=reference.tensor_args,
+                # A Cartesian servo needs the solution connected to the arm's
+                # current configuration, not the globally best of many random
+                # elbow configurations. The current q is supplied as the sole
+                # seed below; removing world obstacles is what makes that local
+                # solve viable even at intentional contact poses.
+                num_seeds=1,
+                # MotionGen accepts 5 mm of endpoint error. That is tolerable
+                # for a one-shot plan but compounds across incremental policy
+                # actions. Sub-millimetre convergence also enables cuRobo's
+                # high-precision iteration budget.
+                position_threshold=0.0005,
+                rotation_threshold=0.01,
+                use_cuda_graph=reference.use_cuda_graph,
+                self_collision_check=True,
+                self_collision_opt=True,
+                regularization=True,
+            )
+            ik_solver = IKSolver(config)
+            planner._oct_vla_evaluation_ik_solver = ik_solver
 
         with _chdir(self.root):
             endlink = robot._trans_from_gripper_to_endlink(list(pose_wxyz), arm_tag=side)
@@ -292,15 +334,16 @@ class RoboTwinNativePort:
             seed = torch.tensor(
                 [round(value, 5) for value in current], dtype=torch.float32
             ).cuda().reshape(1, -1)
-            result = motion_gen.ik_solver.solve_single(
-                CuroboPose.from_list(list(position) + list(orientation)),
+            goal = CuroboPose.from_list(list(position) + list(orientation))
+            result = ik_solver.solve_single(
+                goal,
                 retract_config=seed,
                 seed_config=seed.unsqueeze(0),
             )
 
         if not bool(result.success.any()):
             raise UnreachablePose(
-                f"{side} arm IK failed for world pose "
+                f"{side} arm kinematic IK failed for world pose "
                 f"{tuple(round(float(v), 4) for v in pose_wxyz)}"
             )
         # Select by joint name, never by position. cuRobo solves over the whole

@@ -1,0 +1,47 @@
+### Starting TaskPrologue of job 4258993 on a0222 at Wed Sep 16 12:00:32 CEST 2026
+Running on cores 48-63 with governor schedutil
+Wed Sep 16 12:00:32 2026       
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 610.57.04              KMD Version: 610.57.04     CUDA UMD Version: 13.3     |
++-----------------------------------------+------------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
+|                                         |                        |               MIG M. |
+|=========================================+========================+======================|
+|   0  NVIDIA A40                     On  |   00000000:61:00.0 Off |                  Off |
+|  0%   33C    P8             23W /  300W |       0MiB /  49140MiB |      0%      Default |
+|                                         |                        |                  N/A |
++-----------------------------------------+------------------------+----------------------+
+
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|  No running processes found                                                             |
++-----------------------------------------------------------------------------------------+
+### Finished TaskPrologue
+
+/var/tmp/slurmd_spool/job4258993/slurm_script: line 14: ORACLE_EPISODE: Set a canonical transfer_index=0 episode directory
+=== JOB_STATISTICS ===
+=== current date     : Wed Sep 16 12:00:32 CEST 2026
+= Job-ID             : 4258993 on alex
+= Job-Name           : octvla-oracle-gripperfix
+= Job-Command        : /home/hpc/g107ea/g107ea12/OCT_VLA/slurm/replay_oracle_episode.sbatch
+= Initial workdir    : /home/hpc/g107ea/g107ea12/OCT_VLA
+= Queue/Partition    : a40
+= Slurm account      : g107ea with QOS=normal
+= Requested resources:  for 01:00:00
+= Elapsed runtime    : 00:00:02
+= Total RAM usage    : 0.1 GiB of assigned  GiB (%)
+= Node list          : a0222
+= Subm/Elig/Start/End: 2026-09-16T12:00:30 / 2026-09-16T12:00:30 / 2026-09-16T12:00:30 / 2026-09-16T12:00:32
+======================
+=== Quota infos ======
+    Path                 Used     SoftQ    HardQ    Gracetime  Filec    FileQ    FiHaQ    FileGrace    
+    /home/hpc              94.6G   104.9G   209.7G        N/A     278K     500K   1,000K        N/A    
+    /home/atuin             0.0K     0.0K     0.0K        N/A       1                           N/A    
+    /home/vault           108.2G  1048.6G  2097.2G        N/A  23,650      200K     400K        N/A    
+======================
+=== GPU utilization ==
+gpu_name, gpu_bus_id, pid, gpu_utilization [%], mem_utilization [%], max_memory_usage [MiB], time [ms]

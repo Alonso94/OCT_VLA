@@ -37,7 +37,27 @@ class ShelfRestockManager:
         self._placed_order: list[str] = []
 
     def is_done(self, scene: ObjectScene) -> bool:
+        """Nothing remains to be restocked.
+
+        True once the lower shelf is clear, however it was cleared. That suits
+        the oracle, which only ever moves objects upward, but it is NOT a
+        success test for a policy -- see `is_restocked`.
+        """
         return not objects_on_lower_shelf(scene, self.spec)
+
+    def is_restocked(self, scene: ObjectScene) -> bool:
+        """Every object in the scene is on the upper shelf.
+
+        The success criterion for closed-loop evaluation, and deliberately
+        stricter than `is_done`. Emptying the lower shelf is not the task:
+        a policy that sweeps the objects onto the floor also empties it, and
+        scored a full success under the weaker test while having transferred
+        nothing. Requiring the objects to be *somewhere specific* cannot be
+        satisfied by destroying the scene.
+        """
+        return bool(scene.objects) and len(objects_on_upper_shelf(scene, self.spec)) == len(
+            scene.objects
+        )
 
     def next_context(self, scene: ObjectScene) -> TaskContext | None:
         remaining = objects_on_lower_shelf(scene, self.spec)

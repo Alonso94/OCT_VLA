@@ -49,6 +49,13 @@ class StepResult:
     reason: str
     #: Transfers completed so far, for partial-credit reporting.
     transfers_completed: int
+    #: Free-text elaboration on `reason`, when the server supplies one -- for an
+    #: unreachable pose, which arm and which pose. Carried through because the
+    #: first sweep recorded 1064 unreachable_pose episodes and threw away the
+    #: one field that said which arm was at fault.
+    detail: str = ""
+    #: Steps where a command was kinematically infeasible and the arm held.
+    infeasible_steps: int = 0
 
 
 def _observation(message: protocol.Message) -> RemoteObservation:
@@ -126,6 +133,8 @@ class ShelfRestockEvalClient:
             done=bool(message.header["done"]),
             reason=str(message.header.get("reason", "")),
             transfers_completed=int(message.header.get("transfers_completed", 0)),
+            detail=str(message.header.get("detail", "")),
+            infeasible_steps=int(message.header.get("infeasible_steps", 0)),
         )
 
     def close(self) -> None:
