@@ -70,6 +70,37 @@ def collect_clips(canonical_root: Path, blocks: dict[str, range]) -> dict[str, l
     return grouped
 
 
+def take_runs(clips: list[Path], limit: int | None) -> list[Path]:
+    """Keep the clips belonging to the first `limit` complete runs.
+
+    A run is one scene played to the end -- every object moved -- and is stored
+    as its atomic transfer clips, not concatenated. The budget is counted in
+    runs because that is the unit of data collection: asking for 25 runs means
+    25 scenes and all ~75 clips they contain, not 25 clips.
+
+    Ascending seed, matching the protocol's fixed selection rule, so growing
+    the budget only ever adds scenes and never reshuffles which ones a smaller
+    budget used.
+    """
+    if limit is None:
+        return clips
+    kept: list[Path] = []
+    seen: list[int] = []
+    for clip in clips:
+        seed = seed_of(clip)
+        if seed not in seen:
+            if len(seen) == limit:
+                break
+            seen.append(seed)
+        kept.append(clip)
+    if len(seen) < limit:
+        raise SystemExit(
+            f"Asked for {limit} runs but only {len(seen)} are available in this split. "
+            "Collect more seeds, or lower the budget."
+        )
+    return kept
+
+
 def main() -> int:
     from oct_vla.data.lerobot_export import export_episodes
     from oct_vla.data.object_tokens import ObjectTokenSpec
@@ -80,6 +111,15 @@ def main() -> int:
     parser.add_argument("--repo-id", required=True)
     parser.add_argument("--profile", default="three_object", choices=sorted(SPLIT_BLOCKS))
     parser.add_argument("--object-tokens", action="store_true")
+    parser.add_argument(
+        "--max-runs",
+        type=int,
+        default=None,
+        help="Train on the first N complete runs (scenes), including all of each "
+        "run's atomic transfer clips. The unit is runs, not clips: --max-runs 25 "
+        "means 25 scenes and the ~75 clips they contain. Applies to the train "
+        "split only; validation always uses every reserved run it has.",
+    )
     parser.add_argument(
         "--privileged",
         action="store_true",
@@ -102,6 +142,16 @@ def main() -> int:
     train, val = grouped.get("train", []), grouped.get("val", [])
     if not train:
         raise SystemExit(f"No train clips found under {args.canonical_root}")
+    # Budget the TRAIN split only. Validation keeps every reserved run it has,
+    # so a data-scaling curve varies one thing -- how much the policy saw --
+    # and every point is scored against the same held-out scenes.
+    train = take_runs(train, args.max_runs)
+    train_runs = len({seed_of(c) for c in train})
+    val_runs = len({seed_of(c) for c in val})
+    print(
+        f"train: {train_runs} runs / {len(train)} clips  |  "
+        f"val: {val_runs} runs / {len(val)} clips"
+    )
 
     ordered = train + val
     total, n_val = len(ordered), len(val)

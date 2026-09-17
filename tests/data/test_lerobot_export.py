@@ -207,3 +207,51 @@ def test_a_normal_export_still_carries_cameras():
     )
     assert [k for k in features if "images" in k]
     assert "observation.environment_state" not in features
+
+
+def _run_clips(seeds, per_run=3):
+    from pathlib import Path
+    return [Path(f"seed_{s}/episode_0{s}_{i}") for s in seeds for i in range(per_run)]
+
+
+def _splits_module():
+    import importlib.util
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location(
+        "bs", root / "scripts/build_shelf_restock_splits.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_budget_counts_runs_not_clips():
+    """A run is one scene played to the end, stored as its atomic transfer
+    clips. Asking for 25 runs must give 25 scenes and every clip they contain,
+    not 25 clips -- otherwise a data-scaling curve measures a third of what its
+    axis claims."""
+    m = _splits_module()
+    kept = m.take_runs(_run_clips([102, 105, 108, 110]), 2)
+    assert len(kept) == 6
+    assert sorted({m.seed_of(c) for c in kept}) == [102, 105]
+
+
+def test_growing_the_budget_only_adds_scenes():
+    """Ascending seed, so a larger budget is a superset of a smaller one and
+    the points of a scaling curve stay comparable."""
+    m = _splits_module()
+    clips = _run_clips([102, 105, 108, 110])
+    assert set(m.take_runs(clips, 2)) < set(m.take_runs(clips, 3))
+
+
+def test_an_unmet_budget_fails_rather_than_quietly_shrinking():
+    m = _splits_module()
+    with pytest.raises(SystemExit, match="only 4 are available"):
+        m.take_runs(_run_clips([102, 105, 108, 110]), 9)
+
+
+def test_no_budget_keeps_everything():
+    m = _splits_module()
+    clips = _run_clips([102, 105])
+    assert m.take_runs(clips, None) == clips

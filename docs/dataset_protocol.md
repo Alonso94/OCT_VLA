@@ -74,6 +74,26 @@ scene can never move between train and test after the fact.
 | Count-shift validation | `four_object` | 600-649 | 10 |
 | Final offline test | `four_object` | 650-749 | 20 |
 
+### Train extension, added 2026-09-17
+
+The original block sized the train split for 30 successful *clips*. Budgeting
+by **run** -- one scene played to completion, stored as its atomic transfer
+clips -- needs far more scenes, and the oracle's planner discards about 42 % of
+seeds (`global plan failed after N attempts`), so 100 runs needs roughly 173
+seeds against the block's 100.
+
+| Split | Profile | Added seeds | Purpose |
+| --- | --- | --- | --- |
+| Train | `three_object` | 160-199 | unused tail of the original block |
+| Train | `three_object` | 350-399 | extension into unreserved space |
+| IID validation | `three_object` | 220-249 | unused tail of the original block |
+
+350-399 was unreserved and sits below the two-object block at 400, so no seed
+changes split. Earlier data is kept, not replaced: the new seeds are
+complementary scenes, and every previously collected run keeps the split it
+already had. The selection rule is unchanged -- ascending seed within a block --
+so a budget of N runs is always a subset of a budget of N+1.
+
 Selection rule, fixed in advance: within a block, take successful seeds in
 ascending order until the split's target is met and ignore the remainder.
 That is what makes a top-up safe -- extending into the unused tail of a block
