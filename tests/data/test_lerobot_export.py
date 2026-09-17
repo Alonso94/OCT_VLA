@@ -317,3 +317,102 @@ def test_a_dataset_without_a_validation_split_has_no_boundary(tmp_path):
     m = _splits_module()
     ordered = [_clip(tmp_path, s) for s in (105, 398)]
     m.check_boundary(ordered, 2, m.SPLIT_BLOCKS["three_object"])
+
+
+# ------------------------------------------------- position_velocity state
+
+
+def _joint_episode(*configurations):
+    """Episode whose samples carry only joints, one 2-DOF arm per side."""
+    from types import SimpleNamespace as NS
+
+    samples = []
+    for left, right in configurations:
+        joints = NS(
+            left=NS(positions=tuple(left[:-1]), gripper=left[-1]),
+            right=NS(positions=tuple(right[:-1]), gripper=right[-1]),
+        )
+        joints.to_vector = (lambda j: lambda: (
+            *j.left.positions, j.left.gripper, *j.right.positions, j.right.gripper
+        ))(joints)
+        frame = NS(height=240, width=320)
+        samples.append(NS(observation=NS(
+            joints=joints, head_rgb=frame, left_wrist_rgb=frame, right_wrist_rgb=frame
+        )))
+    return NS(samples=tuple(samples), seed=1)
+
+
+def test_position_only_state_is_unchanged():
+    from oct_vla.data.lerobot_export import _joint_state_vector
+
+    episode = _joint_episode(((0.0, 1.0, 0.5), (2.0, 3.0, 0.8)))
+    assert _joint_state_vector(episode, 0) == (0.0, 1.0, 0.5, 2.0, 3.0, 0.8)
+
+
+def test_velocity_block_is_a_backward_difference():
+    """Backward, not forward: the velocity at t must describe motion that has
+    already happened, or a future frame leaks into the observation."""
+    from oct_vla.data.lerobot_export import _joint_state_vector
+
+    episode = _joint_episode(
+        ((0.0, 1.0, 0.5), (2.0, 3.0, 0.8)),
+        ((0.1, 1.5, 0.5), (2.0, 3.25, 0.2)),
+    )
+    state = _joint_state_vector(episode, 1, "position_velocity")
+    assert state[:6] == (0.1, 1.5, 0.5, 2.0, 3.25, 0.2)
+    assert state[6:] == pytest.approx((0.1, 0.5, 0.0, 0.0, 0.25, -0.6))
+
+
+def test_the_first_frame_reports_zero_velocity():
+    """It has no predecessor. The evaluation client reports the same on the
+    step after a reset, and the two must agree."""
+    from oct_vla.data.lerobot_export import _joint_state_vector
+
+    episode = _joint_episode(((0.0, 1.0, 0.5), (2.0, 3.0, 0.8)))
+    assert _joint_state_vector(episode, 0, "position_velocity")[6:] == (0.0,) * 6
+
+
+def test_the_delta_action_is_unaffected_by_the_state_encoding():
+    """The increment is defined against the configuration; differencing a
+    position+velocity vector would put an acceleration in the action."""
+    from oct_vla.data.lerobot_export import _joint_delta_action_vector
+
+    episode = _joint_episode(
+        ((0.0, 1.0, 0.5), (2.0, 3.0, 0.8)),
+        ((0.1, 1.5, 0.4), (2.0, 3.25, 0.2)),
+    )
+    action = _joint_delta_action_vector(episode, 0)
+    assert len(action) == 6
+    # Arm joints differenced, grippers absolute.
+    assert action == pytest.approx((0.1, 0.5, 0.4, 0.0, 0.25, 0.2))
+
+
+def test_the_state_feature_widens_but_the_action_does_not():
+    from oct_vla.data.lerobot_export import _features
+
+    episode = _joint_episode(((0.0, 1.0, 0.5), (2.0, 3.0, 0.8)))
+    features = _features(episode, control_space="joint_delta",
+                         state_encoding="position_velocity")
+    assert features["observation.state"]["shape"] == (12,)
+    assert features["action"]["shape"] == (6,)
+    names = features["observation.state"]["names"]["motors"]
+    assert names[:6] == features["action"]["names"]["motors"]
+    assert names[6:] == [f"{n}.vel" for n in features["action"]["names"]["motors"]]
+
+
+def test_velocities_are_refused_for_a_cartesian_export():
+    """observation.state is an end-effector pose there; appending a joint
+    velocity would silently produce a vector nothing can interpret."""
+    from oct_vla.data.lerobot_export import _features
+
+    episode = _joint_episode(((0.0, 1.0, 0.5), (2.0, 3.0, 0.8)))
+    with pytest.raises(ValueError, match="only defined for a joint-space"):
+        _features(episode, control_space="cartesian", state_encoding="position_velocity")
+
+
+def test_an_unknown_state_encoding_is_refused():
+    from oct_vla.data.lerobot_export import _features
+
+    episode = _joint_episode(((0.0, 1.0, 0.5), (2.0, 3.0, 0.8)))
+    with pytest.raises(ValueError, match="state_encoding must be one of"):
+        _features(episode, control_space="joint", state_encoding="velocity_only")

@@ -172,6 +172,16 @@ def main() -> int:
         "can achieve. Implies --object-tokens.",
     )
     parser.add_argument(
+        "--state-encoding",
+        default="position",
+        choices=["position", "position_velocity"],
+        help="'position_velocity' appends the backward difference of the measured "
+        "configuration to observation.state, doubling its width. With joint_delta "
+        "the action is a velocity and ACT sees one frame, so a position-only "
+        "observation does not determine the target -- offline, repeating the "
+        "previous action beats the trained policy 0.126 to 0.284.",
+    )
+    parser.add_argument(
         "--control-space",
         default="cartesian",
         choices=["cartesian", "joint", "joint_delta"],
@@ -224,6 +234,7 @@ def main() -> int:
         object_token_spec=spec,
         control_space=args.control_space,
         privileged=args.privileged,
+        state_encoding=args.state_encoding,
     )
     print(f"exported {len(report.exported)} episodes to {report.output}")
     for source, reason in report.skipped:

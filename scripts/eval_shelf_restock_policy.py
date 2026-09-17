@@ -30,18 +30,32 @@ CAMERA_FEATURES = {
 }
 
 
-def joint_vector(joints) -> list[float]:
+def joint_vector(joints, previous: list[float] | None = None) -> list[float]:
     """`JointState.to_vector` layout: each arm's joints then its gripper.
 
     Exactly what the joint control space exports as `observation.state`, so the
     policy is conditioned on the vector it was fit on.
+
+    With `previous` supplied, the backward difference is appended, mirroring
+    `lerobot_export._joint_state_vector` under `state_encoding="position_velocity"`.
+    The caller passes the *previous frame's positions*, or None on the first
+    step of an episode, where the exporter writes zeros because the first
+    recorded frame has no predecessor either.
     """
-    return [
+    positions = [
         *joints.left.positions,
         joints.left.gripper,
         *joints.right.positions,
         joints.right.gripper,
     ]
+    if previous is None:
+        return positions
+    if len(previous) != len(positions):
+        raise ValueError(
+            f"previous state has {len(previous)} entries but the arm reports "
+            f"{len(positions)}; the velocity block would be misaligned"
+        )
+    return [*positions, *(now - was for now, was in zip(positions, previous, strict=True))]
 
 
 def state_vector(eef) -> list[float]:
@@ -60,7 +74,7 @@ def state_vector(eef) -> list[float]:
 
 def build_observation(
     obs, *, object_token_spec, torch, np, ranks=None, control_space="cartesian",
-    privileged=False, uint8_images=True,
+    privileged=False, uint8_images=True, state_encoding="position", previous_joints=None,
 ):
     from oct_vla.data.object_tokens import object_token_ranks, object_tokens
 
@@ -82,7 +96,18 @@ def build_observation(
                 "The simulator reported no joint state, but this checkpoint is "
                 "joint-space. Its observation.state cannot be built."
             )
-        state = joint_vector(obs.joints)
+        if state_encoding == "position_velocity":
+            # On the first step of an episode there is no predecessor, so the
+            # velocity block is zero -- which is what the exporter writes for a
+            # recording's first frame. Passing the current positions as the
+            # previous ones produces exactly that, rather than special-casing
+            # the width here and risking the two sides disagreeing.
+            positions = joint_vector(obs.joints)
+            state = joint_vector(
+                obs.joints, previous_joints if previous_joints is not None else positions
+            )
+        else:
+            state = joint_vector(obs.joints)
     else:
         state = state_vector(obs.eef)
     batch["observation.state"] = torch.tensor([state], dtype=torch.float32)
@@ -119,7 +144,7 @@ def build_observation(
 def run_episode(
     client, policy, preprocessor, postprocessor, *,
     seed, profile, max_steps, object_token_spec, torch, np, control_space="cartesian",
-    privileged=False, uint8_images=True,
+    privileged=False, uint8_images=True, state_encoding="position",
 ) -> dict:
     observation = client.reset(seed, profile, control_space=control_space)
     policy.reset()
@@ -134,6 +159,9 @@ def run_episode(
         "transfers_completed": 0, "reason": "step_limit", "detail": "",
         "infeasible_steps": 0, "objects_lifted": 0, "objects_total": 0,
     }
+    # Carried across steps so the velocity block is a backward difference of
+    # consecutive observations, the same quantity the exporter differenced.
+    previous_joints = None
     for step in range(max_steps):
         batch = build_observation(
             observation,
@@ -144,7 +172,11 @@ def run_episode(
             control_space=control_space,
             privileged=privileged,
             uint8_images=uint8_images,
+            state_encoding=state_encoding,
+            previous_joints=previous_joints,
         )
+        if observation.joints is not None:
+            previous_joints = joint_vector(observation.joints)
         with torch.no_grad():
             action = policy.select_action(preprocessor(batch))
         action = postprocessor(action)
@@ -248,15 +280,23 @@ def main() -> int:
                 "silently wrong -- re-export so the dataset says which it is."
             )
         control_space = str(recorded)
+        # Unlike control_space this one is safe to default: an absent field can
+        # only mean a dataset exported before velocities existed, and those are
+        # position-only. The shape check below is what actually catches a
+        # mismatch, since a 32-d state against a 16-d checkpoint is not subtle.
+        state_encoding = str(json.loads(info_path.read_text()).get("state_encoding", "position"))
     else:
         control_space = "cartesian"
+        state_encoding = "position"
     width = metadata.features["action"]["shape"][0]
     # A vision-free checkpoint declares environment_state and no image features.
     privileged = "observation.environment_state" in metadata.features
     visual_norm = str((config.normalization_mapping or {}).get("VISUAL", "IDENTITY"))
     uint8_images = visual_norm.upper().endswith("IDENTITY")
+    state_width = metadata.features["observation.state"]["shape"][0]
     print(
         f"control space: {control_space} (action width {width}) "
+        f"state: {state_encoding} (width {state_width}) "
         f"privileged={privileged} visual_norm={visual_norm} uint8_images={uint8_images}"
     )
     policy = make_policy(cfg=config, ds_meta=metadata, rename_map=rename_map)
@@ -284,7 +324,7 @@ def main() -> int:
                     seed=seed, profile=profile, max_steps=args.max_steps,
                     object_token_spec=spec, torch=torch, np=np,
                     control_space=control_space, privileged=privileged,
-                    uint8_images=uint8_images,
+                    uint8_images=uint8_images, state_encoding=state_encoding,
                 )
                 results.append(outcome)
                 print(json.dumps(outcome), flush=True)

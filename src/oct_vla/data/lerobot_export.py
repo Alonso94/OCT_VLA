@@ -77,9 +77,58 @@ def _joint_motor_names(observation) -> list[str] | None:
     return names
 
 
-def _joint_state_vector(episode: Episode, index: int) -> tuple[float, ...] | None:
+def _state_motor_names(joint_names: list[str], state_encoding: str) -> list[str]:
+    """Labels for `observation.state`, which is wider than the action when the
+    state carries velocities. Suffixed rather than renamed so the first half
+    still lines up column-for-column with the action."""
+    if state_encoding != "position_velocity":
+        return joint_names
+    return [*joint_names, *(f"{name}.vel" for name in joint_names)]
+
+
+#: How `observation.state` is built for a joint-space export.
+#:
+#: "position_velocity" exists because of a measured failure. With `joint_delta`
+#: the action is essentially a velocity, and ACT sees a single frame
+#: (`n_obs_steps` is hard-capped at 1), so a static position snapshot does not
+#: determine the target. Offline on the validation split, in MEAN_STD units:
+#: predicting a constant scores 0.471, the trained policy 0.284-0.334, and
+#: simply repeating the previous action scores 0.126. The target is far more
+#: determined by its own history than by any observation, including
+#: ground-truth object state -- so the history is put in the observation.
+#:
+#: The appended block is a finite difference of the measured configuration,
+#: which is what a real arm's joint-velocity sensor reports, not a replayed
+#: action label. It is still the previous action by construction for
+#: `joint_delta`, so this variant is exposed to the copycat failure that
+#: behaviour cloning shows when action history is observable: a policy can
+#: score well offline by continuing whatever motion it is already in while
+#: ignoring the scene. That is precisely what the closed-loop comparison
+#: against `position` is for.
+STATE_ENCODINGS = ("position", "position_velocity")
+
+
+def _joint_state_vector(
+    episode: Episode, index: int, state_encoding: str = "position"
+) -> tuple[float, ...] | None:
     joints = episode.samples[index].observation.joints
-    return None if joints is None else joints.to_vector()
+    if joints is None:
+        return None
+    positions = joints.to_vector()
+    if state_encoding != "position_velocity":
+        return positions
+    # Backward difference, so the velocity at t describes motion that already
+    # happened and no future frame leaks in. The first frame has no
+    # predecessor and reports zero, which is also what the evaluation client
+    # reports on the step after a reset -- the two must agree or the policy
+    # meets a state at inference that never appeared in training.
+    if index == 0:
+        return (*positions, *(0.0,) * len(positions))
+    previous = episode.samples[index - 1].observation.joints
+    if previous is None:
+        return None
+    before = previous.to_vector()
+    return (*positions, *(now - was for now, was in zip(positions, before, strict=True)))
 
 
 def _joint_delta_action_vector(episode: Episode, index: int) -> tuple[float, ...] | None:
@@ -96,7 +145,10 @@ def _joint_delta_action_vector(episode: Episode, index: int) -> tuple[float, ...
     The gripper stays absolute: it is a binary actuator state decoded through a
     threshold, not a position to integrate, and a delta on it means nothing.
     """
-    current = _joint_state_vector(episode, index)
+    # Positions only, whatever the state encoding is: the increment is defined
+    # against the configuration, and differencing a position+velocity vector
+    # would put an acceleration in the action's second half.
+    current = _joint_state_vector(episode, index, "position")
     following = _joint_action_vector(episode, index)
     if current is None or following is None:
         return None
@@ -169,12 +221,24 @@ def _features(
     object_token_spec: ObjectTokenSpec | None = None,
     control_space: str = "cartesian",
     privileged: bool = False,
+    state_encoding: str = "position",
 ) -> dict[str, dict]:
     observation = episode.samples[0].observation
     if control_space not in CONTROL_SPACES:
         raise ValueError(f"control_space must be one of {CONTROL_SPACES}, got {control_space!r}")
+    if state_encoding not in STATE_ENCODINGS:
+        raise ValueError(
+            f"state_encoding must be one of {STATE_ENCODINGS}, got {state_encoding!r}"
+        )
+    if state_encoding != "position" and not _is_joint_space(control_space):
+        raise ValueError(
+            f"state_encoding={state_encoding!r} is only defined for a joint-space "
+            f"export; control_space is {control_space!r}, whose observation.state "
+            "is an end-effector pose."
+        )
     _require_joints(episode, control_space)
     joint_names = _joint_motor_names(observation)
+    state_names = _state_motor_names(joint_names, state_encoding) if joint_names else None
     if _is_joint_space(control_space):
         # A joint-space policy is proprioceptive in the same space it commands:
         # `observation.state` carries joints, `action` is the next joint
@@ -185,8 +249,8 @@ def _features(
         joint_block = {
             "observation.state": {
                 "dtype": "float32",
-                "shape": (len(joint_names),),
-                "names": {"motors": joint_names},
+                "shape": (len(state_names),),
+                "names": {"motors": state_names},
             },
             "action": {
                 "dtype": "float32",
@@ -318,6 +382,7 @@ def export_episodes(
     object_token_spec: ObjectTokenSpec | None = None,
     control_space: str = "cartesian",
     privileged: bool = False,
+    state_encoding: str = "position",
 ) -> ExportReport:
     """Convert canonical episode directories into a new local LeRobot dataset.
 
@@ -363,6 +428,7 @@ def export_episodes(
             object_token_spec=object_token_spec,
             control_space=control_space,
             privileged=privileged,
+            state_encoding=state_encoding,
         )
         dataset = LeRobotDataset.create(
             repo_id=repo_id,
@@ -384,7 +450,7 @@ def export_episodes(
                 )
                 frame = {
                     "observation.state": np.asarray(
-                        _joint_state_vector(episode, index), dtype=np.float32
+                        _joint_state_vector(episode, index, state_encoding), dtype=np.float32
                     ),
                     "action": np.asarray(action, dtype=np.float32),
                     "task": sample.context.instruction,
@@ -461,6 +527,11 @@ def export_episodes(
     if info_path.exists():
         info = json.loads(info_path.read_text())
         info["control_space"] = control_space
+        # Recorded beside control_space for the same reason: a 16-d and a 32-d
+        # observation.state are distinguishable by shape, but nothing in the
+        # schema says the extra half is a velocity rather than a second pose,
+        # and the evaluation client has to rebuild it exactly.
+        info["state_encoding"] = state_encoding
         info_path.write_text(json.dumps(info, indent=4))
 
     return ExportReport(destination, tuple(source for source, _ in accepted), tuple(skipped))

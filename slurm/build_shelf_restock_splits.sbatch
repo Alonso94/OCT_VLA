@@ -38,6 +38,7 @@ ARGS=(
   --repo-id "local/oct-vla-shelf-restock-${DATASET_NAME#three_object_}"
   --profile "$PROFILE"
   --control-space "${CONTROL_SPACE:-joint_delta}"
+  --state-encoding "${STATE_ENCODING:-position}"
 )
 # `if` rather than `[ ... ] && ...`: under `set -e` a false test is a failing
 # command, so the short form would abort the job whenever a flag is off.
