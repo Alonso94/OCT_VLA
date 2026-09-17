@@ -68,6 +68,13 @@ def main() -> int:
     parser.add_argument("--robotwin-root", required=True, type=Path)
     parser.add_argument("--episode", required=True, type=Path)
     parser.add_argument(
+        "--control-space",
+        default="joint",
+        choices=["joint", "joint_delta"],
+        help="'joint_delta' sends each step's increment instead of the absolute "
+        "configuration; the bridge adds it to the measured joints.",
+    )
+    parser.add_argument(
         "--tolerance",
         type=float,
         default=0.05,
@@ -105,7 +112,7 @@ def main() -> int:
     worst_arm = worst_grip = 0.0
     by_phase: dict[str, float] = {}
     with ShelfRestockEvalClient("127.0.0.1", port) as client:
-        observation = client.reset(seed, profile, control_space="joint")
+        observation = client.reset(seed, profile, control_space=args.control_space)
         start_arm, _ = _joint_error(_joint_vector(samples[0]["joints"]), observation.joints)
         print(f"initial max joint difference: {start_arm:.5f} rad")
         result = None
@@ -114,7 +121,21 @@ def main() -> int:
             # as the exporter writes action.joint_position.
             following = min(index + 1, len(samples) - 1)
             target = _joint_vector(samples[following]["joints"])
-            result = client.step(target)
+            if args.control_space == "joint_delta":
+                # The increment against THIS frame's recorded configuration,
+                # with the gripper left absolute -- exactly what the exporter
+                # writes. Built from the recording, not from the live arm, so
+                # the replay stays open-loop and the gate keeps its meaning.
+                here = _joint_vector(samples[index]["joints"])
+                half = len(target) // 2
+                grippers = (half - 1, 2 * half - 1)
+                sent = [
+                    target[i] if i in grippers else target[i] - here[i]
+                    for i in range(len(target))
+                ]
+            else:
+                sent = target
+            result = client.step(sent)
             arm_error, grip_error = _joint_error(target, result.observation.joints)
             phase = str(sample["phase"])
             by_phase[phase] = max(by_phase.get(phase, 0.0), arm_error)

@@ -20,4 +20,4 @@ unset LD_LIBRARY_PATH
 cd "$OCTVLA_ROBOTWIN_ROOT"
 exec "$OCTVLA_ROBOTWIN_PYTHON" -u -B "$OCTVLA_REPO/scripts/replay_oracle_joints.py" \
   --robotwin-root "$OCTVLA_ROBOTWIN_ROOT" \
-  --episode "$ORACLE_EPISODE"
+  --episode "$ORACLE_EPISODE" --control-space "${ORACLE_CONTROL_SPACE:-joint}"
