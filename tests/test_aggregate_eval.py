@@ -164,3 +164,28 @@ def test_verify_reports_a_summary_that_does_not_match_its_episodes(tmp_path):
         "summary": {"three_object": {"episodes": 1, "success_rate": 1.0, "mean_transfers": 0.0}},
     }
     assert aggregate_eval.verify([(tmp_path / "eval.json", report)]) == 1
+
+
+def test_a_privileged_baseline_is_not_relabelled_as_an_object_arm():
+    """An earlier version mapped everything that was not 'rgb' onto 'object_*',
+    which would have merged the vision-free baseline into the object arm."""
+    report = {"checkpoint": "/out/act_three_object_privileged_s1000/checkpoints/last/pm"}
+    meta = {"act_three_object_privileged_s1000": {
+        "conditioning": "privileged", "token_mode": "full", "seed": 1000, "backbone": "act"}}
+    assert aggregate_eval.arm_of(report, meta) == ("act_privileged", 1000)
+
+
+def test_the_backbone_appears_in_the_label_when_it_is_not_pi05():
+    report = {"checkpoint": "/out/act_three_object_rgb_s1000/checkpoints/last/pm"}
+    meta = {"act_three_object_rgb_s1000": {
+        "conditioning": "rgb", "token_mode": "full", "seed": 1000, "backbone": "act"}}
+    assert aggregate_eval.arm_of(report, meta) == ("act_rgb", 1000)
+
+
+def test_pi05_arms_keep_their_bare_labels():
+    """The sweep's own arms must not be renamed, or they stop matching the
+    baseline used for the paired comparison."""
+    report = {"checkpoint": "/out/pi05_object_full_s1000/checkpoints/last/pm"}
+    meta = {"pi05_object_full_s1000": {
+        "conditioning": "object", "token_mode": "full", "seed": 1000, "backbone": "pi05"}}
+    assert aggregate_eval.arm_of(report, meta) == ("object_full", 1000)

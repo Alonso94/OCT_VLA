@@ -17,10 +17,14 @@ set -uo pipefail
 : "${OCTVLA_DATASET_ROOT:?Set LeRobot dataset root}"
 : "${OCTVLA_OUTPUT_ROOT:?Set output root}"
 : "${EVAL_CHECKPOINT:?Set the trained policy directory}"
-: "${EVAL_VARIANT:?Set rgb or object}"
+: "${EVAL_VARIANT:?Set rgb, object or privileged}"
 : "${EVAL_SEEDS:?Set evaluation seeds, e.g. 800-829}"
 
-case "$EVAL_VARIANT" in rgb|object) ;; *) echo "Invalid EVAL_VARIANT" >&2; exit 2 ;; esac
+# `privileged` selects the vision-free dataset, whose observation.environment_state
+# is what tells the evaluator this checkpoint reads privileged scene state rather
+# than cameras. Pointing it at an rgb dataset would leave that undetected and the
+# policy would be fed an observation it was never trained on.
+case "$EVAL_VARIANT" in rgb|object|privileged) ;; *) echo "Invalid EVAL_VARIANT" >&2; exit 2 ;; esac
 
 export PYTHONPATH="$OCTVLA_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONUNBUFFERED=1

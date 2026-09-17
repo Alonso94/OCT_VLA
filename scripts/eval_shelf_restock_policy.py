@@ -58,16 +58,24 @@ def state_vector(eef) -> list[float]:
     ]
 
 
-def build_observation(obs, *, object_token_spec, torch, np, ranks=None, control_space="cartesian"):
+def build_observation(
+    obs, *, object_token_spec, torch, np, ranks=None, control_space="cartesian",
+    privileged=False, uint8_images=True,
+):
     from oct_vla.data.object_tokens import object_token_ranks, object_tokens
 
     batch = {}
     for camera, feature in CAMERA_FEATURES.items():
         frame = obs.frame(camera)
         image = np.frombuffer(frame.data, dtype=np.uint8).reshape(frame.height, frame.width, 3)
-        # uint8 CHW with a leading batch axis: what LeRobotDataset yields with
-        # return_uint8=True, which is how the training dataloader was built.
-        batch[feature] = torch.from_numpy(image.copy()).permute(2, 0, 1).unsqueeze(0)
+        tensor = torch.from_numpy(image.copy()).permute(2, 0, 1).unsqueeze(0)
+        # Image dtype follows the policy's own VISUAL normalisation, not a fixed
+        # convention. pi0.5 declares IDENTITY and takes the uint8 frames the
+        # dataloader yields with return_uint8=True; ACT declares MEAN_STD and
+        # normalises in place, which overflows a uint8 tensor outright. Reading
+        # it from the checkpoint means a new backbone cannot silently be handed
+        # the wrong one.
+        batch[feature] = tensor if uint8_images else tensor.float().div_(255.0)
     if control_space in ("joint", "joint_delta"):
         if obs.joints is None:
             raise SystemExit(
@@ -95,6 +103,15 @@ def build_observation(obs, *, object_token_spec, torch, np, ranks=None, control_
                 ))],
                 dtype=torch.float32,
             )
+    if privileged:
+        # Flattened object tokens, exactly as the privileged export writes them.
+        # The vision-free policy reads only this and observation.state; the
+        # camera tensors above are ignored because its config declares no image
+        # features, so they are left in place rather than special-cased out.
+        tokens, _ = object_tokens(obs.scene, obs.context, spec=object_token_spec)
+        batch["observation.environment_state"] = torch.tensor(
+            [[value for token in tokens for value in token]], dtype=torch.float32
+        )
     batch["task"] = [obs.context.instruction]
     return batch
 
@@ -102,6 +119,7 @@ def build_observation(obs, *, object_token_spec, torch, np, ranks=None, control_
 def run_episode(
     client, policy, preprocessor, postprocessor, *,
     seed, profile, max_steps, object_token_spec, torch, np, control_space="cartesian",
+    privileged=False, uint8_images=True,
 ) -> dict:
     observation = client.reset(seed, profile, control_space=control_space)
     policy.reset()
@@ -114,7 +132,7 @@ def run_episode(
     result = {
         "seed": seed, "profile": profile, "success": False, "steps": 0,
         "transfers_completed": 0, "reason": "step_limit", "detail": "",
-        "infeasible_steps": 0,
+        "infeasible_steps": 0, "objects_lifted": 0, "objects_total": 0,
     }
     for step in range(max_steps):
         batch = build_observation(
@@ -124,6 +142,8 @@ def run_episode(
             np=np,
             ranks=ranks,
             control_space=control_space,
+            privileged=privileged,
+            uint8_images=uint8_images,
         )
         with torch.no_grad():
             action = policy.select_action(preprocessor(batch))
@@ -138,6 +158,8 @@ def run_episode(
             reason=outcome.reason or result["reason"],
             detail=outcome.detail or result["detail"],
             infeasible_steps=outcome.infeasible_steps,
+            objects_lifted=max(result["objects_lifted"], outcome.objects_lifted),
+            objects_total=outcome.objects_total or result["objects_total"],
         )
         if outcome.done:
             break
@@ -229,7 +251,14 @@ def main() -> int:
     else:
         control_space = "cartesian"
     width = metadata.features["action"]["shape"][0]
-    print(f"control space: {control_space} (action width {width})")
+    # A vision-free checkpoint declares environment_state and no image features.
+    privileged = "observation.environment_state" in metadata.features
+    visual_norm = str((config.normalization_mapping or {}).get("VISUAL", "IDENTITY"))
+    uint8_images = visual_norm.upper().endswith("IDENTITY")
+    print(
+        f"control space: {control_space} (action width {width}) "
+        f"privileged={privileged} visual_norm={visual_norm} uint8_images={uint8_images}"
+    )
     policy = make_policy(cfg=config, ds_meta=metadata, rename_map=rename_map)
     policy.eval()
     # The same rename map training used. Unlike training, inference would not
@@ -244,7 +273,7 @@ def main() -> int:
             "rename_observations_processor": {"rename_map": rename_map},
         },
     )
-    spec = ObjectTokenSpec() if args.object_tokens else None
+    spec = ObjectTokenSpec() if (args.object_tokens or privileged) else None
 
     results = []
     with ShelfRestockEvalClient(args.host, args.port) as client:
@@ -254,7 +283,8 @@ def main() -> int:
                     client, policy, preprocessor, postprocessor,
                     seed=seed, profile=profile, max_steps=args.max_steps,
                     object_token_spec=spec, torch=torch, np=np,
-                    control_space=control_space,
+                    control_space=control_space, privileged=privileged,
+                    uint8_images=uint8_images,
                 )
                 results.append(outcome)
                 print(json.dumps(outcome), flush=True)
@@ -268,6 +298,7 @@ def main() -> int:
             "episodes": len(rows),
             "success_rate": sum(r["success"] for r in rows) / len(rows),
             "mean_transfers": sum(r["transfers_completed"] for r in rows) / len(rows),
+            "mean_lifted": sum(r["objects_lifted"] for r in rows) / len(rows),
         }
     report = {
         "checkpoint": str(args.checkpoint),

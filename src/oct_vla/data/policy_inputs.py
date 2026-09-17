@@ -42,7 +42,14 @@ SMOLVLA_RENAME_MAP: dict[str, str] = {
     "observation.images.right_wrist": "observation.images.camera3",
 }
 
+#: ACT is trained from scratch here, so it has no pretrained camera names to
+#: match and simply adopts whatever the dataset declares. Registered explicitly
+#: rather than left to a default: `rename_map_for` refusing an unknown backbone
+#: is what stops a new policy silently inheriting pi0.5's openpi names.
+ACT_RENAME_MAP: dict[str, str] = {}
+
 _RENAME_MAPS: dict[str, dict[str, str]] = {
+    "act": ACT_RENAME_MAP,
     "pi05": PI05_RENAME_MAP,
     "control_pi05": PI05_RENAME_MAP,
     "smolvla": SMOLVLA_RENAME_MAP,

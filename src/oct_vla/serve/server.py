@@ -17,7 +17,7 @@ from __future__ import annotations
 import math
 import socket
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from oct_vla.core.action import Action, action_between, apply_action
 from oct_vla.core.objects import ObjectScene, TaskContext
@@ -30,7 +30,11 @@ from oct_vla.robots.robotwin.native import UnreachablePose
 from oct_vla.serve import protocol
 from oct_vla.serve.codec import context_to_json, eef_to_json, joints_to_json, scene_to_json
 from oct_vla.tasks.shelf_restock.collect import DEFAULT_HZ, WORLD_TO_WORKCELL
-from oct_vla.tasks.shelf_restock.manager import ShelfRestockManager, objects_on_upper_shelf
+from oct_vla.tasks.shelf_restock.manager import (
+    ShelfRestockManager,
+    objects_lifted,
+    objects_on_upper_shelf,
+)
 from oct_vla.tasks.shelf_restock.spec import DEFAULT_SPEC, ShelfRestockSpec
 
 # Measured stationary EEF poses in the demonstrations move by a few tenths of
@@ -124,6 +128,10 @@ class _Episode:
     #: and was held instead. A diagnostic, not a termination condition.
     infeasible_steps: int = 0
     last_infeasible: str = ""
+    #: Every object raised clear of the lower shelf at any point this episode.
+    #: Accumulated rather than sampled, so an object that is lifted and dropped
+    #: still counts -- that is the distinction the measure exists to make.
+    lifted_ever: set[str] = field(default_factory=set)
     #: "cartesian" (14-d canonical increments, executed through IK) or "joint"
     #: (absolute joint targets, commanded directly). Declared at reset rather
     #: than inferred, so a mismatch is an error instead of a misreading.
@@ -474,6 +482,7 @@ class ShelfRestockEvalServer:
         """Score the current scene. Shared by both control spaces, so the two
         can never disagree about what counts as success."""
         header, blobs, scene = self._snapshot()
+        episode.lifted_ever.update(objects_lifted(scene, episode.spec))
         # Restocked, not merely cleared: see ShelfRestockManager.is_restocked.
         done_task = episode.manager.is_restocked(scene)
         out_of_steps = episode.steps >= episode.max_steps
@@ -490,6 +499,13 @@ class ShelfRestockEvalServer:
             # the joint control space, where no command can be infeasible.
             infeasible_steps=episode.infeasible_steps,
             detail=episode.last_infeasible,
+            # Three levels of credit, coarsest first. `objects_lifted` counts
+            # anything ever picked up, `transfers_completed` anything actually
+            # restocked, `success` the whole task. A policy that grasps and
+            # drops is far closer to working than one that never moves, and a
+            # single binary hides that entirely.
+            objects_lifted=len(episode.lifted_ever),
+            objects_total=len(scene.objects),
         )
         return header, blobs
 

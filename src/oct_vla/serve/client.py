@@ -64,6 +64,10 @@ class StepResult:
     detail: str = ""
     #: Steps where a command was kinematically infeasible and the arm held.
     infeasible_steps: int = 0
+    #: Objects ever raised clear of the lower shelf -- the coarsest credit.
+    objects_lifted: int = 0
+    #: Objects in the scene, so the three scores can be read as fractions.
+    objects_total: int = 0
 
 
 def _observation(message: protocol.Message) -> RemoteObservation:
@@ -173,6 +177,8 @@ class ShelfRestockEvalClient:
             transfers_completed=int(message.header.get("transfers_completed", 0)),
             detail=str(message.header.get("detail", "")),
             infeasible_steps=int(message.header.get("infeasible_steps", 0)),
+            objects_lifted=int(message.header.get("objects_lifted", 0)),
+            objects_total=int(message.header.get("objects_total", 0)),
         )
 
     def close(self) -> None:

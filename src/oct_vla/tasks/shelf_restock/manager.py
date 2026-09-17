@@ -28,6 +28,30 @@ def objects_on_upper_shelf(scene: ObjectScene, spec: ShelfRestockSpec) -> tuple[
     return tuple(o.track_id for o in scene.objects if spec.upper_shelf.contains(o.pose.position))
 
 
+#: How far above the lower deck an object must rise to count as picked up, in
+#: metres. Comfortably beyond the shelf's own occupancy tolerance, so settling
+#: or being nudged along the deck does not register as a lift.
+LIFT_CLEARANCE = 0.08
+
+
+def objects_lifted(scene: ObjectScene, spec: ShelfRestockSpec) -> tuple[str, ...]:
+    """Objects currently raised clear of the lower shelf.
+
+    The coarsest of the three progress measures, and the one that separates
+    "never touched anything" from "grasped it and lost it". Without it every
+    failing policy scores an identical zero, which is exactly what four sweeps
+    have reported -- a policy that lifts an object and drops it is much closer
+    to working than one that never moves the arm, and the aggregate could not
+    tell them apart.
+
+    Height alone, deliberately: an object swept onto the floor also leaves the
+    lower shelf's xy footprint, so testing "not on the lower shelf" would score
+    destruction as progress.
+    """
+    threshold = spec.lower_shelf.top_z + LIFT_CLEARANCE
+    return tuple(o.track_id for o in scene.objects if o.pose.position[2] > threshold)
+
+
 class ShelfRestockManager:
     def __init__(
         self, spec: ShelfRestockSpec, *, selector: Selector = _select_lowest_track_id

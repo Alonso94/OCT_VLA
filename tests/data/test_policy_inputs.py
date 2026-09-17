@@ -74,3 +74,11 @@ def test_an_unknown_backbone_is_refused_rather_than_defaulted():
     of exactly that bug."""
     with pytest.raises(ValueError, match="No rename map registered"):
         rename_map_for("octo")
+
+
+def test_a_from_scratch_backbone_takes_the_datasets_own_camera_names():
+    """ACT has no pretrained camera names to match, so its map is empty --
+    recorded explicitly, because the refusal for unknown types is what keeps a
+    new policy from inheriting pi0.5's openpi names by accident."""
+    assert rename_map_for("act") == {}
+    assert rename_map_for("act") != rename_map_for("pi05")

@@ -110,9 +110,21 @@ def arm_of(report: dict, run_metadata: dict[str, dict]) -> tuple[str, int]:
     conditioning = meta.get("conditioning")
     token_mode = meta.get("token_mode") or report.get("token_mode")
     seed = meta.get("seed")
+    backbone = meta.get("backbone")
     if conditioning is None or seed is None:
         conditioning, token_mode, seed = _parse_run_name(run_name, report, token_mode)
-    label = "rgb" if conditioning == "rgb" else f"object_{token_mode or 'full'}"
+    # Only the object-token arms need their ablation mode in the label. An
+    # earlier version mapped everything that was not "rgb" onto "object_*",
+    # which silently relabelled the privileged-state baseline as an
+    # object-conditioned arm and would have merged the two.
+    if conditioning == "object":
+        label = f"object_{token_mode or 'full'}"
+    else:
+        label = str(conditioning)
+    # Backbones are compared against each other now, so the label has to say
+    # which one produced a run; "rgb" alone no longer identifies an arm.
+    if backbone and backbone != "pi05":
+        label = f"{backbone}_{label}"
     if report.get("shuffled_tokens"):
         # A separate arm, not a variant of B: same weights, different inputs.
         label += "_shuffled"
@@ -308,11 +320,25 @@ def _describe(rows: list[dict]) -> dict:
         return {"episodes": 0}
     successes = sum(bool(row["success"]) for row in rows)
     low, high = wilson_interval(successes, len(rows))
+    # Three levels of credit. A sweep where every arm scores zero on the
+    # strictest one is uninterpretable without the coarser two: they say
+    # whether the policies did nothing at all, or got part of the way.
+    lifted = sum(row.get("objects_lifted", 0) for row in rows)
+    total = sum(row.get("objects_total", 0) for row in rows)
+    any_lift = sum(1 for row in rows if row.get("objects_lifted", 0) > 0)
     return {
         "episodes": len(rows),
         "successes": successes,
         "success_rate": successes / len(rows),
         "wilson95": [low, high],
+        # Coarsest: did the policy ever pick anything up?
+        "episodes_with_a_lift": any_lift,
+        "lift_rate": any_lift / len(rows),
+        "mean_objects_lifted": lifted / len(rows),
+        # Per-object atomic credit, as a fraction of the objects present.
+        "atomic_transfer_rate": (
+            sum(row["transfers_completed"] for row in rows) / total if total else 0.0
+        ),
         # Partial credit, already recorded per episode: a policy that moves two
         # of three objects is not the same as one that never grasps anything,
         # and success rate alone cannot tell them apart.
@@ -321,17 +347,27 @@ def _describe(rows: list[dict]) -> dict:
 
 
 def _print(merged: dict) -> None:
-    print(f"{'arm':<32} {'n':>4} {'success':>8}  {'95% Wilson':<18} {'transfers':>9}")
-    print("-" * 78)
+    print(
+        f"{'arm':<30} {'n':>4} {'lift':>6} {'atomic':>7} {'task':>6}  "
+        f"{'95% Wilson (task)':<20} {'transfers':>9}"
+    )
+    print("-" * 92)
     for arm, stats in merged["arms"].items():
         overall = stats["overall"]
         if not overall.get("episodes"):
             continue
         low, high = overall["wilson95"]
         print(
-            f"{arm:<32} {overall['episodes']:>4} {overall['success_rate']:>8.3f}  "
-            f"[{low:.3f}, {high:.3f}]      {overall['mean_transfers']:>9.2f}"
+            f"{arm:<30} {overall['episodes']:>4} "
+            f"{overall.get('lift_rate', 0.0):>6.3f} "
+            f"{overall.get('atomic_transfer_rate', 0.0):>7.3f} "
+            f"{overall['success_rate']:>6.3f}  "
+            f"[{low:.3f}, {high:.3f}]       {overall['mean_transfers']:>9.2f}"
         )
+    print()
+    print("  lift   = episodes where the policy raised at least one object")
+    print("  atomic = objects restocked, as a fraction of objects present")
+    print("  task   = episodes where every object was restocked")
     for arm, stats in merged["arms"].items():
         per_profile = {p: s for p, s in stats["per_profile"].items() if s.get("episodes")}
         if len(per_profile) > 1:
