@@ -255,3 +255,27 @@ def test_no_budget_keeps_everything():
     m = _splits_module()
     clips = _run_clips([102, 105])
     assert m.take_runs(clips, None) == clips
+
+
+def test_a_split_can_own_several_seed_ranges(tmp_path):
+    """The train block was extended into 350-399 once the budget started being
+    counted in runs. The extension is recorded in docs/dataset_protocol.md; this
+    pins the code to it, because a split that silently ignores its extension
+    trains on a third of the data the protocol says it has."""
+    m = _splits_module()
+    for seed in (105, 205, 355):
+        clip = tmp_path / f"seed_{seed}" / "episode_0_0"
+        clip.mkdir(parents=True)
+        (clip / "episode.json").write_text("{}")
+    grouped = m.collect_clips(tmp_path, m.SPLIT_BLOCKS["three_object"])
+    assert sorted(m.seed_of(c) for c in grouped["train"]) == [105, 355]
+    assert sorted(m.seed_of(c) for c in grouped["val"]) == [205]
+
+
+def test_the_extension_sorts_behind_the_original_block():
+    """A budget of N runs must stay a subset of a budget of N+1, so the added
+    range has to be drawn from only after the original block is exhausted."""
+    m = _splits_module()
+    train = m.SPLIT_BLOCKS["three_object"]["train"]
+    assert [r.start for r in train] == sorted(r.start for r in train)
+    assert train[0].stop <= train[1].start

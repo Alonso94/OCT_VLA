@@ -33,10 +33,20 @@ sys.path.insert(0, str(ROOT / "src"))
 
 #: Reserved seed blocks from docs/dataset_protocol.md. A seed belongs to exactly
 #: one split, fixed before collection, so a scene can never move between splits.
-SPLIT_BLOCKS: dict[str, dict[str, range]] = {
-    "three_object": {"train": range(100, 200), "val": range(200, 250)},
-    "two_object": {"val": range(400, 450)},
-    "four_object": {"val": range(600, 650)},
+#:
+#: A split may own several ranges. Budgeting by *run* rather than by clip needs
+#: far more scenes than the original blocks were sized for, so the train split
+#: was extended into 350-399 (unreserved, below the two-object block at 400).
+#: Ranges are listed in the order they were reserved and clips are taken in
+#: ascending seed, so a later range only ever adds scenes behind the earlier
+#: ones and a budget of N runs stays a subset of a budget of N+1.
+SPLIT_BLOCKS: dict[str, dict[str, tuple[range, ...]]] = {
+    "three_object": {
+        "train": (range(100, 200), range(350, 400)),
+        "val": (range(200, 250),),
+    },
+    "two_object": {"val": (range(400, 450),)},
+    "four_object": {"val": (range(600, 650),)},
 }
 
 
@@ -48,15 +58,17 @@ def seed_of(clip_dir: Path) -> int:
     raise ValueError(f"No seed_<n> component in {clip_dir}")
 
 
-def collect_clips(canonical_root: Path, blocks: dict[str, range]) -> dict[str, list[Path]]:
+def collect_clips(
+    canonical_root: Path, blocks: dict[str, tuple[range, ...]]
+) -> dict[str, list[Path]]:
     """Group canonical clip directories by the split their seed is reserved for."""
     grouped: dict[str, list[Path]] = {name: [] for name in blocks}
     unreserved: list[int] = []
     for episode in canonical_root.rglob("episode.json"):
         clip = episode.parent
         seed = seed_of(clip)
-        for name, block in blocks.items():
-            if seed in block:
+        for name, ranges in blocks.items():
+            if any(seed in block for block in ranges):
                 grouped[name].append(clip)
                 break
         else:
