@@ -175,3 +175,35 @@ def test_joint_delta_shares_the_joint_feature_layout():
     features = _features(_two_frame_episode(), control_space="joint_delta")
     assert features["action"]["shape"] == (16,)
     assert features["observation.state"]["shape"] == (16,)
+
+
+def test_privileged_export_has_env_state_and_no_cameras():
+    """ACT accepts 'at least one image or the environment state', so a dataset
+    with privileged scene state and no cameras trains a vision-free policy with
+    no new policy class."""
+    features = _features(
+        _two_frame_episode(),
+        control_space="joint_delta",
+        object_token_spec=ObjectTokenSpec(max_objects=8),
+        privileged=True,
+    )
+    assert features["observation.environment_state"]["shape"] == (8 * 15,)
+    assert not [k for k in features if "images" in k], "cameras must be absent"
+    assert features["action"]["shape"] == (16,)
+    # The per-slot token columns are redundant once the tokens ARE the env state.
+    assert "observation.object_tokens" not in features
+
+
+def test_privileged_export_requires_an_object_spec():
+    with pytest.raises(ValueError, match="privileged export needs an object token spec"):
+        _features(_two_frame_episode(), control_space="joint_delta", privileged=True)
+
+
+def test_a_normal_export_still_carries_cameras():
+    features = _features(
+        _two_frame_episode(),
+        control_space="joint_delta",
+        object_token_spec=ObjectTokenSpec(max_objects=8),
+    )
+    assert [k for k in features if "images" in k]
+    assert "observation.environment_state" not in features

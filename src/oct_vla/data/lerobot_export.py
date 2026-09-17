@@ -142,11 +142,33 @@ def _require_joints(episode: Episode, control_space: str) -> None:
         )
 
 
+def _privileged_features(spec: ObjectTokenSpec) -> dict[str, dict]:
+    """Object tokens as a flat `observation.environment_state`.
+
+    LeRobot policies accept privileged scene state under this name, and ACT in
+    particular requires "at least one image or the environment state" -- so a
+    dataset carrying this and no cameras trains a vision-free, state-only
+    policy with no new policy class.
+
+    Flattened rather than kept as [N, D] because `environment_state` is a
+    vector feature. The mask is not exported: a padded slot is already all
+    zeros, which is what an absent object should look like to an MLP, and a
+    separate mask column would need a policy that knows to read it.
+    """
+    return {
+        "observation.environment_state": {
+            "dtype": "float32",
+            "shape": (spec.max_objects * spec.token_dim,),
+        }
+    }
+
+
 def _features(
     episode: Episode,
     *,
     object_token_spec: ObjectTokenSpec | None = None,
     control_space: str = "cartesian",
+    privileged: bool = False,
 ) -> dict[str, dict]:
     observation = episode.samples[0].observation
     if control_space not in CONTROL_SPACES:
@@ -160,7 +182,7 @@ def _features(
         # targets would make the policy learn inverse kinematics as a side job,
         # which is the round-trip this change exists to remove. Matches
         # RoboTwin's own joint_action format.
-        return {
+        joint_block = {
             "observation.state": {
                 "dtype": "float32",
                 "shape": (len(joint_names),),
@@ -171,6 +193,15 @@ def _features(
                 "shape": (len(joint_names),),
                 "names": {"motors": joint_names},
             },
+        }
+        if privileged:
+            # No cameras: this variant exists to measure what privileged scene
+            # state alone can do, as an upper bound on what vision could add.
+            if object_token_spec is None:
+                raise ValueError("privileged export needs an object token spec")
+            return {**joint_block, **_privileged_features(object_token_spec)}
+        return {
+            **joint_block,
             **_camera_features(observation),
             **_object_features(object_token_spec),
         }
@@ -286,6 +317,7 @@ def export_episodes(
     append: bool = False,
     object_token_spec: ObjectTokenSpec | None = None,
     control_space: str = "cartesian",
+    privileged: bool = False,
 ) -> ExportReport:
     """Convert canonical episode directories into a new local LeRobot dataset.
 
@@ -330,6 +362,7 @@ def export_episodes(
             accepted[0][1],
             object_token_spec=object_token_spec,
             control_space=control_space,
+            privileged=privileged,
         )
         dataset = LeRobotDataset.create(
             repo_id=repo_id,
@@ -337,7 +370,7 @@ def export_episodes(
             fps=fps,
             robot_type=robot_type,
             features=features,
-            use_videos=True,
+            use_videos=not privileged,
         )
     for _, episode in accepted:
         episode_ranks = stable_ranks(episode.samples[0].scene) if object_token_spec else {}
@@ -384,7 +417,12 @@ def export_episodes(
                     f"episode seed {episode.seed} has no recorded joints; "
                     "re-collect the whole set so every frame carries them."
                 )
-            if object_token_spec is not None:
+            if privileged:
+                tokens, _ = object_tokens(sample.scene, sample.context, spec=object_token_spec)
+                frame["observation.environment_state"] = np.asarray(
+                    [value for token in tokens for value in token], dtype=np.float32
+                )
+            elif object_token_spec is not None:
                 tokens, mask = object_tokens(sample.scene, sample.context, spec=object_token_spec)
                 frame["observation.object_tokens"] = np.asarray(tokens, dtype=np.float32)
                 frame["observation.object_token_mask"] = np.asarray(mask, dtype=np.float32)
@@ -397,7 +435,7 @@ def export_episodes(
                     ),
                     dtype=np.float32,
                 )
-            for attr, feature_name in CAMERA_FEATURES.items():
+            for attr, feature_name in ({} if privileged else CAMERA_FEATURES).items():
                 rgb = getattr(sample.observation, attr)
                 frame[feature_name] = np.frombuffer(rgb.data, dtype=np.uint8).reshape(
                     rgb.height, rgb.width, 3

@@ -21,6 +21,13 @@ def main() -> int:
     parser.add_argument("--repo-id", required=True)
     parser.add_argument("--object-tokens", action="store_true")
     parser.add_argument(
+        "--privileged",
+        action="store_true",
+        help="Export object tokens as observation.environment_state and omit the "
+        "cameras, for a vision-free upper bound on what privileged scene state alone "
+        "can achieve. Implies --object-tokens.",
+    )
+    parser.add_argument(
         "--control-space",
         default="cartesian",
         choices=["cartesian", "joint", "joint_delta"],
@@ -30,13 +37,14 @@ def main() -> int:
     )
     args = parser.parse_args()
     sources = sorted(path.parent for path in args.canonical_root.rglob("episode.json"))
-    spec = ObjectTokenSpec() if args.object_tokens else None
+    spec = ObjectTokenSpec() if (args.object_tokens or args.privileged) else None
     report = export_episodes(
         sources,
         args.output,
         repo_id=args.repo_id,
         object_token_spec=spec,
         control_space=args.control_space,
+        privileged=args.privileged,
     )
     print(f"exported {len(report.exported)} episodes to {report.output}")
     for source, reason in report.skipped:
