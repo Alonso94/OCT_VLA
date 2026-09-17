@@ -132,8 +132,14 @@ replay through the bridge. This bounds every number above.
 | | EE delta | Absolute joint | Joint delta |
 | --- | ---: | ---: | ---: |
 | Before harness fixes | **0 / 6** | — | — |
-| After harness fixes | 6 / 6 | **19 / 20 (~95 %)** | TBD |
-| Worst joint tracking error | ~9.4 mm (Cartesian) | 0.0065–0.0137 rad | TBD |
+| After harness fixes | 6 / 6 | **19 / 20 (~95 %)** | **5 / 6** |
+| Worst joint tracking error | ~9.4 mm (Cartesian) | 0.0065–0.0137 rad | 0.0139–0.0414 rad |
+
+Absolute and delta encodings replay equally well (5/6 on the same six seeds,
+failing on the same one), so the delta encoding costs nothing in executability.
+Its tracking error is slightly larger, as expected: an increment applied to the
+measured configuration inherits that measurement's error, where an absolute
+target does not.
 
 The one persistent failure (seed 112) is deterministic across repeats: replayed
 joint targets do not reproduce the oracle's *execution dynamics*, and a
