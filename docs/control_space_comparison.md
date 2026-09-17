@@ -34,12 +34,24 @@ executing one as the other is silently wrong.
 The single most explanatory measurement in this comparison. A policy must
 resolve one control step against the normalisation scale of its action column.
 
+pi0.5 normalises STATE and ACTION with **QUANTILES**, not mean/std:
+`2·(x − q01)/(q99 − q01) − 1`, mapping the 1st–99th percentile range onto
+[−1, 1]. Visual features are IDENTITY. The relevant scale is therefore the
+q01–q99 range, and quoting a standard deviation understates the problem: the
+joint-position range (1.147 rad) is far wider than 2σ (0.614 rad), because
+joint values are broadly spread and not Gaussian.
+
 | | EE delta | Absolute joint | Joint delta |
 | --- | ---: | ---: | ---: |
-| Mean motion per step | 11.32 mm | 0.00897 rad | 0.00900 rad |
-| Std of the action column | — | 0.30064 rad | **0.02279 rad** |
-| **One step, in normalised units** | — (delta-encoded) | **0.0298 σ** | **0.3949 σ** |
-| Resolution vs absolute | — | 1× | **13×** |
+| Mean motion per step | 11.32 mm | 0.00907 rad | 0.00907 rad |
+| q01–q99 range of the action column | — | 1.14740 rad | **0.16278 rad** |
+| **One step, in normalised units ([−1, 1])** | — (delta-encoded) | **0.0158** | **0.1114** |
+| Resolution vs absolute | — | 1× | **7.0×** |
+
+So one control step moves the absolute-joint action by 1.6 % of the model's
+entire output range. The measured prediction error of 0.033 rad is 0.058 in the
+same units — **3.7× the step itself**, which matches the 3.6× excess motion
+observed directly.
 
 Measured on 19 005 frames of the joint corpus. Reconstruction check for the
 delta encoding: `state[i] + action[i] − state[i+1]` has max error **1.49e-08**,
