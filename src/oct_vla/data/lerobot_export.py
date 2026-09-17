@@ -82,6 +82,32 @@ def _joint_state_vector(episode: Episode, index: int) -> tuple[float, ...] | Non
     return None if joints is None else joints.to_vector()
 
 
+def _joint_delta_action_vector(episode: Episode, index: int) -> tuple[float, ...] | None:
+    """Per-step joint *increment*, with the gripper left absolute.
+
+    Absolute joint targets are badly conditioned for this task. A single oracle
+    step moves 0.009 rad while the joint values themselves span 0.30 rad, so one
+    step is 0.03 standard deviations of the normalisation scale -- finer than
+    the model's own residual error. Measured on a trained checkpoint: mean
+    prediction error 0.033 rad against a 0.008 rad step, i.e. it commanded 3.6x
+    too much motion on frames it was fit on. Encoding the increment instead puts
+    a step at 0.40 sigma, about 13x more resolution.
+
+    The gripper stays absolute: it is a binary actuator state decoded through a
+    threshold, not a position to integrate, and a delta on it means nothing.
+    """
+    current = _joint_state_vector(episode, index)
+    following = _joint_action_vector(episode, index)
+    if current is None or following is None:
+        return None
+    half = len(current) // 2
+    grippers = (half - 1, 2 * half - 1)
+    return tuple(
+        following[i] if i in grippers else following[i] - current[i]
+        for i in range(len(current))
+    )
+
+
 def _joint_action_vector(episode: Episode, index: int) -> tuple[float, ...] | None:
     """The NEXT frame's measured joints: an absolute position target.
 
@@ -100,11 +126,15 @@ def _joint_action_vector(episode: Episode, index: int) -> tuple[float, ...] | No
     return None if joints is None else joints.to_vector()
 
 
-CONTROL_SPACES = ("cartesian", "joint")
+CONTROL_SPACES = ("cartesian", "joint", "joint_delta")
+
+
+def _is_joint_space(control_space: str) -> bool:
+    return control_space in ("joint", "joint_delta")
 
 
 def _require_joints(episode: Episode, control_space: str) -> None:
-    if control_space == "joint" and episode.samples[0].observation.joints is None:
+    if _is_joint_space(control_space) and episode.samples[0].observation.joints is None:
         raise ValueError(
             "control_space='joint' needs recorded joint positions, but episode "
             f"seed {episode.seed} has none. Re-collect with a build that records "
@@ -123,7 +153,7 @@ def _features(
         raise ValueError(f"control_space must be one of {CONTROL_SPACES}, got {control_space!r}")
     _require_joints(episode, control_space)
     joint_names = _joint_motor_names(observation)
-    if control_space == "joint":
+    if _is_joint_space(control_space):
         # A joint-space policy is proprioceptive in the same space it commands:
         # `observation.state` carries joints, `action` is the next joint
         # configuration. Feeding it a Cartesian state while asking for joint
@@ -313,14 +343,17 @@ def export_episodes(
         episode_ranks = stable_ranks(episode.samples[0].scene) if object_token_spec else {}
         for index, sample in enumerate(episode.samples):
             _require_joints(episode, control_space)
-            if control_space == "joint":
+            if _is_joint_space(control_space):
+                action = (
+                    _joint_delta_action_vector(episode, index)
+                    if control_space == "joint_delta"
+                    else _joint_action_vector(episode, index)
+                )
                 frame = {
                     "observation.state": np.asarray(
                         _joint_state_vector(episode, index), dtype=np.float32
                     ),
-                    "action": np.asarray(
-                        _joint_action_vector(episode, index), dtype=np.float32
-                    ),
+                    "action": np.asarray(action, dtype=np.float32),
                     "task": sample.context.instruction,
                 }
             else:
@@ -331,13 +364,18 @@ def export_episodes(
                     "action": np.asarray(sample.action.to_vector(), dtype=np.float32),
                     "task": sample.context.instruction,
                 }
-            joint_state = None if control_space == "joint" else _joint_state_vector(episode, index)
+            joint_state = (
+                None if _is_joint_space(control_space) else _joint_state_vector(episode, index)
+            )
             if joint_state is not None:
                 frame["observation.joint_state"] = np.asarray(joint_state, dtype=np.float32)
                 frame["action.joint_position"] = np.asarray(
                     _joint_action_vector(episode, index), dtype=np.float32
                 )
-            elif control_space != "joint" and "observation.joint_state" in dataset.features:
+            elif (
+                not _is_joint_space(control_space)
+                and "observation.joint_state" in dataset.features
+            ):
                 # The feature set was declared from the first episode. A later
                 # episode without joints would write a ragged dataset that only
                 # fails much later, during training.
@@ -376,4 +414,15 @@ def export_episodes(
         ],
     }
     (destination / "octvla_episode_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    # Absolute and incremental joint actions share a column layout and motor
+    # names, so nothing in the exported schema distinguishes them. Record which
+    # this dataset holds, or evaluation has to guess -- and guessing wrong means
+    # adding a target to the measured position, or commanding an increment as
+    # an absolute pose.
+    info_path = destination / "meta" / "info.json"
+    if info_path.exists():
+        info = json.loads(info_path.read_text())
+        info["control_space"] = control_space
+        info_path.write_text(json.dumps(info, indent=4))
+
     return ExportReport(destination, tuple(source for source, _ in accepted), tuple(skipped))

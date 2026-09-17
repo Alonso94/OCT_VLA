@@ -121,3 +121,57 @@ def test_an_unknown_control_space_is_rejected():
     episode = SimpleNamespace(samples=(SimpleNamespace(observation=_observation_with_joints()),))
     with pytest.raises(ValueError, match="control_space must be one of"):
         _features(episode, control_space="torque")
+
+
+def _two_frame_episode():
+    """Two frames whose joints differ by a known increment."""
+    from oct_vla.core.state import ArmJoints, JointState
+
+    def obs(offset):
+        frame = SimpleNamespace(height=240, width=320)
+        return SimpleNamespace(
+            head_rgb=frame, left_wrist_rgb=frame, right_wrist_rgb=frame,
+            joints=JointState(
+                ArmJoints(tuple(0.1 + offset for _ in range(7)), 0.8),
+                ArmJoints(tuple(0.2 + offset for _ in range(7)), 0.3),
+            ),
+        )
+
+    return SimpleNamespace(
+        seed=1,
+        samples=(SimpleNamespace(observation=obs(0.0)), SimpleNamespace(observation=obs(0.05))),
+    )
+
+
+def test_joint_delta_encodes_the_increment_not_the_target():
+    """Absolute targets are badly conditioned here: one oracle step is 0.03
+    sigma of the joint spread, finer than the model's own error, so a trained
+    checkpoint commanded 3.6x too much motion. The increment is 0.40 sigma."""
+    from oct_vla.data.lerobot_export import _joint_delta_action_vector
+
+    action = _joint_delta_action_vector(_two_frame_episode(), 0)
+    assert action[:7] == pytest.approx((0.05,) * 7)
+    assert action[8:15] == pytest.approx((0.05,) * 7)
+
+
+def test_joint_delta_keeps_the_gripper_absolute():
+    """The gripper is a binary actuator state decoded through a threshold, not
+    a position to integrate -- an increment on it means nothing."""
+    from oct_vla.data.lerobot_export import _joint_delta_action_vector
+
+    action = _joint_delta_action_vector(_two_frame_episode(), 0)
+    assert action[7] == pytest.approx(0.8)
+    assert action[15] == pytest.approx(0.3)
+
+
+def test_the_last_frame_of_a_delta_episode_asks_for_no_motion():
+    from oct_vla.data.lerobot_export import _joint_delta_action_vector
+
+    action = _joint_delta_action_vector(_two_frame_episode(), 1)
+    assert action[:7] == pytest.approx((0.0,) * 7)
+
+
+def test_joint_delta_shares_the_joint_feature_layout():
+    features = _features(_two_frame_episode(), control_space="joint_delta")
+    assert features["action"]["shape"] == (16,)
+    assert features["observation.state"]["shape"] == (16,)

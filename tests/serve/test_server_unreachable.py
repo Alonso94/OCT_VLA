@@ -312,3 +312,32 @@ def test_an_unknown_control_space_is_refused_at_reset():
     from oct_vla.serve.server import CONTROL_SPACES
 
     assert "joint" in CONTROL_SPACES and "cartesian" in CONTROL_SPACES
+
+
+def test_joint_delta_adds_the_increment_to_the_measured_configuration():
+    """The increment is anchored to where the arm actually is, so error cannot
+    accumulate the way it did with the Cartesian reference -- while keeping the
+    well-conditioned learning target that absolute positions lack."""
+    server, port = server_with_episode(AssertionError("IK must not be called"))
+    server._episode.control_space = "joint_delta"
+    # FakePort reports all-zero joints, so the command should equal the delta.
+    server.step([0.05] * 7 + [0.0] + [0.03] * 7 + [1.0])
+    left = [c for c in port.commands if c[0] == "left"][0]
+    right = [c for c in port.commands if c[0] == "right"][0]
+    assert left[1] == pytest.approx((0.05,) * 7)
+    assert right[1] == pytest.approx((0.03,) * 7)
+
+
+def test_joint_delta_still_never_calls_ik():
+    server, port = server_with_episode(AssertionError("IK must not be called"))
+    server._episode.control_space = "joint_delta"
+    header, _ = server.step([0.01] * 7 + [0.0] + [0.01] * 7 + [1.0])
+    assert header["infeasible_steps"] == 0
+
+
+def test_absolute_joint_space_is_unchanged_by_the_delta_branch():
+    server, port = server_with_episode(AssertionError("IK must not be called"))
+    server._episode.control_space = "joint"
+    server.step([0.05] * 7 + [0.0] + [0.03] * 7 + [1.0])
+    left = [c for c in port.commands if c[0] == "left"][0]
+    assert left[1] == pytest.approx((0.05,) * 7), "absolute targets pass through"

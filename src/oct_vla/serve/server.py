@@ -153,7 +153,7 @@ def _leashed_reference(commanded: EEFState | None, measured: EEFState) -> EEFSta
     return EEFState(arms[0], arms[1])
 
 
-CONTROL_SPACES = ("cartesian", "joint")
+CONTROL_SPACES = ("cartesian", "joint", "joint_delta")
 
 
 def _split_joint_action(values: list[float]) -> dict[str, tuple[tuple[float, ...], float]]:
@@ -336,15 +336,24 @@ class ShelfRestockEvalServer:
     def _step_joint(
         self, episode: _Episode, action_vector: list[float]
     ) -> tuple[dict, tuple[protocol.Blob, ...]]:
-        """Command absolute joint targets directly.
+        """Command joint targets directly, absolute or as an increment.
 
-        The whole Cartesian apparatus is absent here, and that is the point:
-        no inverse kinematics, so no pose can be infeasible; no integrated
-        reference, because an absolute target has nothing to accumulate; no
+        The whole Cartesian apparatus is absent either way, and that is the
+        point: no inverse kinematics, so no command can be infeasible, and no
         deadband, because holding still is just re-commanding the same
-        configuration. What remains is the gripper decode -- the action carries
-        the next *measured* aperture, which stalls mid-close while grasping, so
-        sending it back as a drive target would release the object.
+        configuration.
+
+        `joint_delta` adds the increment to the *measured* configuration rather
+        than to a retained reference. That keeps the well-conditioned learning
+        target -- one oracle step is 0.40 sigma as an increment against 0.03 as
+        an absolute position -- without reintroducing an integrator: each
+        command is anchored to where the arm actually is, so error cannot
+        accumulate the way it did with the Cartesian reference.
+
+        The gripper is absolute in both spaces. It is a binary actuator state
+        decoded through a threshold, not a position to integrate, and the
+        action carries the next *measured* aperture, which stalls mid-close
+        while grasping -- so sending it back untouched would release the object.
         """
         commands = []
         for side, (positions, gripper) in _split_joint_action(action_vector).items():
@@ -353,6 +362,10 @@ class ShelfRestockEvalServer:
                 raise EvalServerError(
                     f"{side} arm has {len(measured)} joints but the action supplies "
                     f"{len(positions)}; the policy's action space does not match this robot"
+                )
+            if episode.control_space == "joint_delta":
+                positions = tuple(
+                    now + step for now, step in zip(measured, positions, strict=True)
                 )
             commands.append((side, positions, _decode_gripper_target(gripper)))
 
@@ -378,7 +391,7 @@ class ShelfRestockEvalServer:
             raise EvalServerError("step before reset")
         episode = self._episode
 
-        if episode.control_space == "joint":
+        if episode.control_space in ("joint", "joint_delta"):
             return self._step_joint(episode, action_vector)
 
         action = Action.from_vector(action_vector)

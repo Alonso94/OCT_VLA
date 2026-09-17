@@ -68,7 +68,7 @@ def build_observation(obs, *, object_token_spec, torch, np, ranks=None, control_
         # uint8 CHW with a leading batch axis: what LeRobotDataset yields with
         # return_uint8=True, which is how the training dataloader was built.
         batch[feature] = torch.from_numpy(image.copy()).permute(2, 0, 1).unsqueeze(0)
-    if control_space == "joint":
+    if control_space in ("joint", "joint_delta"):
         if obs.joints is None:
             raise SystemExit(
                 "The simulator reported no joint state, but this checkpoint is "
@@ -213,7 +213,21 @@ def main() -> int:
     # silently wrong rather than an error.
     metadata = LeRobotDatasetMetadata(args.repo_id, root=args.dataset_root)
     action_names = (metadata.features["action"].get("names") or {}).get("motors") or []
-    control_space = "joint" if any("_arm.j" in str(n) for n in action_names) else "cartesian"
+    if any("_arm.j" in str(n) for n in action_names):
+        # Absolute and incremental joint actions share a layout, so the column
+        # names cannot tell them apart. The dataset records which it holds.
+        info_path = args.dataset_root / "meta" / "info.json"
+        recorded = json.loads(info_path.read_text()).get("control_space")
+        if recorded is None:
+            raise SystemExit(
+                f"{info_path} records no control_space, but this dataset's action "
+                "is joint-shaped. Absolute and incremental joint actions look "
+                "identical in the schema, and executing one as the other is "
+                "silently wrong -- re-export so the dataset says which it is."
+            )
+        control_space = str(recorded)
+    else:
+        control_space = "cartesian"
     width = metadata.features["action"]["shape"][0]
     print(f"control space: {control_space} (action width {width})")
     policy = make_policy(cfg=config, ds_meta=metadata, rename_map=rename_map)
