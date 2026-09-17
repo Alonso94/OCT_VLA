@@ -279,3 +279,41 @@ def test_the_extension_sorts_behind_the_original_block():
     train = m.SPLIT_BLOCKS["three_object"]["train"]
     assert [r.start for r in train] == sorted(r.start for r in train)
     assert train[0].stop <= train[1].start
+
+
+def _clip(tmp_path, seed, name="episode_0_0"):
+    clip = tmp_path / f"seed_{seed}" / name
+    clip.mkdir(parents=True, exist_ok=True)
+    (clip / "episode.json").write_text("{}")
+    return clip
+
+
+def test_the_boundary_check_accepts_an_extension_seed_above_the_val_block(tmp_path):
+    """The bug this replaced: the check compared seed *numbers* across the
+    boundary, so a train scene from the 350-399 extension sitting above the
+    200-249 validation block was rejected even though the layout was correct."""
+    m = _splits_module()
+    ordered = [_clip(tmp_path, s) for s in (105, 398, 202, 240)]
+    m.check_boundary(ordered, 2, m.SPLIT_BLOCKS["three_object"])
+
+
+def test_a_validation_scene_on_the_train_side_is_rejected(tmp_path):
+    """What the check is actually for: LeRobot holds out a positional tail, so a
+    misplaced episode means training on a validation scene."""
+    m = _splits_module()
+    ordered = [_clip(tmp_path, s) for s in (105, 202, 398, 240)]
+    with pytest.raises(SystemExit, match="validation scene"):
+        m.check_boundary(ordered, 2, m.SPLIT_BLOCKS["three_object"])
+
+
+def test_a_train_scene_on_the_validation_side_is_rejected(tmp_path):
+    m = _splits_module()
+    ordered = [_clip(tmp_path, s) for s in (105, 202, 240, 398)]
+    with pytest.raises(SystemExit, match="train scene"):
+        m.check_boundary(ordered, 1, m.SPLIT_BLOCKS["three_object"])
+
+
+def test_a_dataset_without_a_validation_split_has_no_boundary(tmp_path):
+    m = _splits_module()
+    ordered = [_clip(tmp_path, s) for s in (105, 398)]
+    m.check_boundary(ordered, 2, m.SPLIT_BLOCKS["three_object"])

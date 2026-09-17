@@ -113,6 +113,38 @@ def take_runs(clips: list[Path], limit: int | None) -> list[Path]:
     return kept
 
 
+def check_boundary(
+    ordered: list[Path], boundary: int, blocks: dict[str, tuple[range, ...]]
+) -> None:
+    """Every episode before `boundary` is a train scene, every one after is not.
+
+    LeRobot holds out a positional tail, so the layout is what makes the derived
+    `eval_split` select the reserved validation block. This checks that layout
+    against the reservations directly.
+
+    An earlier version compared seed *numbers* across the boundary -- last train
+    seed < first validation seed. That was a proxy that held only while each
+    split was one contiguous range, and it broke the moment the train split was
+    extended into 350-399, above the validation block at 200-249: a correct
+    layout was rejected for seeds being out of numerical order, which they are
+    entitled to be.
+    """
+    if boundary == len(ordered):
+        return
+    train_ranges = blocks.get("train", ())
+    for position, clip in enumerate(ordered):
+        seed = seed_of(clip)
+        in_train = any(seed in block for block in train_ranges)
+        if in_train != (position < boundary):
+            side = "train" if in_train else "validation"
+            raise SystemExit(
+                f"Episode {position} (seed {seed}) is a {side} scene but sits on the "
+                f"{'train' if position < boundary else 'validation'} side of the "
+                f"boundary at {boundary}. The positional hold-out would not select "
+                "the reserved block."
+            )
+
+
 def main() -> int:
     from oct_vla.data.lerobot_export import export_episodes
     from oct_vla.data.object_tokens import ObjectTokenSpec
@@ -167,6 +199,11 @@ def main() -> int:
 
     ordered = train + val
     total, n_val = len(ordered), len(val)
+    boundary = total - n_val
+
+    # Before the export, not after: this depends only on the clip ordering, and
+    # the RGB variant spends an hour encoding video on the way to the end.
+    check_boundary(ordered, boundary, blocks)
 
     # Invert LeRobot's rule: it holds out ceil(total * eval_split) episodes. Take
     # the midpoint of the interval of fractions that yield exactly n_val so the
@@ -197,14 +234,6 @@ def main() -> int:
             f"eval_split boundary would no longer match the seed boundary"
         )
 
-    # The boundary must fall exactly between the last train seed and the first
-    # validation seed, or the held-out tail is not the reserved block.
-    boundary = total - n_val
-    if n_val:
-        last_train, first_val = seed_of(ordered[boundary - 1]), seed_of(ordered[boundary])
-        if last_train >= first_val:
-            raise SystemExit(f"Split boundary is not ordered: {last_train} >= {first_val}")
-
     manifest = {
         "profile": args.profile,
         "repo_id": args.repo_id,
@@ -226,8 +255,8 @@ def main() -> int:
     print(f"\ntrain: {boundary} episodes from {len(manifest['train']['seeds'])} seeds")
     print(f"val:   {n_val} episodes from {len(manifest['val']['seeds'])} seeds")
     if n_val:
-        print(f"boundary: episode {boundary - 1} (seed {last_train}) | "
-              f"episode {boundary} (seed {first_val})")
+        print(f"boundary: episode {boundary - 1} (seed {seed_of(ordered[boundary - 1])}) | "
+              f"episode {boundary} (seed {seed_of(ordered[boundary])})")
     print(f"\nlerobot-train --dataset.eval_split={eval_split!r}")
     return 0
 
