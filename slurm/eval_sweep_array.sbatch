@@ -30,10 +30,19 @@ IFS=$'\t' read -r BACKBONE VARIANT TOKEN_MODE SEED <<< "$LINE"
 RUN_NAME="${BACKBONE}_${VARIANT}_${TOKEN_MODE}_s${SEED}"
 RUN_DIR="$OCTVLA_OUTPUT_ROOT/$RUN_NAME"
 
-# `last` rather than a hard-coded step: it is whatever the run actually reached.
-# Naming the final step here would silently evaluate a stale checkpoint if the
-# run were ever resized, and evaluate nothing at all if it stopped early.
-CHECKPOINT="$RUN_DIR/checkpoints/last/pretrained_model"
+# `best` when scripts/select_best_checkpoint.py has been run, `last` otherwise.
+# These runs pass their validation minimum well before the step budget ends, so
+# `last` scores a model that has been memorising the training scenes for tens of
+# thousands of steps -- and since arms overfit at different rates, that turns a
+# comparison of conditioning into a comparison of overfitting speed.
+#
+# `last` is the fallback rather than a hard-coded step because it is whatever the
+# run actually reached: naming the final step would silently evaluate a stale
+# checkpoint if the run were resized, and nothing at all if it stopped early.
+CHECKPOINT="$RUN_DIR/checkpoints/best/pretrained_model"
+if [ ! -d "$CHECKPOINT" ]; then
+  CHECKPOINT="$RUN_DIR/checkpoints/last/pretrained_model"
+fi
 [ -d "$CHECKPOINT" ] || { echo "No checkpoint at $CHECKPOINT" >&2; exit 2; }
 
 SUFFIX=""
