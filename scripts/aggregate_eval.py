@@ -128,6 +128,13 @@ def arm_of(report: dict, run_metadata: dict[str, dict]) -> tuple[str, int]:
     if report.get("shuffled_tokens"):
         # A separate arm, not a variant of B: same weights, different inputs.
         label += "_shuffled"
+    tag = report.get("eval_tag") or ""
+    if tag:
+        # Same weights again, but executed differently -- an open-loop horizon
+        # of 50 and a closed-loop one of 1 are not the same policy in the
+        # environment, so averaging them would hide exactly the effect the
+        # horizon sweep exists to measure.
+        label += f"__{tag}"
     return label, int(seed)
 
 

@@ -129,6 +129,16 @@ class _Episode:
     #: and was held instead. A diagnostic, not a termination condition.
     infeasible_steps: int = 0
     last_infeasible: str = ""
+    #: Objects seen on the upper shelf, in the order they arrived. Evaluation
+    #: has to maintain this itself: collection calls
+    #: ShelfRestockManager.record_placement as the oracle finishes each
+    #: transfer, and without the equivalent here `_placed_order` stays empty and
+    #: `_previous_neighbor` silently falls through to the lexicographically
+    #: smallest neighbour instead of the most recently placed one. That changes
+    #: which object carries the "previous neighbour" role in the object tokens
+    #: from the third transfer onward -- so the object-conditioned arms would be
+    #: scored on a token layout they were never trained on.
+    placed_seen: set[str] = field(default_factory=set)
     #: Every object raised clear of the lower shelf at any point this episode.
     #: Accumulated rather than sampled, so an object that is lifted and dropped
     #: still counts -- that is the distinction the measure exists to make.
@@ -555,6 +565,13 @@ class ShelfRestockEvalServer:
         can never disagree about what counts as success."""
         header, blobs, scene = self._snapshot()
         episode.lifted_ever.update(objects_lifted(scene, episode.spec))
+        # Mirror collection's record_placement. Ordered by arrival, and sorted
+        # within a step only so that two objects arriving in the same step are
+        # recorded deterministically rather than in set order.
+        for track_id in sorted(objects_on_upper_shelf(scene, episode.spec)):
+            if track_id not in episode.placed_seen:
+                episode.placed_seen.add(track_id)
+                episode.manager.record_placement(track_id)
         # Restocked, not merely cleared: see ShelfRestockManager.is_restocked.
         done_task = episode.manager.is_restocked(scene)
         out_of_steps = episode.steps >= episode.max_steps

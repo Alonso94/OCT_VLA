@@ -75,6 +75,10 @@ if [ "${EVAL_SHUFFLE_TOKENS:-0}" = "1" ]; then
   OBJECT_FLAG+=(--shuffle-tokens)
 fi
 
+EXEC_FLAG=()
+[ -n "${EVAL_N_ACTION_STEPS:-}" ] && EXEC_FLAG+=(--n-action-steps "$EVAL_N_ACTION_STEPS")
+[ -n "${EVAL_TEMPORAL_ENSEMBLE_COEFF:-}" ] && EXEC_FLAG+=(--temporal-ensemble-coeff "$EVAL_TEMPORAL_ENSEMBLE_COEFF")
+
 VIDEO_FLAG=()
 if [ -n "${EVAL_VIDEO_DIR:-}" ]; then
   VIDEO_FLAG+=(--video-dir "$EVAL_VIDEO_DIR")
@@ -110,6 +114,7 @@ echo "eval dataset : $EVAL_DATASET_DIR ($EVAL_REPO_ID)"
   --seeds "$EVAL_SEEDS" \
   --max-steps "${EVAL_MAX_STEPS:-600}" \
   "${OBJECT_FLAG[@]}" \
+  "${EXEC_FLAG[@]}" \
   "${VIDEO_FLAG[@]}" \
   --output "$RESULTS"
 STATUS=$?

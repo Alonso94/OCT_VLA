@@ -189,3 +189,26 @@ def test_pi05_arms_keep_their_bare_labels():
     meta = {"pi05_object_full_s1000": {
         "conditioning": "object", "token_mode": "full", "seed": 1000, "backbone": "pi05"}}
     assert aggregate_eval.arm_of(report, meta) == ("object_full", 1000)
+
+
+def test_a_different_execution_horizon_is_a_separate_arm():
+    """An open-loop horizon of 50 and a closed-loop 1 are not the same policy in
+    the environment, even though they share weights. Averaging them would hide
+    the effect the horizon sweep exists to measure."""
+    checkpoint = "/out/act_three_object_rgb_r75_abs_s1000/checkpoints/best/pm"
+    meta = {"act_three_object_rgb_r75_abs_s1000": {
+        "conditioning": "rgb", "token_mode": "full", "seed": 1000, "backbone": "act"}}
+    plain = aggregate_eval.arm_of({"checkpoint": checkpoint}, meta)
+    closed = aggregate_eval.arm_of({"checkpoint": checkpoint, "eval_tag": "n1"}, meta)
+    assert plain == ("act_rgb", 1000)
+    assert closed == ("act_rgb__n1", 1000)
+
+
+def test_an_empty_tag_stays_comparable_with_older_reports():
+    """Reports written before the horizon override existed carry no eval_tag,
+    and a re-run at defaults must still merge with them."""
+    checkpoint = "/out/act_three_object_rgb_r75_abs_s1000/checkpoints/best/pm"
+    meta = {"act_three_object_rgb_r75_abs_s1000": {
+        "conditioning": "rgb", "token_mode": "full", "seed": 1000, "backbone": "act"}}
+    assert (aggregate_eval.arm_of({"checkpoint": checkpoint, "eval_tag": ""}, meta)
+            == aggregate_eval.arm_of({"checkpoint": checkpoint}, meta))

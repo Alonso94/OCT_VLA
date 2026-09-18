@@ -263,6 +263,21 @@ def main() -> int:
         "write one file per episode per profile.",
     )
     parser.add_argument(
+        "--n-action-steps",
+        type=int,
+        help="How many actions to execute per forward pass. Inference-only for "
+        "chunked policies -- it never enters the training loss -- so this "
+        "re-scores an existing checkpoint rather than needing a retrain. 1 is "
+        "fully closed-loop; the trained default of 50 is 3.3 s of open loop at "
+        "15 Hz.",
+    )
+    parser.add_argument(
+        "--temporal-ensemble-coeff",
+        type=float,
+        help="Enable ACT temporal ensembling, blending overlapping chunks. "
+        "Requires --n-action-steps 1.",
+    )
+    parser.add_argument(
         "--video-name",
         default="",
         help="Filename stem for the recording, without .mp4. One stable name per "
@@ -352,6 +367,32 @@ def main() -> int:
         f"state: {state_encoding} (width {state_width}) "
         f"privileged={privileged} visual_norm={visual_norm} uint8_images={uint8_images}"
     )
+    # Applied before make_policy, and that ordering is load-bearing: the policy
+    # sizes its action queue from n_action_steps in reset(), and only builds a
+    # temporal ensembler at all if the coefficient is set at construction time.
+    base_n = getattr(config, "n_action_steps", None)
+    if args.n_action_steps is not None or args.temporal_ensemble_coeff is not None:
+        if base_n is None:
+            raise SystemExit(f"{config.type} has no n_action_steps to override")
+        chosen = args.n_action_steps if args.n_action_steps is not None else base_n
+        # Assigning to the dataclass does not re-run __post_init__, so the
+        # policy's own guards never fire. They are restated rather than trusted.
+        if not 1 <= chosen <= config.chunk_size:
+            raise SystemExit(
+                f"--n-action-steps must be within [1, chunk_size={config.chunk_size}]; "
+                f"got {chosen}"
+            )
+        if args.temporal_ensemble_coeff is not None and chosen != 1:
+            raise SystemExit(
+                "Temporal ensembling needs --n-action-steps 1: the policy has to be "
+                f"queried every step to form the ensemble. Got {chosen}."
+            )
+        config.n_action_steps = chosen
+        if args.temporal_ensemble_coeff is not None:
+            config.temporal_ensemble_coeff = args.temporal_ensemble_coeff
+        print(f"execution horizon: {base_n} -> {config.n_action_steps} "
+              f"(temporal_ensemble_coeff={getattr(config, 'temporal_ensemble_coeff', None)})")
+
     policy = make_policy(cfg=config, ds_meta=metadata, rename_map=rename_map)
     policy.eval()
     # The same rename map training used. Unlike training, inference would not
@@ -426,6 +467,25 @@ def main() -> int:
         # the two and aggregation would silently merge them into one arm.
         "token_mode": getattr(config, "object_token_mode", None),
         "shuffled_tokens": bool(args.shuffle_tokens),
+        # Same weights, different inference settings, so aggregation must not
+        # merge them. `eval_tag` is empty when nothing was overridden, which
+        # keeps a default re-run comparable with reports written before this
+        # existed.
+        "eval_tag": "_".join(
+            part for part in (
+                f"n{config.n_action_steps}" if (
+                    base_n is not None and config.n_action_steps != base_n
+                ) else "",
+                f"te{args.temporal_ensemble_coeff:g}"
+                if args.temporal_ensemble_coeff is not None else "",
+            ) if part
+        ),
+        "execution": {
+            "n_action_steps": getattr(config, "n_action_steps", None),
+            "trained_n_action_steps": base_n,
+            "chunk_size": getattr(config, "chunk_size", None),
+            "temporal_ensemble_coeff": getattr(config, "temporal_ensemble_coeff", None),
+        },
         "max_steps": args.max_steps,
         "seeds": seeds,
         "summary": summary,
