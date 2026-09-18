@@ -61,14 +61,16 @@ FLASHVLA_RENAME_MAP: dict[str, str] = {
     "observation.images.right_wrist": "observation.images.cam_right_wrist",
 }
 
-#: X-VLA and VLA-JEPA are trained here from their own pretrained checkpoints,
-#: which declare no fixed camera names -- both derive their view count from the
-#: dataset. So they take the dataset's own keys, as ACT does. Registered
-#: explicitly rather than left to a default: `rename_map_for` refusing an
-#: unknown backbone is what stops a new policy silently inheriting pi0.5's
-#: openpi names, which would degrade in silence because all three views share a
-#: shape and dtype.
+#: X-VLA derives its view count from the dataset (`num_image_views` is computed
+#: from the features it is given), so it takes our own keys.
 XVLA_RENAME_MAP: dict[str, str] = {}
+
+#: VLA-JEPA's published checkpoint declares DROID-style names and only *two*
+#: views -- `exterior_1_left` and `exterior_2_left`. We have three. The arms are
+#: loaded with `--policy.type` rather than `--policy.path`, so features are built
+#: from the dataset and our own keys are what the model sees; the map is empty
+#: for the same reason ACT's is. Recorded here because the mismatch is real and
+#: a future switch to `--policy.path` would hit it.
 VLA_JEPA_RENAME_MAP: dict[str, str] = {}
 
 _RENAME_MAPS: dict[str, dict[str, str]] = {

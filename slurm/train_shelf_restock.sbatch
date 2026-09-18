@@ -59,7 +59,11 @@ case "$BACKBONE" in
     PRECISION_ARGS=(--policy.use_amp=true)
     ;;
   vla_jepa)
-    DEFAULT_BASE_MODEL="ginwind/VLA-JEPA"
+    # The LeRobot-format conversion, not ginwind/VLA-JEPA -- that repo ships
+    # bare .pt files and VLAJEPAPolicy._load_as_safetensor needs safetensors.
+    # Pretrain rather than LIBERO: we want the generic checkpoint, not one
+    # already specialised to another benchmark's tasks.
+    DEFAULT_BASE_MODEL="lerobot/VLA-JEPA-Pretrain"
     OBJECT_POLICY_TYPE="control_vla_jepa"
     STOCK_POLICY_TYPE="vla_jepa"
     PRECISION_ARGS=(--policy.use_amp=true)
