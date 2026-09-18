@@ -144,7 +144,7 @@ def build_observation(
 def run_episode(
     client, policy, preprocessor, postprocessor, *,
     seed, profile, max_steps, object_token_spec, torch, np, control_space="cartesian",
-    privileged=False, uint8_images=True, state_encoding="position",
+    privileged=False, uint8_images=True, state_encoding="position", video=None,
 ) -> dict:
     observation = client.reset(seed, profile, control_space=control_space)
     policy.reset()
@@ -162,6 +162,10 @@ def run_episode(
     # Carried across steps so the velocity block is a backward difference of
     # consecutive observations, the same quantity the exporter differenced.
     previous_joints = None
+    # The opening frame, before any action: without it the video starts one
+    # step in and the scene's initial layout is never shown.
+    if video is not None:
+        video.add(observation, {"step": 0, "transfers": 0, "lifted": 0})
     for step in range(max_steps):
         batch = build_observation(
             observation,
@@ -193,8 +197,17 @@ def run_episode(
             objects_lifted=max(result["objects_lifted"], outcome.objects_lifted),
             objects_total=outcome.objects_total or result["objects_total"],
         )
+        if video is not None:
+            video.add(observation, {
+                "step": step + 1,
+                "transfers": result["transfers_completed"],
+                "lifted": result["objects_lifted"],
+            })
         if outcome.done:
             break
+    if video is not None:
+        result["video"] = str(video.close() or "")
+        result["video_frames"] = video.frames
     return result
 
 
@@ -230,6 +243,30 @@ def main() -> int:
         "checkpoint's own setting and never changes the weights.",
     )
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--video-dir",
+        type=Path,
+        help="Record each episode as an mp4 here: head and both wrist views side "
+        "by side, captioned. The counters separate 'did nothing' from 'did the "
+        "task' but not 'reached and missed' from 'never approached'.",
+    )
+    parser.add_argument(
+        "--video-label",
+        default="",
+        help="Banner burned into the video, naming the cell it belongs to.",
+    )
+    parser.add_argument(
+        "--video-seeds",
+        default="",
+        help="Comma-separated subset of --seeds to record. Empty records every "
+        "evaluated episode, which is rarely what is wanted: a full sweep would "
+        "write one file per episode per profile.",
+    )
+    parser.add_argument("--video-fps", type=float, default=15.0,
+                        help="Matches the 15 Hz control rate, so the video runs in real time.")
+    parser.add_argument("--video-crf", type=int, default=30,
+                        help="x264 quality; higher is smaller. These are committed to the "
+                             "repository, so the default trades detail for size.")
     args = parser.parse_args()
 
     if "-" in args.seeds and "," not in args.seeds:
@@ -323,16 +360,40 @@ def main() -> int:
     )
     spec = ObjectTokenSpec() if (args.object_tokens or privileged) else None
 
+    record = set(seeds)
+    if args.video_dir and args.video_seeds:
+        record = {int(v) for v in args.video_seeds.split(",") if v.strip()}
+        unknown = record - set(seeds)
+        if unknown:
+            raise SystemExit(
+                f"--video-seeds names {sorted(unknown)}, which --seeds does not "
+                "evaluate; nothing would be recorded for them."
+            )
+
     results = []
     with ShelfRestockEvalClient(args.host, args.port) as client:
         for profile in profiles:
             for seed in seeds:
+                video = None
+                if args.video_dir and seed in record:
+                    from oct_vla.serve.video import Caption, RolloutVideo
+
+                    video = RolloutVideo(
+                        args.video_dir / f"{profile}_seed{seed}.mp4",
+                        fps=args.video_fps,
+                        crf=args.video_crf,
+                        caption=Caption(
+                            args.video_label or args.checkpoint.parent.parent.parent.name,
+                            f"{control_space} | {profile} | seed {seed}",
+                        ),
+                    )
                 outcome = run_episode(
                     client, policy, preprocessor, postprocessor,
                     seed=seed, profile=profile, max_steps=args.max_steps,
                     object_token_spec=spec, torch=torch, np=np,
                     control_space=control_space, privileged=privileged,
                     uint8_images=uint8_images, state_encoding=state_encoding,
+                    video=video,
                 )
                 results.append(outcome)
                 print(json.dumps(outcome), flush=True)

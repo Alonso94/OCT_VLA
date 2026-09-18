@@ -75,6 +75,14 @@ if [ "${EVAL_SHUFFLE_TOKENS:-0}" = "1" ]; then
   OBJECT_FLAG+=(--shuffle-tokens)
 fi
 
+VIDEO_FLAG=()
+if [ -n "${EVAL_VIDEO_DIR:-}" ]; then
+  VIDEO_FLAG+=(--video-dir "$EVAL_VIDEO_DIR")
+  [ -n "${EVAL_VIDEO_LABEL:-}" ] && VIDEO_FLAG+=(--video-label "$EVAL_VIDEO_LABEL")
+  [ -n "${EVAL_VIDEO_SEEDS:-}" ] && VIDEO_FLAG+=(--video-seeds "$EVAL_VIDEO_SEEDS")
+  [ -n "${EVAL_VIDEO_CRF:-}" ] && VIDEO_FLAG+=(--video-crf "$EVAL_VIDEO_CRF")
+fi
+
 cd "$OCTVLA_REPO"
 # The dataset supplies the action width, the control space and the state
 # encoding, so it has to be the one the checkpoint was fit on -- not merely one
@@ -101,6 +109,7 @@ echo "eval dataset : $EVAL_DATASET_DIR ($EVAL_REPO_ID)"
   --seeds "$EVAL_SEEDS" \
   --max-steps "${EVAL_MAX_STEPS:-600}" \
   "${OBJECT_FLAG[@]}" \
+  "${VIDEO_FLAG[@]}" \
   --output "$RESULTS"
 STATUS=$?
 echo "eval exit=$STATUS; results at $RESULTS"
