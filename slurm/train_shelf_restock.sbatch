@@ -24,6 +24,7 @@ set -euo pipefail
 case "$TRAIN_VARIANT" in rgb|object) ;; *) echo "Invalid TRAIN_VARIANT" >&2; exit 2 ;; esac
 
 BACKBONE="${BACKBONE:-pi05}"
+PEFT_ARGS=(--peft.method_type=LORA --peft.r="${LORA_R:-16}" --peft.lora_alpha="${LORA_ALPHA:-32}")
 case "$BACKBONE" in
   pi05)
     DEFAULT_BASE_MODEL="lerobot/pi05_base"
@@ -59,6 +60,11 @@ case "$BACKBONE" in
     # revisiting -- 17.4% of targets on this corpus are padding.
     STOCK_POLICY_TYPE="groot"
     PRECISION_ARGS=(--policy.use_amp=true)
+    # No LoRA: GR00T freezes its LLM and vision tower by default and tunes only
+    # the projector and diffusion head, and its weights arrive through
+    # base_model_path rather than pretrained_path -- which is what LeRobot's
+    # PEFT guard checks, so it refuses LoRA outright.
+    PEFT_ARGS=()
     ;;
   vla_jepa)
     # The LeRobot-format conversion, not ginwind/VLA-JEPA -- that repo ships
@@ -86,7 +92,11 @@ fi
 
 TRAIN_SEED="${TRAIN_SEED:-1000}"
 
-DATASET="$OCTVLA_DATASET_ROOT/three_object_${TRAIN_VARIANT}"
+# The dataset supplies the action encoding, the state width and the control
+# space, so it has to be the one this cell means -- not merely one of the same
+# variant. TRAIN_DATASET names it; the default keeps the old convention.
+TRAIN_DATASET="${TRAIN_DATASET:-three_object_${TRAIN_VARIANT}}"
+DATASET="$OCTVLA_DATASET_ROOT/$TRAIN_DATASET"
 [ -d "$DATASET" ] || { echo "No dataset at $DATASET" >&2; exit 2; }
 
 # eval_split is a derived quantity, not a hyperparameter: it is whatever value
@@ -112,13 +122,21 @@ BASE_MODEL="${OCTVLA_BASE_MODEL:-$DEFAULT_BASE_MODEL}"
 # The plugin cannot: its type is not in LeRobot's registry until its package is
 # imported, so it needs --policy.type plus --policy.discover_packages_path,
 # with the base weights supplied separately as --policy.pretrained_path.
+#
+# A backbone with no DEFAULT_BASE_MODEL is a third case: GR00T carries its
+# checkpoint in a config field (base_model_path) and loads the
+# transformers-format weights itself, so there is nothing to hand to
+# --policy.path or --policy.pretrained_path. Passing an empty one is not a
+# no-op -- it resolves to the current directory.
 if [ "$TRAIN_VARIANT" = "object" ]; then
   POLICY_ARGS=(
     --policy.type="$OBJECT_POLICY_TYPE"
-    --policy.pretrained_path="$BASE_MODEL"
     --policy.discover_packages_path=oct_vla.policies
     --policy.object_token_mode="$OBJECT_TOKEN_MODE"
   )
+  [ -n "$BASE_MODEL" ] && POLICY_ARGS+=(--policy.pretrained_path="$BASE_MODEL")
+elif [ -z "$BASE_MODEL" ]; then
+  POLICY_ARGS=(--policy.type="$STOCK_POLICY_TYPE" --policy.discover_packages_path=oct_vla.policies)
 elif [ "$STOCK_POLICY_TYPE" = "$BACKBONE" ]; then
   # A stock LeRobot type: load via --policy.path and take the type from the
   # checkpoint, as before.
@@ -133,6 +151,13 @@ else
     --policy.discover_packages_path=oct_vla.policies
   )
 fi
+
+# The execution horizon is a measured convention (25; see
+# docs/experiment_matrix.md), and the backbones disagree on it -- pi0.5 and
+# SmolVLA default to 50, GR00T to 40. Set it at training so the checkpoint
+# carries it and evaluation does not have to remember to override it. Left
+# unset, each backbone keeps its own default.
+[ -n "${N_ACTION_STEPS:-}" ] && POLICY_ARGS+=(--policy.n_action_steps="$N_ACTION_STEPS")
 
 # Name the cell, not the job. A job-id-only directory makes a sweep's runs
 # mutually indistinguishable after the fact -- you cannot tell arm B seed 1001
@@ -156,6 +181,12 @@ mkdir -p "$(dirname "$OUTPUT")"
 
 # The base checkpoint and dataset are already local; keep the job off the network
 # so a hub hiccup cannot kill a 24-hour run.
+if [ "$TRAIN_DATASET" = "three_object_${TRAIN_VARIANT}" ]; then
+  TRAIN_REPO_ID="local/oct-vla-shelf-restock-three_object-${TRAIN_VARIANT}"
+else
+  TRAIN_REPO_ID="local/oct-vla-shelf-restock-${TRAIN_DATASET#three_object_}"
+fi
+
 export HF_HOME="${HF_HOME:?Set HF_HOME}"
 export HF_HUB_OFFLINE=1
 export PYTHONUNBUFFERED=1
@@ -215,16 +246,14 @@ RENAME_MAP=$(PYTHONPATH="$OCTVLA_REPO/src" "$OCTVLA_POLICY_PYTHON" -c \
 export PYTHONPATH="$OCTVLA_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
 
 srun "$OCTVLA_POLICY_PYTHON" -u -m lerobot.scripts.lerobot_train \
-  --dataset.repo_id="local/oct-vla-shelf-restock-three_object-${TRAIN_VARIANT}" \
+  --dataset.repo_id="$TRAIN_REPO_ID" \
   --dataset.root="$DATASET" \
   --dataset.eval_split="$EVAL_SPLIT" \
   --rename_map="$RENAME_MAP" \
   "${POLICY_ARGS[@]}" \
   "${PRECISION_ARGS[@]}" \
   --policy.push_to_hub=false \
-  --peft.method_type=LORA \
-  --peft.r="${LORA_R:-16}" \
-  --peft.lora_alpha="${LORA_ALPHA:-32}" \
+  "${PEFT_ARGS[@]}" \
   --steps="${TRAIN_STEPS:-20000}" \
   --batch_size="${BATCH_SIZE:-4}" \
   --num_workers="${NUM_WORKERS:-8}" \
