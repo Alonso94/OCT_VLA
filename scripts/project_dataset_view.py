@@ -1,0 +1,164 @@
+#!/usr/bin/env python
+"""Derive a single-encoding dataset from the unified one, without copying video.
+
+The unified dataset carries every encoding: the canonical absolute-joint pair
+under the names LeRobot expects, and the rest under `alt.` where LeRobot's
+feature typing ignores them. Training, though, reads exactly `observation.state`
+and `action`, and no LeRobot flag redirects those. So a run gets a *view*: a
+dataset directory whose parquet has the requested pair renamed into place and
+whose video files are hard links back to the unified copy.
+
+A projection rather than a runtime wrapper, deliberately. A runtime subclass
+would have to shadow LeRobotDataset's metadata, stats, feature typing, delta
+timestamps and video decoding, and would then only work through an entry point
+we control -- `lerobot_train` builds its own dataset from the config. A projected
+directory is an ordinary dataset: stock training, stock evaluation, stock
+publishing, nothing to keep in sync.
+
+It is nearly free. The bytes that matter are the camera streams, which are
+identical across views and shared by inode; a view costs only its parquet, a few
+megabytes against 161 MB of video.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from oct_vla.data.control_views import (  # noqa: E402
+    ALT_PREFIX,
+    UNIFIED_CONTROL_SPACE,
+    VIEWS,
+    view_for,
+)
+
+
+def link_tree(source: Path, destination: Path) -> int:
+    """Hard-link every file under `source` into `destination`.
+
+    Hard links rather than symlinks so the view is an ordinary directory to
+    every reader, with no path resolution to get wrong and nothing that breaks
+    if the unified dataset is moved within the same filesystem.
+    """
+    linked = 0
+    for path in sorted(source.rglob("*")):
+        if not path.is_file():
+            continue
+        target = destination / path.relative_to(source)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            target.unlink()
+        os.link(path, target)
+        linked += 1
+    return linked
+
+
+def project_frames(source: Path, destination: Path, view) -> tuple[int, int]:
+    """Rewrite the parquet with the view's columns promoted and `alt.` dropped."""
+    import pandas as pd
+
+    frames = written = 0
+    for path in sorted((source / "data").rglob("*.parquet")):
+        table = pd.read_parquet(path)
+        if view.state_column != "observation.state":
+            table["observation.state"] = table[view.state_column]
+        if view.action_column != "action":
+            table["action"] = table[view.action_column]
+        # Drop every alternative: a column left behind under `alt.` is harmless
+        # to LeRobot but makes the view look like it still offers choices it no
+        # longer does, and doubles its parquet for nothing.
+        table = table.drop(columns=[c for c in table.columns if c.startswith(ALT_PREFIX)])
+        target = destination / path.relative_to(source)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        table.to_parquet(target, index=False)
+        frames += len(table)
+        written += 1
+    return frames, written
+
+
+def project_meta(source: Path, destination: Path, view) -> None:
+    """Copy the metadata with features, stats and control space rewritten.
+
+    Stats move with their column. Normalisation is keyed by name, so a view
+    whose `action` carried the unified dataset's absolute-joint statistics while
+    holding increments would normalise by a scale roughly thirteen times too
+    large and silently train on noise.
+    """
+    shutil.copytree(source / "meta", destination / "meta", dirs_exist_ok=True)
+
+    info = json.loads((destination / "meta" / "info.json").read_text())
+    features = info["features"]
+    if view.state_column != "observation.state":
+        features["observation.state"] = features[view.state_column]
+    if view.action_column != "action":
+        features["action"] = features[view.action_column]
+    for key in [k for k in features if k.startswith(ALT_PREFIX)]:
+        del features[key]
+    info["control_space"] = view.control_space
+    info["state_encoding"] = view.state_encoding
+    info["derived_from"] = source.name
+    (destination / "meta" / "info.json").write_text(json.dumps(info, indent=4) + "\n")
+
+    stats_path = destination / "meta" / "stats.json"
+    if stats_path.exists():
+        stats = json.loads(stats_path.read_text())
+        if view.state_column in stats:
+            stats["observation.state"] = stats[view.state_column]
+        if view.action_column in stats:
+            stats["action"] = stats[view.action_column]
+        for key in [k for k in stats if k.startswith(ALT_PREFIX)]:
+            del stats[key]
+        stats_path.write_text(json.dumps(stats, indent=4) + "\n")
+
+    for name in ("split_manifest.json", "octvla_episode_manifest.json"):
+        if (source / name).exists():
+            shutil.copy2(source / name, destination / name)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--unified", required=True, type=Path,
+                        help="The unified dataset to derive from.")
+    parser.add_argument("--output", required=True, type=Path,
+                        help="View directory to create; must not exist.")
+    parser.add_argument("--control-space", required=True,
+                        choices=sorted({v.control_space for v in VIEWS.values()}))
+    parser.add_argument("--state-encoding", default="position",
+                        choices=sorted({v.state_encoding for v in VIEWS.values()}))
+    args = parser.parse_args()
+
+    view = view_for(args.control_space, args.state_encoding)
+    if args.output.exists():
+        raise SystemExit(f"Refusing to overwrite {args.output}")
+    info = json.loads((args.unified / "meta" / "info.json").read_text())
+    if info.get("control_space") != UNIFIED_CONTROL_SPACE:
+        raise SystemExit(
+            f"{args.unified} is a {info.get('control_space')!r} dataset, not a unified "
+            "one; there are no alternative encodings in it to project."
+        )
+
+    print(f"view       : {view.control_space} / {view.state_encoding}  ({view.slug})")
+    print(f"  state    : {view.state_column} -> observation.state")
+    print(f"  action   : {view.action_column} -> action")
+
+    args.output.mkdir(parents=True)
+    project_meta(args.unified, args.output, view)
+    frames, files = project_frames(args.unified, args.output, view)
+    print(f"  parquet  : {frames} frames in {files} file(s)")
+    for directory in ("videos", "images"):
+        if (args.unified / directory).is_dir():
+            linked = link_tree(args.unified / directory, args.output / directory)
+            print(f"  {directory:8} : {linked} file(s) hard-linked, 0 bytes copied")
+    print(f"\nwrote {args.output}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 
+from oct_vla.data.control_views import ALT_PREFIX, UNIFIED_CONTROL_SPACE
 from oct_vla.data.episode import Episode, validate_episode
 from oct_vla.data.object_tokens import (
     ObjectTokenSpec,
@@ -212,11 +213,15 @@ def _eef_action_vector(episode: Episode, index: int) -> tuple[float, ...]:
     return _state_vector(episode, following)
 
 
-CONTROL_SPACES = ("cartesian", "cartesian_absolute", "joint", "joint_delta")
+CONTROL_SPACES = (
+    "cartesian", "cartesian_absolute", "joint", "joint_delta", UNIFIED_CONTROL_SPACE,
+)
 
 
 def _is_joint_space(control_space: str) -> bool:
-    return control_space in ("joint", "joint_delta")
+    # `unified` is joint-space in its canonical columns; its end-effector
+    # encodings live under `alt.` and are promoted by a view, not by this flag.
+    return control_space in ("joint", "joint_delta", UNIFIED_CONTROL_SPACE)
 
 
 def _is_eef_space(control_space: str) -> bool:
@@ -308,14 +313,18 @@ def _features(
                 "names": {"motors": joint_names},
             },
         }
+        alt_block = (
+            _alt_features(joint_names) if control_space == UNIFIED_CONTROL_SPACE else {}
+        )
         if privileged:
             # No cameras: this variant exists to measure what privileged scene
             # state alone can do, as an upper bound on what vision could add.
             if object_token_spec is None:
                 raise ValueError("privileged export needs an object token spec")
-            return {**joint_block, **_privileged_features(object_token_spec)}
+            return {**joint_block, **alt_block, **_privileged_features(object_token_spec)}
         return {
             **joint_block,
+            **alt_block,
             **_camera_features(observation),
             **_object_features(object_token_spec),
         }
@@ -361,6 +370,33 @@ def _features(
     features.update(_camera_features(observation))
     features.update(_object_features(object_token_spec))
     return features
+
+
+def _alt_features(joint_names: list[str]) -> dict[str, dict]:
+    """The alternative encodings a unified dataset carries.
+
+    Under `alt.` so LeRobot's feature typing skips them: a name beginning
+    `observation` or `action` would be handed to the policy as a real feature,
+    which is how a stray `action.joint_position` once produced two ACTION
+    features. `data/control_views.py` promotes whichever pair a run needs.
+    """
+    width = len(joint_names)
+    return {
+        f"{ALT_PREFIX}joint_action_delta": {
+            "dtype": "float32", "shape": (width,), "names": {"motors": joint_names},
+        },
+        f"{ALT_PREFIX}joint_state_velocity": {
+            "dtype": "float32", "shape": (2 * width,),
+            "names": {"motors": _state_motor_names(joint_names, "position_velocity")},
+        },
+        f"{ALT_PREFIX}eef_state": {
+            "dtype": "float32", "shape": (16,), "names": {"motors": _EEF_POSE_NAMES},
+        },
+        f"{ALT_PREFIX}eef_action_abs": {
+            "dtype": "float32", "shape": (16,), "names": {"motors": _EEF_POSE_NAMES},
+        },
+        f"{ALT_PREFIX}eef_action_delta": {"dtype": "float32", "shape": (14,)},
+    }
 
 
 def _camera_features(observation) -> dict[str, dict]:
@@ -516,6 +552,22 @@ def export_episodes(
                     ),
                     "task": sample.context.instruction,
                 }
+            if control_space == UNIFIED_CONTROL_SPACE:
+                # Every alternative encoding, computed from the same sample the
+                # canonical pair came from, so no view can disagree with another
+                # about what happened at this frame.
+                frame[f"{ALT_PREFIX}joint_action_delta"] = np.asarray(
+                    _joint_delta_action_vector(episode, index), dtype=np.float32)
+                frame[f"{ALT_PREFIX}joint_state_velocity"] = np.asarray(
+                    _joint_state_vector(episode, index, "position_velocity"),
+                    dtype=np.float32)
+                frame[f"{ALT_PREFIX}eef_state"] = np.asarray(
+                    _state_vector(episode, index), dtype=np.float32)
+                frame[f"{ALT_PREFIX}eef_action_abs"] = np.asarray(
+                    _eef_action_vector(episode, index), dtype=np.float32)
+                frame[f"{ALT_PREFIX}eef_action_delta"] = np.asarray(
+                    sample.action.to_vector(), dtype=np.float32)
+
             joint_state = (
                 _joint_state_vector(episode, index)
                 if joint_side_channel and not _is_joint_space(control_space)
