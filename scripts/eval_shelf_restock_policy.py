@@ -329,46 +329,53 @@ def main() -> int:
     # silently wrong rather than an error.
     metadata = LeRobotDatasetMetadata(args.repo_id, root=args.dataset_root)
     action_names = (metadata.features["action"].get("names") or {}).get("motors") or []
+    info = json.loads((args.dataset_root / "meta" / "info.json").read_text())
+    # Read the recorded fields once, for every layout. They used to be read per
+    # action-name branch, and a dataset the names did not classify -- the 14-d
+    # EE-delta view carries no motor names at all -- fell through to a branch
+    # that hardcoded `measured_aperture`, silently decoding a {0, 1} command
+    # against an aperture threshold.
+    recorded_space = info.get("control_space")
+    state_encoding = str(info.get("state_encoding", "position"))
+    # Safe to default: an absent field can only mean a dataset exported before
+    # the encoding existed, and those hold the raw measurement.
+    gripper_encoding = str(info.get("gripper_encoding", "measured_aperture"))
+
     if any("_arm.j" in str(n) for n in action_names):
         # Absolute and incremental joint actions share a layout, so the column
-        # names cannot tell them apart. The dataset records which it holds.
-        info_path = args.dataset_root / "meta" / "info.json"
-        recorded = json.loads(info_path.read_text()).get("control_space")
-        if recorded is None:
+        # names cannot tell them apart. The dataset records which it holds, and
+        # guessing wrong is silently wrong rather than loud.
+        if recorded_space is None:
             raise SystemExit(
-                f"{info_path} records no control_space, but this dataset's action "
-                "is joint-shaped. Absolute and incremental joint actions look "
-                "identical in the schema, and executing one as the other is "
-                "silently wrong -- re-export so the dataset says which it is."
+                f"{args.dataset_root / 'meta' / 'info.json'} records no "
+                "control_space, but this dataset's action is joint-shaped. "
+                "Absolute and incremental joint actions look identical in the "
+                "schema, and executing one as the other is silently wrong -- "
+                "re-export so the dataset says which it is."
             )
-        control_space = str(recorded)
-        # Unlike control_space this one is safe to default: an absent field can
-        # only mean a dataset exported before velocities existed, and those are
-        # position-only. The shape check below is what actually catches a
-        # mismatch, since a 32-d state against a 16-d checkpoint is not subtle.
-        _info = json.loads(info_path.read_text())
-        state_encoding = str(_info.get("state_encoding", "position"))
-        gripper_encoding = str(_info.get("gripper_encoding", "measured_aperture"))
-    elif any("_eef." in str(n) for n in action_names):
-        # An absolute end-effector action is a 16-d pose and an increment is the
-        # 14-d canonical action. Both are end-effector space, and executing one
-        # as the other would drive the arm to a displacement as though it were a
-        # place, so the dataset says which it holds.
-        info_path = args.dataset_root / "meta" / "info.json"
-        control_space = str(json.loads(info_path.read_text()).get("control_space", "cartesian"))
-        state_encoding = "position"
-        gripper_encoding = str(json.loads(
-            (args.dataset_root / "meta" / "info.json").read_text()
-        ).get("gripper_encoding", "measured_aperture"))
+        control_space = str(recorded_space)
     else:
-        control_space = "cartesian"
+        # End-effector space: a 16-d pose is absolute, the 14-d canonical action
+        # is an increment. `cartesian` is the increment and the older default.
+        control_space = str(recorded_space or "cartesian")
         state_encoding = "position"
-        gripper_encoding = "measured_aperture"
     width = metadata.features["action"]["shape"][0]
     # A vision-free checkpoint declares environment_state and no image features.
     privileged = "observation.environment_state" in metadata.features
     visual_norm = str((config.normalization_mapping or {}).get("VISUAL", "IDENTITY"))
-    uint8_images = visual_norm.upper().endswith("IDENTITY")
+    # Never uint8, whatever the normalization mapping says. Training converts
+    # every camera key to float32/255 for *every* policy before the processor
+    # runs (lerobot_train.py:_preprocess_dataset_batch), so handing a policy
+    # uint8 here feeds it inputs 255x the scale it was fit on.
+    #
+    # This was not hypothetical and it was not loud. A VISUAL=IDENTITY mapping
+    # used to select the uint8 path, which covers pi0.5, SmolVLA and GR00T.
+    # SmolVLA crashes on it (`upsample_bilinear2d` has no Byte kernel), so it
+    # announced itself -- but pi0.5 casts to float without dividing and then
+    # computes `img * 2 - 1`, landing in [-1, 509] instead of [-1, 1] and
+    # scoring zero without ever complaining. Every pi0.5 rollout recorded
+    # before this fix ran on those inputs.
+    uint8_images = False
     state_width = metadata.features["observation.state"]["shape"][0]
     print(
         f"control space: {control_space} (action width {width}) "

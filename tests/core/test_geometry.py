@@ -67,6 +67,23 @@ def test_gripper_range(value):
         ArmState(state().left.pose, value)
 
 
+@pytest.mark.parametrize(
+    ("emitted", "commanded"), [(-0.4, 0.0), (1.6, 1.0), (0.0, 0.0), (1.0, 1.0), (0.3, 0.3)]
+)
+def test_from_vector_saturates_gripper_but_arm_action_stays_strict(emitted, commanded):
+    """A policy's overshoot becomes a saturated command, not a dead episode.
+
+    Under `binary_command` the gripper targets are exactly {0, 1}, so an L1
+    head overshoots both ends routinely. `from_vector` is the boundary where a
+    regressed number becomes a command and is the only place that clamps;
+    ArmAction itself still rejects, so an out-of-range value built internally
+    is still a bug rather than a silent clip.
+    """
+    action = Action.from_vector([0.0] * 6 + [emitted] + [0.0] * 6 + [emitted])
+    assert action.left.gripper == commanded
+    assert action.right.gripper == commanded
+
+
 def test_order_immutability_and_json_round_trip():
     values = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, -0.1, -0.2, -0.3, -0.4, -0.5, -0.6, 0.8]
     action = Action.from_vector(values)

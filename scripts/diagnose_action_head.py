@@ -202,19 +202,32 @@ def main() -> int:
         # Compare inside the policy's normalised space: `predicted` is what the
         # network emitted, and the batch's target is normalised by the same
         # preprocessor, so neither side is postprocessed back to radians.
-        target = processed["action"]
-        error = (predicted - target).abs().float().cpu().numpy()
+        # Two widths can disagree here, both because the policy emits its own
+        # shape rather than the dataset's. GR00T pads the action to a fixed
+        # embodiment width (max_action_dim 132 against our 16) with zeros it
+        # never predicts, and returns only n_action_steps rows (25) of a
+        # chunk_size-40 target. Scoring the padding would average in 116 columns
+        # of constant zero -- which is also why GR00T's *training* loss is not
+        # comparable to any other backbone's.
+        steps = min(predicted.shape[1], processed["action"].shape[1])
+        target = processed["action"][:, :steps, :action_dim]
+        error = (predicted[:, :steps, :action_dim] - target).abs().float().cpu().numpy()
         # Padded chunk positions repeat the episode's final action; training
         # masks them out of the loss, so counting them here would measure
         # something the model was never asked to fit.
         pad = batch.get("action_is_pad")
+        if pad is not None:
+            pad = pad[:, :steps]
         valid = (
             (~pad).float().cpu().numpy()[..., None]
             if pad is not None
             else np.ones(error.shape[:2] + (1,))
         )
-        total += (error * valid).sum(axis=0)
-        counts += np.broadcast_to(valid, error.shape).sum(axis=0)
+        # Accumulators are chunk-sized; a policy returning fewer rows fills a
+        # prefix of them, so the per-offset table stays aligned with the
+        # dataset's offsets rather than being shifted by the difference.
+        total[:steps] += (error * valid).sum(axis=0)
+        counts[:steps] += np.broadcast_to(valid, error.shape).sum(axis=0)
 
     scored = counts.sum(axis=1) > 0
     if not scored.any():

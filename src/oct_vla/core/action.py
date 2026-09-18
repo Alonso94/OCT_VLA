@@ -35,10 +35,30 @@ class Action:
 
     @classmethod
     def from_vector(cls, values: Iterable[float]) -> "Action":
+        """Ingest a policy's raw output. The gripper channel saturates here.
+
+        This is the boundary where a regressed number becomes a command, and a
+        regressor has no reason to respect the range: under `binary_command`
+        the targets are exactly {0, 1}, so an L1 head overshoots past both ends
+        routinely. Letting that reach ArmAction's validator ends the episode
+        with "Gripper must be finite and within [0, 1]" -- which is how the
+        EE-delta arm scored nothing at all while the two absolute arms, whose
+        gripper goes through a threshold instead, were unaffected.
+
+        Saturating rather than rejecting, because that is what the hardware
+        does: a gripper asked to close harder than fully closed is simply fully
+        closed. Only the gripper is clamped; an out-of-range *pose* increment is
+        a real request the IK solver should be allowed to refuse and record as
+        infeasible.
+        """
         values = finite_values(values, ACTION_DIM)
         return cls(
             *(
-                ArmAction(vector3(values[i : i + 3]), vector3(values[i + 3 : i + 6]), values[i + 6])
+                ArmAction(
+                    vector3(values[i : i + 3]),
+                    vector3(values[i + 3 : i + 6]),
+                    min(1.0, max(0.0, values[i + 6])),
+                )
                 for i in (0, 7)
             )
         )
