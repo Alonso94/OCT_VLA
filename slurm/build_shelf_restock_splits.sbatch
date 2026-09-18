@@ -49,3 +49,13 @@ if [ -n "${MAX_RUNS:-}" ]; then ARGS+=(--max-runs "$MAX_RUNS"); fi
 echo "building $OUTPUT"
 printf '  %s\n' "${ARGS[@]}"
 srun "$OCTVLA_POLICY_PYTHON" -u -B "$OCTVLA_REPO/scripts/build_shelf_restock_splits.py" "${ARGS[@]}"
+
+# Share the camera streams with any sibling variant that already holds the same
+# bytes. A variant changes only the parquet -- for the r75 corpus, 161 MB of
+# each 168 MB dataset is the same three streams re-encoded from the same clips
+# -- and the encoder is deterministic, so the files are byte-identical. Hard
+# links make that one copy, invisibly to every reader.
+if [ "${DEDUPE_VIDEO:-1}" = "1" ] && [ -d "$OUTPUT/videos" ]; then
+  "$OCTVLA_POLICY_PYTHON" -u -B "$OCTVLA_REPO/scripts/dedupe_dataset_videos.py" \
+    "$OCTVLA_DATASET_ROOT"/*/ || echo "dedupe skipped (non-fatal)"
+fi

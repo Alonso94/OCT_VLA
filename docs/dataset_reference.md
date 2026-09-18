@@ -94,6 +94,33 @@ Column layouts:
 - **EE pose** (16): `left_eef.{x,y,z,qx,qy,qz,qw,gripper}`, then right.
 - **EE increment** (14): 3 translation + 3 rotation + gripper, per arm.
 
+## Why there are many datasets, and why that is cheap
+
+One dataset cannot serve every option. LeRobot binds training to the single
+column named `action`, and `dataset_to_policy_features` types *any* key starting
+with `observation` or `action` as a policy feature — which is how a stray
+`action.joint_position` column became a second ACTION feature and broke policy
+construction. Alternative encodings therefore need separate directories.
+
+They do not need separate bytes. A variant changes only the parquet: of each
+168 MB RGB dataset, **161 MB is the same three camera streams**, re-encoded from
+the same clips in the same order, and the encoder is deterministic enough that
+the files are byte-identical (verified by checksum across five variants).
+
+`scripts/dedupe_dataset_videos.py` replaces those duplicates with hard links —
+same inode, invisible to every reader, no path resolution for LeRobot to get
+wrong. The five RGB r75 variants went from 842 MB to 400 MB. `--dry-run` reports
+without touching anything, and files are linked only when their content hashes
+match, never on a matching name or size.
+
+The build job runs it automatically (`DEDUPE_VIDEO=0` opts out). Adding a sixth
+RGB variant now costs about 7 MB rather than 168 MB.
+
+Two things to know: the exports are immutable in practice, so sharing an inode
+is safe, but a writer would have to break the link first; and whether the vault
+snapshots preserve hard links is worth confirming before relying on it for
+backup size.
+
 ## Rebuilding one
 
 ```bash
