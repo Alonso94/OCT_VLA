@@ -141,8 +141,11 @@ class ShelfRestockSpec:
     object_variation: ObjectVariation
     spawn_clearance: float = 0.001
     compaction_distance: float = 0.04
+    #: Names the rule the selector actually uses. "The selected object" named
+    #: nothing an observation could resolve, so a language-conditioned policy
+    #: had no more to go on than a vision-only one.
     instruction: str = (
-        "Restock the selected object from the lower shelf to the upper shelf, "
+        "Restock the leftmost object from the lower shelf to the upper shelf, "
         "then compact it toward the previous neighbor if one exists."
     )
 

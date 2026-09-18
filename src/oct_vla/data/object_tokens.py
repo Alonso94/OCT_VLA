@@ -37,9 +37,14 @@ def stable_ranks(scene: ObjectScene) -> dict[str, int]:
     each frame independently satisfies only the first, and the reordering it
     causes when two objects cross measurably hurt that arm.
 
-    Keyed on position rather than track_id because the task's default selector
-    picks the lowest remaining track_id -- so a track_id ordering would hand
-    back a large part of the target information this mode exists to remove.
+    Keyed on position rather than track_id, which used to be about hiding the
+    target and is now about not hiding it. The selector picks the leftmost
+    object, so a position ordering is exactly the information a policy needs to
+    resolve the instruction -- and that is deliberate: the role-stripped arm
+    should lose the explicit *role* label while keeping a target that the
+    observation can still determine. A track_id ordering would carry an
+    identifier no image contains, which is the ill-posed mapping the leftmost
+    rule replaced.
     """
     ordered = sorted(scene.objects, key=lambda obj: (obj.pose.position, obj.track_id))
     return {obj.track_id: rank for rank, obj in enumerate(ordered)}

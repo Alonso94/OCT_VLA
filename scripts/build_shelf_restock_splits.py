@@ -184,8 +184,12 @@ def main() -> int:
     parser.add_argument(
         "--control-space",
         default="cartesian",
-        choices=["cartesian", "cartesian_absolute", "joint", "joint_delta"],
-        help="'joint' makes observation.state the measured joint configuration and "
+        choices=["cartesian", "cartesian_absolute", "joint", "joint_delta", "unified"],
+        help="'unified' carries every encoding at once -- the canonical absolute-joint "
+        "pair under the names LeRobot expects and the rest under alt., which its "
+        "feature typing ignores -- so scripts/project_dataset_view.py can derive any "
+        "single-encoding view from it without re-encoding video. "
+        "'joint' makes observation.state the measured joint configuration and "
         "action the next one, so the policy is proprioceptive in the space it "
         "commands and no inverse kinematics sits between them.",
     )

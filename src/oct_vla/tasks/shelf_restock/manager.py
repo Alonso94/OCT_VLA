@@ -16,8 +16,29 @@ from oct_vla.tasks.shelf_restock.spec import ShelfRestockSpec
 Selector = Callable[[tuple[str, ...], ObjectScene], str]
 
 
-def _select_lowest_track_id(remaining: tuple[str, ...], scene: ObjectScene) -> str:
-    return min(remaining)
+def _select_leftmost(remaining: tuple[str, ...], scene: ObjectScene) -> str:
+    """The remaining object with the smallest workcell x.
+
+    The target has to be something the *observation* determines, and a track id
+    is not. It is an internal simulator identifier: absent from the images, and
+    dropped along with the role one-hot in the role-stripped token mode. So
+    choosing by lowest track id -- the previous rule -- paired near-identical
+    observations with actions toward different objects, and behaviour cloning's
+    optimum on an ill-posed mapping like that is an average that reaches none of
+    them. Only the object-conditioned arm could ever see the answer, which is
+    also why it held the lowest training loss in every sweep.
+
+    Position is visible in every observation variant: in the images, in the
+    object tokens, and in the tokens even after role stripping. Objects are
+    spawned roughly 0.2 m apart across a 0.45 m span, so the ordering is
+    unambiguous at the scale of the spawn jitter.
+
+    Ties fall back to the track id so the rule stays total and deterministic;
+    with that spacing a tie means two objects at the same x to the floating
+    point, which the spawner does not produce.
+    """
+    by_position = {o.track_id: o.pose.position[0] for o in scene.objects}
+    return min(remaining, key=lambda track_id: (by_position[track_id], track_id))
 
 
 def objects_on_lower_shelf(scene: ObjectScene, spec: ShelfRestockSpec) -> tuple[str, ...]:
@@ -54,7 +75,7 @@ def objects_lifted(scene: ObjectScene, spec: ShelfRestockSpec) -> tuple[str, ...
 
 class ShelfRestockManager:
     def __init__(
-        self, spec: ShelfRestockSpec, *, selector: Selector = _select_lowest_track_id
+        self, spec: ShelfRestockSpec, *, selector: Selector = _select_leftmost
     ) -> None:
         self.spec = spec
         self._selector = selector
