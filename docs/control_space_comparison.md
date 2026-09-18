@@ -4,6 +4,9 @@ Everything needed to write this up: what was measured, under which conditions,
 and which numbers are not yet in. Cells marked **TBD** are pending runs, not
 omissions.
 
+For a report-ready synthesis of all of this, see `docs/findings.md`; this
+document is the detail behind it.
+
 **Start at section 5.** It holds the only controlled comparison in this
 document — one policy, one corpus, one seed, one evaluation protocol, varying
 nothing but the action encoding — and it is the first result in this project
@@ -273,6 +276,38 @@ repeated the previous action — now visible in its observation — would score
 0.125; it scores 0.153, worse. It is blending motion with scene information
 rather than latching onto history. The blend just does not help control.
 
+### 5.4 Execution horizon
+
+`n_action_steps` is inference-only for a chunked policy, so the same checkpoints
+were re-scored at four horizons without retraining. Same 20 seeds throughout.
+
+| cell | n=50 | n=25 | n=5 | n=1 | n=1 + ensembling |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| privileged, lift >= 1 | 13 | **14** | 8 | **0** | 2 |
+| privileged, mean lifted | 0.85 | 0.85 | 0.40 | **0.00** | 0.10 |
+| rgb, lift >= 1 | 13 | **14** | 4 | 1 | 9 |
+| rgb, mean lifted | 0.95 | **1.20** | 0.20 | 0.05 | 0.45 |
+
+Shortening the horizon makes the policy **worse**, monotonically, and fully
+closed-loop execution removes the behaviour entirely on the privileged cell.
+Temporal ensembling (`temporal_ensemble_coeff=0.01`, the original ACT setting)
+recovers part of what `n=1` loses -- rgb goes 1 lift to 9 -- and still does not
+reach `n=25`.
+
+This was the leading hypothesis for the closed-loop failure and it is wrong. The
+mechanism is visible in 5.1: the offset curve is nearly flat, so there is no
+accurate near term to exploit by re-querying. At `n=1` the policy executes
+`action[0]` of a freshly predicted chunk and discards the other 49, and
+consecutive predictions from slightly different observations disagree, so the arm
+jitters instead of committing to a motion. Executing a whole chunk gives a
+temporally coherent trajectory even when each action is imperfect -- which is
+what action chunking is for.
+
+`n=25` is adopted: mildly better than 50 on both cells, and 2x chunk overlap is
+the ratio LeRobot's own configuration docstring describes and the one FlashVLA
+ships with. The margin over 50 is inside the +-0.2 Wilson interval at n=20, so it
+is a tie-break, not a result.
+
 ---
 
 ## 6. Why absolute targets win despite a larger error
@@ -419,7 +454,27 @@ closed-loop at zero; the encoding change moved it with no extra data.
 
 ---
 
-## 10. Comparing EE control to joint control
+## 10. Defects that postdate the cells above
+
+Four were found after these numbers were measured, so they are properties of the
+runs recorded here, not of the current code:
+
+- The **target was not observable** to the RGB and role-stripped arms: the
+  selector chose the lowest `track_id`. Fixed by selecting the leftmost object;
+  the corpus is being re-collected, and every object-conditioning number above is
+  superseded by that.
+- The **gripper action carried the measured aperture**, leaving a decision margin
+  smaller than the policies' own error on both arms (1.28x left, 3.48x right).
+- **pi0.5 fitted padded action targets** -- 17.4% of all targets, 40.2% on the
+  shortest clips -- where ACT masked them. Every pi0.5 row above trained on them.
+- **Evaluation never recorded placements**, so the previous-neighbour role
+  differed from training from the third transfer onward.
+
+See `docs/findings.md` section 5 for the measurements behind each.
+
+---
+
+## 11. Comparing EE control to joint control
 
 No valid comparison exists yet. The only EE-delta sweep ran against the broken
 harness (section 7) and is void, so every EE number above this line is
