@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from lerobot.policies.pi05.modeling_pi05 import PI05Policy
-from lerobot.utils.constants import ACTION
+from lerobot.utils.constants import ACTION, OBS_LANGUAGE_ATTENTION_MASK, OBS_LANGUAGE_TOKENS
 from torch import Tensor
 
 from oct_vla.policies.masked_loss import masked_loss, padded_fraction
@@ -24,18 +24,19 @@ class MaskedPI05Policy(PI05Policy):
 
         The per-element losses are recomputed here rather than intercepted,
         because the base implementation reduces before returning and there is
-        no hook between the two.
+        no hook between the two. The method names mirror PI05Policy's own
+        (`_preprocess_images`, `_prepare_memory_states`), which is what
+        control_pi05 calls; getting them wrong fails only at the first forward.
         """
-        images, img_masks = self.prepare_images(batch)
-        tokens, masks = self.prepare_language(batch)
-        states, state_masks = self.prepare_state(batch)
+        images, img_masks = self._preprocess_images(batch)
+        states, state_masks = self._prepare_memory_states(batch)
         actions = self.prepare_action(batch)
 
         losses = self.model.forward(
             images,
             img_masks,
-            tokens,
-            masks,
+            batch[OBS_LANGUAGE_TOKENS],
+            batch[OBS_LANGUAGE_ATTENTION_MASK],
             actions,
             self.model.sample_noise(actions.shape, actions.device),
             self.model.sample_time(actions.shape[0], actions.device),
