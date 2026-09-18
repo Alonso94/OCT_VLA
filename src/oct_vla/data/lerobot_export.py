@@ -260,6 +260,7 @@ def _features(
     control_space: str = "cartesian",
     privileged: bool = False,
     state_encoding: str = "position",
+    joint_side_channel: bool = False,
 ) -> dict[str, dict]:
     observation = episode.samples[0].observation
     if control_space not in CONTROL_SPACES:
@@ -326,8 +327,16 @@ def _features(
     # episodes predate joint capture and must still export, so this is
     # conditional rather than assumed -- and a dataset either has the columns
     # for every frame or not at all, which _frame checks.
+    #
+    # Off by default, and that default is a fix rather than a preference.
+    # `action.joint_position` starts with "action", so LeRobot's
+    # `dataset_to_policy_features` types it as a second ACTION feature
+    # (verified: a cartesian export from a joints-carrying collection yields
+    # {'action': (16,), 'action.joint_position': (16,)}), which is not what any
+    # policy here expects. Nothing in this repository reads either column, so
+    # they are analysis-only and must be asked for.
     joint_names = _joint_motor_names(observation)
-    if joint_names is not None:
+    if joint_names is not None and joint_side_channel:
         features["observation.joint_state"] = {
             "dtype": "float32",
             "shape": (len(joint_names),),
@@ -409,6 +418,7 @@ def export_episodes(
     control_space: str = "cartesian",
     privileged: bool = False,
     state_encoding: str = "position",
+    joint_side_channel: bool = False,
 ) -> ExportReport:
     """Convert canonical episode directories into a new local LeRobot dataset.
 
@@ -455,6 +465,7 @@ def export_episodes(
             control_space=control_space,
             privileged=privileged,
             state_encoding=state_encoding,
+            joint_side_channel=joint_side_channel,
         )
         dataset = LeRobotDataset.create(
             repo_id=repo_id,
@@ -495,17 +506,16 @@ def export_episodes(
                     "task": sample.context.instruction,
                 }
             joint_state = (
-                None if _is_joint_space(control_space) else _joint_state_vector(episode, index)
+                _joint_state_vector(episode, index)
+                if joint_side_channel and not _is_joint_space(control_space)
+                else None
             )
             if joint_state is not None:
                 frame["observation.joint_state"] = np.asarray(joint_state, dtype=np.float32)
                 frame["action.joint_position"] = np.asarray(
                     _joint_action_vector(episode, index), dtype=np.float32
                 )
-            elif (
-                not _is_joint_space(control_space)
-                and "observation.joint_state" in dataset.features
-            ):
+            elif "observation.joint_state" in dataset.features:
                 # The feature set was declared from the first episode. A later
                 # episode without joints would write a ragged dataset that only
                 # fails much later, during training.

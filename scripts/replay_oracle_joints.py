@@ -43,6 +43,34 @@ def _joint_vector(record: dict) -> list[float]:
     ]
 
 
+def _eef_vector(record: dict) -> list[float]:
+    """The 16-d absolute pose the `cartesian_absolute` export writes, rebuilt
+    from a recorded sample: position, quaternion, gripper, left then right."""
+    values: list[float] = []
+    for side in ("left", "right"):
+        arm = record[side]
+        values.extend(float(v) for v in arm["pose"]["position"])
+        values.extend(float(v) for v in arm["pose"]["orientation"])
+        values.append(float(arm["gripper"]))
+    return values
+
+
+def _eef_error(expected: list[float], observed) -> float:
+    """Worst per-arm translation error, metres.
+
+    Position only. Inverse kinematics is free to reach a commanded pose through
+    a different joint configuration than the demonstration used -- the arm is
+    redundant -- so joint tracking error is not the right measure for a
+    task-space command, and orientation error would need a metric of its own.
+    """
+    worst = 0.0
+    for offset, side in ((0, observed.left), (8, observed.right)):
+        want = expected[offset : offset + 3]
+        got = side.pose.position
+        worst = max(worst, sum((a - b) ** 2 for a, b in zip(want, got, strict=True)) ** 0.5)
+    return worst
+
+
 def _joint_error(expected: list[float], observed) -> tuple[float, float]:
     """(max arm-joint error in radians, max gripper error), ignoring grippers
     in the first figure because they are a different unit and scale."""
@@ -70,15 +98,26 @@ def main() -> int:
     parser.add_argument(
         "--control-space",
         default="joint",
-        choices=["joint", "joint_delta"],
+        choices=["joint", "joint_delta", "cartesian_absolute"],
         help="'joint_delta' sends each step's increment instead of the absolute "
-        "configuration; the bridge adds it to the measured joints.",
+        "configuration; the bridge adds it to the measured joints. "
+        "'cartesian_absolute' sends the next frame's end-effector pose and lets "
+        "the bridge solve IK, which is the task-space arm of the 2x2 in "
+        "docs/control_space_comparison.md section 10.",
     )
     parser.add_argument(
         "--tolerance",
         type=float,
         default=0.05,
         help="Radians; the largest per-joint tracking error the gate accepts.",
+    )
+    parser.add_argument(
+        "--eef-tolerance",
+        type=float,
+        default=0.02,
+        help="Metres; the largest end-effector translation error the gate accepts "
+        "for --control-space cartesian_absolute. One oracle step moves about "
+        "13.6 mm, so this allows roughly one step of lag.",
     )
     args = parser.parse_args()
 
@@ -133,11 +172,20 @@ def main() -> int:
                     target[i] if i in grippers else target[i] - here[i]
                     for i in range(len(target))
                 ]
+            elif args.control_space == "cartesian_absolute":
+                sent = _eef_vector(samples[following]["eef"])
             else:
                 sent = target
             result = client.step(sent)
-            arm_error, grip_error = _joint_error(target, result.observation.joints)
             phase = str(sample["phase"])
+            if args.control_space == "cartesian_absolute":
+                # Metres, and against the commanded pose rather than the
+                # recorded joints: IK may reach the same pose through a
+                # different configuration.
+                arm_error = _eef_error(sent, result.observation.eef)
+                grip_error = 0.0
+            else:
+                arm_error, grip_error = _joint_error(target, result.observation.joints)
             by_phase[phase] = max(by_phase.get(phase, 0.0), arm_error)
             worst_arm = max(worst_arm, arm_error)
             worst_grip = max(worst_grip, grip_error)
@@ -145,22 +193,32 @@ def main() -> int:
                 break
 
     assert result is not None
-    print("max joint tracking error by phase (rad): "
+    task_space = args.control_space == "cartesian_absolute"
+    unit, label = ("m", "translation") if task_space else ("rad", "joint")
+    # Task space is allowed to call IK -- that is what it is -- so its tolerance
+    # is a reach tolerance in metres, not the joint tolerance in radians.
+    tolerance = args.eef_tolerance if task_space else args.tolerance
+
+    print(f"max {label} tracking error by phase ({unit}): "
           + ", ".join(f"{p}={e:.4f}" for p, e in by_phase.items()))
-    print(f"worst joint error: {worst_arm:.5f} rad | worst gripper error: {worst_grip:.4f}")
-    print(f"infeasible steps: {result.infeasible_steps} (joint space cannot produce any)")
+    print(f"worst {label} error: {worst_arm:.5f} {unit} | worst gripper error: {worst_grip:.4f}")
+    if task_space:
+        print(f"infeasible steps: {result.infeasible_steps} (IK may legitimately refuse)")
+    else:
+        print(f"infeasible steps: {result.infeasible_steps} (joint space cannot produce any)")
     print(f"transfers completed: {result.transfers_completed} | success: {result.success}")
 
-    if result.infeasible_steps:
-        print("JOINT REPLAY FAILED: the joint path must never call IK")
+    name = "EEF REPLAY" if task_space else "JOINT REPLAY"
+    if result.infeasible_steps and not task_space:
+        print(f"{name} FAILED: the joint path must never call IK")
         return 1
-    if worst_arm > args.tolerance:
-        print(f"JOINT REPLAY FAILED: joint error {worst_arm:.4f} rad exceeds {args.tolerance}")
+    if worst_arm > tolerance:
+        print(f"{name} FAILED: {label} error {worst_arm:.4f} {unit} exceeds {tolerance}")
         return 1
     if result.transfers_completed < 1:
-        print("JOINT REPLAY FAILED: the demonstration completed no transfer")
+        print(f"{name} FAILED: the demonstration completed no transfer")
         return 1
-    print(f"JOINT REPLAY PASSED: {result.transfers_completed} transfer(s), {len(samples)} actions")
+    print(f"{name} PASSED: {result.transfers_completed} transfer(s), {len(samples)} actions")
     return 0
 
 

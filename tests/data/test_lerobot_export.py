@@ -66,7 +66,7 @@ def test_joint_columns_are_absent_when_joints_were_not_recorded():
 
 def test_joint_columns_carry_one_entry_per_motor():
     episode = SimpleNamespace(samples=(SimpleNamespace(observation=_observation_with_joints()),))
-    features = _features(episode)
+    features = _features(episode, joint_side_channel=True)
     # 7 arm joints + 1 gripper, per arm.
     assert features["observation.joint_state"]["shape"] == (16,)
     assert features["action.joint_position"]["shape"] == (16,)
@@ -81,7 +81,8 @@ def test_joint_motor_names_follow_the_embodiment_not_a_constant():
     episode = SimpleNamespace(
         samples=(SimpleNamespace(observation=_observation_with_joints(joints_per_arm=6)),)
     )
-    assert _features(episode)["observation.joint_state"]["shape"] == (14,)
+    features = _features(episode, joint_side_channel=True)
+    assert features["observation.joint_state"]["shape"] == (14,)
 
 
 def test_joint_control_space_makes_state_and_action_both_joints():
@@ -479,3 +480,14 @@ def test_absolute_eef_is_a_registered_control_space():
     from oct_vla.data.lerobot_export import CONTROL_SPACES
 
     assert "cartesian_absolute" in CONTROL_SPACES
+
+
+def test_the_joint_side_channel_is_off_by_default():
+    """`action.joint_position` starts with "action", so LeRobot types it as a
+    second ACTION feature beside the real one -- verified on a real cartesian
+    export, which yielded {'action': (16,), 'action.joint_position': (16,)}.
+    Nothing here reads either column, so they are analysis-only and opt-in."""
+    episode = SimpleNamespace(samples=(SimpleNamespace(observation=_observation_with_joints()),))
+    features = _features(episode)
+    assert "action.joint_position" not in features
+    assert "observation.joint_state" not in features
