@@ -64,6 +64,16 @@ def _state_vector(episode: Episode, index: int) -> tuple[float, ...]:
     )
 
 
+#: Column labels for a 16-d end-effector pose, the layout `_state_vector`
+#: produces. Shared by observation.state and by the absolute-EE action, which
+#: are the same quantity one frame apart.
+_EEF_POSE_NAMES = [
+    f"{side}_eef.{axis}"
+    for side in ("left", "right")
+    for axis in ("x", "y", "z", "qx", "qy", "qz", "qw", "gripper")
+]
+
+
 def _joint_motor_names(observation) -> list[str] | None:
     """Per-motor labels for the joint columns, or None if joints were not
     recorded. Derived from the observation rather than hard-coded so a
@@ -178,11 +188,39 @@ def _joint_action_vector(episode: Episode, index: int) -> tuple[float, ...] | No
     return None if joints is None else joints.to_vector()
 
 
-CONTROL_SPACES = ("cartesian", "joint", "joint_delta")
+def _eef_action_vector(episode: Episode, index: int) -> tuple[float, ...]:
+    """The NEXT frame's absolute end-effector pose: position, quaternion and
+    gripper, per arm, in the same 16-d layout as `observation.state`.
+
+    The task-space counterpart of `_joint_action_vector`, and it exists for the
+    same reason that one does. Measured in docs/control_space_comparison.md, the
+    delta/absolute axis is the largest effect in this project -- absolute joint
+    targets lift an object in 13 of 20 episodes where increments manage 0-2. The
+    end-effector space had only an incremental encoding, so comparing it against
+    joint space would have measured the target type and reported it as a
+    representation result.
+
+    Executing this needs no reference to integrate and no leash: an absolute
+    pose is solved straight through IK. The quaternion, however, is regressed
+    without a unit-norm constraint, which is a real cost of the encoding and is
+    normalised at execution rather than hidden here.
+
+    The final sample has no successor and repeats its own pose, matching the
+    joint path.
+    """
+    following = min(index + 1, len(episode.samples) - 1)
+    return _state_vector(episode, following)
+
+
+CONTROL_SPACES = ("cartesian", "cartesian_absolute", "joint", "joint_delta")
 
 
 def _is_joint_space(control_space: str) -> bool:
     return control_space in ("joint", "joint_delta")
+
+
+def _is_eef_space(control_space: str) -> bool:
+    return control_space in ("cartesian", "cartesian_absolute")
 
 
 def _require_joints(episode: Episode, control_space: str) -> None:
@@ -273,28 +311,16 @@ def _features(
         "observation.state": {
             "dtype": "float32",
             "shape": (16,),
-            "names": {
-                "motors": [
-                    "left_eef.x",
-                    "left_eef.y",
-                    "left_eef.z",
-                    "left_eef.qx",
-                    "left_eef.qy",
-                    "left_eef.qz",
-                    "left_eef.qw",
-                    "left_eef.gripper",
-                    "right_eef.x",
-                    "right_eef.y",
-                    "right_eef.z",
-                    "right_eef.qx",
-                    "right_eef.qy",
-                    "right_eef.qz",
-                    "right_eef.qw",
-                    "right_eef.gripper",
-                ]
-            },
+            "names": {"motors": _EEF_POSE_NAMES},
         },
-        "action": {"dtype": "float32", "shape": (14,)},
+        # 14-d for an increment (3 translation + 3 rotation + gripper, per arm);
+        # 16-d for an absolute pose, which carries a 4-component quaternion
+        # instead of a 3-component rotation increment.
+        "action": (
+            {"dtype": "float32", "shape": (16,), "names": {"motors": _EEF_POSE_NAMES}}
+            if control_space == "cartesian_absolute"
+            else {"dtype": "float32", "shape": (14,)}
+        ),
     }
     # Joint columns appear only when the recording captured them. Older
     # episodes predate joint capture and must still export, so this is
@@ -460,7 +486,12 @@ def export_episodes(
                     "observation.state": np.asarray(
                         _state_vector(episode, index), dtype=np.float32
                     ),
-                    "action": np.asarray(sample.action.to_vector(), dtype=np.float32),
+                    "action": np.asarray(
+                        _eef_action_vector(episode, index)
+                        if control_space == "cartesian_absolute"
+                        else sample.action.to_vector(),
+                        dtype=np.float32,
+                    ),
                     "task": sample.context.instruction,
                 }
             joint_state = (

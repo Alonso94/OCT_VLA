@@ -285,6 +285,14 @@ def main() -> int:
         # position-only. The shape check below is what actually catches a
         # mismatch, since a 32-d state against a 16-d checkpoint is not subtle.
         state_encoding = str(json.loads(info_path.read_text()).get("state_encoding", "position"))
+    elif any("_eef." in str(n) for n in action_names):
+        # An absolute end-effector action is a 16-d pose and an increment is the
+        # 14-d canonical action. Both are end-effector space, and executing one
+        # as the other would drive the arm to a displacement as though it were a
+        # place, so the dataset says which it holds.
+        info_path = args.dataset_root / "meta" / "info.json"
+        control_space = str(json.loads(info_path.read_text()).get("control_space", "cartesian"))
+        state_encoding = "position"
     else:
         control_space = "cartesian"
         state_encoding = "position"

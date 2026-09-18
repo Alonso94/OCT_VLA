@@ -20,6 +20,7 @@ import traceback
 from dataclasses import dataclass, field
 
 from oct_vla.core.action import Action, action_between, apply_action
+from oct_vla.core.frames import Pose
 from oct_vla.core.objects import ObjectScene, TaskContext
 from oct_vla.core.observation import RobotObservation
 from oct_vla.core.state import ArmJoints, ArmState, EEFState, JointState
@@ -161,7 +162,7 @@ def _leashed_reference(commanded: EEFState | None, measured: EEFState) -> EEFSta
     return EEFState(arms[0], arms[1])
 
 
-CONTROL_SPACES = ("cartesian", "joint", "joint_delta")
+CONTROL_SPACES = ("cartesian", "cartesian_absolute", "joint", "joint_delta")
 
 
 def _split_joint_action(values: list[float]) -> dict[str, tuple[tuple[float, ...], float]]:
@@ -394,6 +395,75 @@ class ShelfRestockEvalServer:
         episode.sim_time += ticks * self._port.dt
         return self._report(episode)
 
+    def _step_eef_absolute(
+        self, episode: _Episode, action_vector: list[float]
+    ) -> tuple[dict, tuple[protocol.Blob, ...]]:
+        """Solve IK straight to a commanded end-effector pose.
+
+        The task-space counterpart of `_step_joint`'s absolute branch, and
+        deliberately the simplest path in this server: no retained reference, no
+        anti-windup leash and no deadband, because an absolute pose is a place to
+        go rather than a displacement to accumulate. The incremental Cartesian
+        path needs all three precisely because it integrates.
+
+        The quaternion arrives from an L1-regression head with no unit-norm
+        constraint, so it is normalised here. That is a real cost of encoding
+        orientation as a free quaternion and it is done at the last possible
+        moment, where it is visible, rather than folded into the exporter where
+        it would silently flatter the encoding.
+        """
+        if len(action_vector) != 16:
+            raise EvalServerError(
+                f"cartesian_absolute expects a 16-element pose action "
+                f"(position, quaternion, gripper, per arm); got {len(action_vector)}"
+            )
+        commands = []
+        held: dict[str, bool] = {}
+        for side, offset in (("left", 0), ("right", 8)):
+            block = action_vector[offset : offset + 8]
+            position = tuple(block[0:3])
+            norm = sum(v * v for v in block[3:7]) ** 0.5
+            if norm <= 1e-8:
+                # A degenerate quaternion carries no orientation at all. Holding
+                # is the same no-op an unreachable pose gets, rather than
+                # inventing an identity rotation the policy never asked for.
+                quaternion = None
+            else:
+                quaternion = tuple(v / norm for v in block[3:7])
+            now = self._port.arm_joints(side)
+            if quaternion is None:
+                joints, infeasible = now, True
+                episode.infeasible_steps += 1
+                episode.last_infeasible = f"{side}: degenerate quaternion"
+            else:
+                pose = Pose(position=position, orientation=quaternion)
+                world = encode_pose(WORLD_TO_WORKCELL.inverse().apply_pose(pose))
+                try:
+                    joints, infeasible = self._port.ik(side, world), False
+                except UnreachablePose as failure:
+                    joints, infeasible = now, True
+                    episode.infeasible_steps += 1
+                    episode.last_infeasible = str(failure)
+            held[side] = infeasible
+            commands.append((side, now, joints, _decode_gripper_target(block[7])))
+
+        episode.tick_debt += 1.0 / (self._hz * self._port.dt)
+        ticks, episode.tick_debt = divmod(episode.tick_debt, 1.0)
+        ticks = int(ticks)
+        for tick in range(ticks):
+            remaining = (ticks - tick) * self._port.dt
+            for side, _, goal, gripper in commands:
+                measured = self._port.arm_joints(side)
+                velocity = tuple(
+                    (want - actual) / remaining
+                    for want, actual in zip(goal, measured, strict=True)
+                )
+                self._port.command(side, goal, velocity, gripper)
+            self._port.tick()
+        episode.steps += 1
+        episode.sim_time += ticks * self._port.dt
+        return self._report(episode)
+
     def step(self, action_vector: list[float]) -> tuple[dict, tuple[protocol.Blob, ...]]:
         if self._episode is None:
             raise EvalServerError("step before reset")
@@ -401,6 +471,8 @@ class ShelfRestockEvalServer:
 
         if episode.control_space in ("joint", "joint_delta"):
             return self._step_joint(episode, action_vector)
+        if episode.control_space == "cartesian_absolute":
+            return self._step_eef_absolute(episode, action_vector)
 
         action = Action.from_vector(action_vector)
         current = self._observe().eef

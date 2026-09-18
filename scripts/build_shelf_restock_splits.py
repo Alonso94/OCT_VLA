@@ -184,7 +184,7 @@ def main() -> int:
     parser.add_argument(
         "--control-space",
         default="cartesian",
-        choices=["cartesian", "joint", "joint_delta"],
+        choices=["cartesian", "cartesian_absolute", "joint", "joint_delta"],
         help="'joint' makes observation.state the measured joint configuration and "
         "action the next one, so the policy is proprioceptive in the space it "
         "commands and no inverse kinematics sits between them.",

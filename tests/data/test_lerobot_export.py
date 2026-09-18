@@ -416,3 +416,66 @@ def test_an_unknown_state_encoding_is_refused():
     episode = _joint_episode(((0.0, 1.0, 0.5), (2.0, 3.0, 0.8)))
     with pytest.raises(ValueError, match="state_encoding must be one of"):
         _features(episode, control_space="joint", state_encoding="velocity_only")
+
+
+# --------------------------------------------------- absolute end effector
+
+
+def _eef_episode(*poses):
+    """Episode carrying end-effector poses, the cartesian export's input."""
+    from types import SimpleNamespace as NS
+
+    samples = []
+    for left, right in poses:
+        def arm(p):
+            return NS(pose=NS(position=p[:3], orientation=p[3:7]), gripper=p[7])
+        frame = NS(height=240, width=320)
+        samples.append(NS(
+            observation=NS(eef=NS(left=arm(left), right=arm(right)), joints=None,
+                           head_rgb=frame, left_wrist_rgb=frame, right_wrist_rgb=frame),
+            action=NS(to_vector=lambda: tuple(range(14))),
+        ))
+    return NS(samples=tuple(samples), seed=1)
+
+
+POSE_A = ((0.1, 0.2, 0.3, 0.0, 0.0, 0.0, 1.0, 0.83),
+          (0.4, 0.5, 0.6, 0.0, 0.0, 1.0, 0.0, 0.17))
+POSE_B = ((0.15, 0.2, 0.35, 0.0, 0.0, 0.0, 1.0, 0.83),
+          (0.4, 0.55, 0.6, 0.0, 0.0, 1.0, 0.0, 0.80))
+
+
+def test_the_absolute_eef_action_is_the_next_frame_pose():
+    """The task-space counterpart of the absolute joint target, and it has to
+    be the NEXT frame or the policy is trained to hold still."""
+    from oct_vla.data.lerobot_export import _eef_action_vector, _state_vector
+
+    episode = _eef_episode(POSE_A, POSE_B)
+    assert _eef_action_vector(episode, 0) == _state_vector(episode, 1)
+
+
+def test_the_final_frame_repeats_its_own_pose():
+    from oct_vla.data.lerobot_export import _eef_action_vector, _state_vector
+
+    episode = _eef_episode(POSE_A, POSE_B)
+    assert _eef_action_vector(episode, 1) == _state_vector(episode, 1)
+
+
+def test_the_absolute_eef_action_is_16d_where_the_increment_is_14d():
+    """An absolute pose carries a 4-component quaternion; an increment carries
+    a 3-component rotation. The widths differ and both are declared."""
+    from oct_vla.data.lerobot_export import _features
+
+    episode = _eef_episode(POSE_A, POSE_B)
+    delta = _features(episode, control_space="cartesian")
+    absolute = _features(episode, control_space="cartesian_absolute")
+    assert delta["action"]["shape"] == (14,)
+    assert absolute["action"]["shape"] == (16,)
+    # The absolute action and the observation are the same quantity one frame
+    # apart, so they must carry the same column labels.
+    assert absolute["action"]["names"] == absolute["observation.state"]["names"]
+
+
+def test_absolute_eef_is_a_registered_control_space():
+    from oct_vla.data.lerobot_export import CONTROL_SPACES
+
+    assert "cartesian_absolute" in CONTROL_SPACES

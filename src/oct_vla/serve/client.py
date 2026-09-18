@@ -168,6 +168,11 @@ class ShelfRestockEvalClient:
         values = [float(v) for v in action]
         if self._control_space == "cartesian" and len(values) != 14:
             raise ValueError(f"Canonical action must have 14 elements; got {len(values)}")
+        if self._control_space == "cartesian_absolute" and len(values) != 16:
+            raise ValueError(
+                f"An absolute end-effector action must have 16 elements "
+                f"(position, quaternion, gripper, per arm); got {len(values)}"
+            )
         message = self._round_trip({"op": "step", "action": values})
         return StepResult(
             observation=_observation(message),
