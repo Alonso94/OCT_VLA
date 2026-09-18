@@ -48,10 +48,25 @@ SMOLVLA_RENAME_MAP: dict[str, str] = {
 #: is what stops a new policy silently inheriting pi0.5's openpi names.
 ACT_RENAME_MAP: dict[str, str] = {}
 
+#: Dataset feature name -> name FlashVLA's RoboTwin checkpoint was trained with.
+#:
+#: RoboTwin's own camera convention, not openpi's: `cam_high` for the scene view
+#: and `cam_{left,right}_wrist` for the grippers. Distinct from pi0.5's map even
+#: though FlashVLA is a pi0.5 finetune, because the finetuning corpus renamed
+#: them. Getting this wrong is silent -- all three views share a shape and dtype
+#: -- so it is registered here rather than defaulted.
+FLASHVLA_RENAME_MAP: dict[str, str] = {
+    "observation.images.head": "observation.images.cam_high",
+    "observation.images.left_wrist": "observation.images.cam_left_wrist",
+    "observation.images.right_wrist": "observation.images.cam_right_wrist",
+}
+
 _RENAME_MAPS: dict[str, dict[str, str]] = {
     "act": ACT_RENAME_MAP,
     "pi05": PI05_RENAME_MAP,
     "control_pi05": PI05_RENAME_MAP,
+    "pi05-flashvla": FLASHVLA_RENAME_MAP,
+    "pi0-flashvla": FLASHVLA_RENAME_MAP,
     "smolvla": SMOLVLA_RENAME_MAP,
     "control_smolvla": SMOLVLA_RENAME_MAP,
 }
