@@ -491,3 +491,16 @@ def test_the_joint_side_channel_is_off_by_default():
     features = _features(episode)
     assert "action.joint_position" not in features
     assert "observation.joint_state" not in features
+
+
+def test_a_privileged_cartesian_export_is_refused():
+    """The privileged branch sits inside the joint-space block, so this would
+    otherwise declare camera features on a dataset created with use_videos=False
+    -- video columns with no video behind them."""
+    from oct_vla.data.lerobot_export import _features
+    from oct_vla.data.object_tokens import ObjectTokenSpec
+
+    episode = _eef_episode(POSE_A, POSE_B)
+    with pytest.raises(ValueError, match="joint spaces only"):
+        _features(episode, control_space="cartesian", privileged=True,
+                  object_token_spec=ObjectTokenSpec())

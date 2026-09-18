@@ -275,6 +275,17 @@ def _features(
             f"export; control_space is {control_space!r}, whose observation.state "
             "is an end-effector pose."
         )
+    if privileged and not _is_joint_space(control_space):
+        # The privileged branch lives inside the joint-space block below, so a
+        # privileged cartesian export would silently fall through to the camera
+        # block while the dataset was created with use_videos=False -- declared
+        # video features with no video written. Refused rather than repaired,
+        # because the right fix is to decide what a vision-free end-effector
+        # observation should be, not to guess one here.
+        raise ValueError(
+            f"privileged export is implemented for joint spaces only; "
+            f"control_space is {control_space!r}."
+        )
     _require_joints(episode, control_space)
     joint_names = _joint_motor_names(observation)
     state_names = _state_motor_names(joint_names, state_encoding) if joint_names else None
