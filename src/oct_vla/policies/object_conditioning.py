@@ -221,6 +221,29 @@ class ObjectConditioning(nn.Module):
             return action_emb
         return action_emb + self.injection(context).unsqueeze(1)
 
+    def attach_to(self, action_encoder: nn.Module):
+        """Apply the residual to `action_encoder`'s output, via a forward hook.
+
+        For backbones whose action embedding is produced by a submodule rather
+        than returned from an overridable method. π0.5 and SmolVLA expose
+        `embed_suffix`, so they call `residual` directly; X-VLA and VLA-JEPA
+        build theirs inside a longer `forward` with no seam, and both happen to
+        route it through a submodule named `action_encoder`.
+
+        A hook rather than a wrapper module, deliberately. Wrapping would insert
+        a level into the module tree and rename every one of the encoder's
+        state-dict keys, which breaks loading the pretrained checkpoint -- the
+        entire point of using these backbones. A hook changes no keys at all.
+        Overriding the host's `forward` instead would mean copying forty lines
+        of upstream code that then drifts on the next LeRobot upgrade.
+
+        Returns the handle so a caller can remove it; nothing here does, since
+        the hook is installed once at construction.
+        """
+        return action_encoder.register_forward_hook(
+            lambda module, inputs, output: self.residual(output)
+        )
+
 
 class ObjectConditionedPolicyMixin:
     """The policy half: feeds the batch in, and keeps PEFT from dropping it.

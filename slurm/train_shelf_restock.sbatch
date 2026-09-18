@@ -47,7 +47,24 @@ case "$BACKBONE" in
     # back is not needed.
     PRECISION_ARGS=(--policy.use_amp=true)
     ;;
-  *) echo "Invalid BACKBONE: $BACKBONE (expected pi05 or smolvla)" >&2; exit 2 ;;
+  xvla)
+    DEFAULT_BASE_MODEL="2toINF/X-VLA-Pt"
+    OBJECT_POLICY_TYPE="control_xvla"
+    # No masked variant: X-VLA does not mask action_is_pad either way, so the
+    # RGB and object arms are affected equally and stay comparable. Worth
+    # revisiting -- 17.4% of targets on this corpus are padding.
+    STOCK_POLICY_TYPE="xvla"
+    # XVLAConfig has no `dtype` or `gradient_checkpointing`; passing pi0.5's
+    # flags fails at config parsing. At 0.88B it does not need them.
+    PRECISION_ARGS=(--policy.use_amp=true)
+    ;;
+  vla_jepa)
+    DEFAULT_BASE_MODEL="ginwind/VLA-JEPA"
+    OBJECT_POLICY_TYPE="control_vla_jepa"
+    STOCK_POLICY_TYPE="vla_jepa"
+    PRECISION_ARGS=(--policy.use_amp=true)
+    ;;
+  *) echo "Invalid BACKBONE: $BACKBONE (expected pi05, smolvla, xvla or vla_jepa)" >&2; exit 2 ;;
 esac
 
 # Arm C of the sweep ("is the object win real, or task-state leakage?") trains
