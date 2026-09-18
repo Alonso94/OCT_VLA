@@ -47,15 +47,17 @@ case "$BACKBONE" in
     # back is not needed.
     PRECISION_ARGS=(--policy.use_amp=true)
     ;;
-  xvla)
-    DEFAULT_BASE_MODEL="2toINF/X-VLA-Pt"
-    OBJECT_POLICY_TYPE="control_xvla"
-    # No masked variant: X-VLA does not mask action_is_pad either way, so the
+  groot)
+    # Named by a config field rather than passed as a path: GrootConfig
+    # defaults base_model_path to nvidia/GR00T-N1.7-3B and the policy loads the
+    # transformers-format weights itself. This is what X-VLA could not do --
+    # its published checkpoint carries `model_type`, not LeRobot's `type`.
+    DEFAULT_BASE_MODEL=""
+    OBJECT_POLICY_TYPE="control_groot"
+    # No masked variant: GR00T does not mask action_is_pad either way, so the
     # RGB and object arms are affected equally and stay comparable. Worth
     # revisiting -- 17.4% of targets on this corpus are padding.
-    STOCK_POLICY_TYPE="xvla"
-    # XVLAConfig has no `dtype` or `gradient_checkpointing`; passing pi0.5's
-    # flags fails at config parsing. At 0.88B it does not need them.
+    STOCK_POLICY_TYPE="groot"
     PRECISION_ARGS=(--policy.use_amp=true)
     ;;
   vla_jepa)
@@ -68,7 +70,7 @@ case "$BACKBONE" in
     STOCK_POLICY_TYPE="vla_jepa"
     PRECISION_ARGS=(--policy.use_amp=true)
     ;;
-  *) echo "Invalid BACKBONE: $BACKBONE (expected pi05, smolvla, xvla or vla_jepa)" >&2; exit 2 ;;
+  *) echo "Invalid BACKBONE: $BACKBONE (expected pi05, smolvla, groot or vla_jepa)" >&2; exit 2 ;;
 esac
 
 # Arm C of the sweep ("is the object win real, or task-state leakage?") trains

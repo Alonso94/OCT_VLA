@@ -38,7 +38,7 @@ it.
 
 ---
 
-## Stage B — backbone comparison, RGB only (~45 GPU-h)
+## Stage B — backbone comparison, RGB only (~35 GPU-h)
 
 Held fixed: absolute-joint action, `n_action_steps=25`, seed 1000, the same
 corpus. Varies only the backbone. No object conditioning yet, per the plan to run
@@ -47,8 +47,8 @@ these unconditioned first.
 | # | backbone | params | cost |
 | --- | --- | ---: | ---: |
 | B1 | SmolVLA | 0.45 B | 3 |
-| B2 | X-VLA | 0.88 B | 4 |
-| B3 | VLA-JEPA | 3.08 B | 12 |
+| B2 | GR00T N1.7 | 3.14 B | 11 |
+| B3 | VLA-JEPA | 2.77 B | 11 |
 | B4 | pi0.5 | 3.62 B | 10 |
 
 ACT from Stage A is the fifth arm and needs no rerun.
@@ -105,6 +105,7 @@ Each needs a decision before it is worth GPU time.
 | E3 | Does FastWAM's **RoboTwin pretraining** help? | A GPU larger than a 4090 — 6 B needs ~26.5 GB. The best domain match available. |
 | E4 | Can a **reward model** rank checkpoints better than validation loss? | Motivated by held-out loss failing to predict closed-loop success five times running, but second-order while policies still cannot grasp. |
 | E5 | More data. | 109 runs now. 45→75 runs cut validation loss 30 % and left closed-loop at zero, so this is not the top lever. |
+| E6 | **X-VLA** or **MolmoAct2**, the two backbones considered and dropped. | X-VLA's released weights (`2toINF/X-VLA-Pt`) are a transformers `AutoModel` repo carrying `model_type` rather than LeRobot's `type`, so its implementation and its checkpoint do not meet without a conversion. MolmoAct2 is 5.44 B → ~23.9 GB, no headroom on a 24 GB card, and its `validate_features` injects `observation.state` with shape (0,) — it may not read proprioception at all. |
 
 ---
 
@@ -113,10 +114,10 @@ Each needs a decision before it is worth GPU time.
 | stage | GPU-h | gate to the next |
 | --- | ---: | --- |
 | A | ~14 | A1 improves, or stop and re-diagnose |
-| B | ~45 | any backbone beats the constant offline |
+| B | ~35 | any backbone beats the constant offline |
 | C | ~50 | a backbone clears Stage B |
 | D | ~12 | something is non-zero |
-| **total** | **~120** | |
+| **total** | **~110** | |
 
 Roughly a week of wall-clock at current queue depth, and about half of it is
 contingent on Stage A. Every stage writes one rollout video per cell via

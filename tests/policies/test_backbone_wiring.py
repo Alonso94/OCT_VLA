@@ -18,7 +18,7 @@ import oct_vla.policies  # noqa: E402,F401  -- registers the plugin types
 
 @pytest.mark.parametrize(
     "policy_type",
-    ["control_pi05", "control_smolvla", "control_xvla", "control_vla_jepa", "masked_pi05"],
+    ["control_pi05", "control_smolvla", "control_groot", "control_vla_jepa", "masked_pi05"],
 )
 def test_the_plugin_types_are_registered(policy_type):
     """An unregistered type fails only when a training job resolves it, which is
@@ -28,7 +28,7 @@ def test_the_plugin_types_are_registered(policy_type):
 
 @pytest.mark.parametrize(
     "policy_type",
-    ["control_pi05", "control_smolvla", "control_xvla", "control_vla_jepa", "masked_pi05"],
+    ["control_pi05", "control_smolvla", "control_groot", "control_vla_jepa", "masked_pi05"],
 )
 def test_every_plugin_has_a_rename_map(policy_type):
     """`rename_map_for` raises on unknown types by design; evaluation calls it,
@@ -47,7 +47,7 @@ def test_every_object_plugin_ships_a_processor_factory():
     for package, factory in (
         ("control_pi05", "make_control_pi05_pre_post_processors"),
         ("control_smolvla", "make_control_smolvla_pre_post_processors"),
-        ("control_xvla", "make_control_xvla_pre_post_processors"),
+        ("control_groot", "make_control_groot_pre_post_processors"),
         ("control_vla_jepa", "make_control_vla_jepa_pre_post_processors"),
     ):
         module = importlib.import_module(
@@ -59,17 +59,14 @@ def test_every_object_plugin_ships_a_processor_factory():
 # ------------------------------------------- upstream structure these rely on
 
 
-def test_xvla_still_embeds_actions_where_the_plugin_expects():
-    from lerobot.policies.xvla.modeling_xvla import XVLAModel
-    from lerobot.policies.xvla.soft_transformer import SoftPromptedTransformer
+def test_groot_still_embeds_actions_where_the_plugin_expects():
+    from lerobot.policies.groot.groot_n1_7 import GR00TN17ActionHead
 
-    from oct_vla.policies.control_xvla import ControlXVLAPolicy
+    from oct_vla.policies.control_groot import ControlGrootPolicy
 
-    assert ControlXVLAPolicy.object_module_path == "model.transformer"
-    # `model.transformer` and the two attributes the plugin reads off it.
-    assert "transformer" in XVLAModel.__init__.__code__.co_names
-    assert "action_encoder" in SoftPromptedTransformer.__init__.__code__.co_names
-    assert "hidden_size" in SoftPromptedTransformer.__init__.__code__.co_names
+    assert ControlGrootPolicy.object_module_path == "_groot_model.action_head"
+    assert "action_encoder" in GR00TN17ActionHead.__init__.__code__.co_names
+    assert "input_embedding_dim" in GR00TN17ActionHead.__init__.__code__.co_names
 
 
 def test_vla_jepa_still_embeds_actions_where_the_plugin_expects():
@@ -95,13 +92,13 @@ def test_the_pi_family_still_exposes_embed_suffix():
 
 def test_paths_are_distinct_per_backbone():
     """The bug the refactor fixed: everything assumed `model`."""
+    from oct_vla.policies.control_groot import ControlGrootPolicy
     from oct_vla.policies.control_pi05.modeling_control_pi05 import ControlPI05Policy
     from oct_vla.policies.control_vla_jepa import ControlVLAJEPAPolicy
-    from oct_vla.policies.control_xvla import ControlXVLAPolicy
 
     paths = {
         ControlPI05Policy.object_module_path,
-        ControlXVLAPolicy.object_module_path,
+        ControlGrootPolicy.object_module_path,
         ControlVLAJEPAPolicy.object_module_path,
     }
     assert len(paths) == 3

@@ -61,9 +61,13 @@ FLASHVLA_RENAME_MAP: dict[str, str] = {
     "observation.images.right_wrist": "observation.images.cam_right_wrist",
 }
 
-#: X-VLA derives its view count from the dataset (`num_image_views` is computed
-#: from the features it is given), so it takes our own keys.
-XVLA_RENAME_MAP: dict[str, str] = {}
+#: GR00T is the one policy with real camera-key expectations: its processor
+#: matches the checkpoint's video-modality keys against the dataset's cameras
+#: and, on no match, falls back to *alphabetical* order with only a warning. The
+#: map is empty because the arms are built by `--policy.type`, so features come
+#: from our dataset -- but that fallback is why this entry is worth a comment
+#: rather than a shrug. Check the warning in the training log on the first run.
+GROOT_RENAME_MAP: dict[str, str] = {}
 
 #: VLA-JEPA's published checkpoint declares DROID-style names and only *two*
 #: views -- `exterior_1_left` and `exterior_2_left`. We have three. The arms are
@@ -81,8 +85,8 @@ _RENAME_MAPS: dict[str, dict[str, str]] = {
     "pi05-flashvla": FLASHVLA_RENAME_MAP,
     "pi0-flashvla": FLASHVLA_RENAME_MAP,
     "smolvla": SMOLVLA_RENAME_MAP,
-    "xvla": XVLA_RENAME_MAP,
-    "control_xvla": XVLA_RENAME_MAP,
+    "groot": GROOT_RENAME_MAP,
+    "control_groot": GROOT_RENAME_MAP,
     "vla_jepa": VLA_JEPA_RENAME_MAP,
     "control_vla_jepa": VLA_JEPA_RENAME_MAP,
     "control_smolvla": SMOLVLA_RENAME_MAP,
