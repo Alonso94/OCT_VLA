@@ -262,6 +262,14 @@ def main() -> int:
         "evaluated episode, which is rarely what is wanted: a full sweep would "
         "write one file per episode per profile.",
     )
+    parser.add_argument(
+        "--video-name",
+        default="",
+        help="Filename stem for the recording, without .mp4. One stable name per "
+        "cell means a re-record overwrites rather than accumulates, which is the "
+        "difference between a fixed-size directory and one that grows every time "
+        "the grid is refreshed. Default names the file after the profile and seed.",
+    )
     parser.add_argument("--video-fps", type=float, default=15.0,
                         help="Matches the 15 Hz control rate, so the video runs in real time.")
     parser.add_argument("--video-crf", type=int, default=30,
@@ -378,8 +386,9 @@ def main() -> int:
                 if args.video_dir and seed in record:
                     from oct_vla.serve.video import Caption, RolloutVideo
 
+                    stem = args.video_name or f"{profile}_seed{seed}"
                     video = RolloutVideo(
-                        args.video_dir / f"{profile}_seed{seed}.mp4",
+                        args.video_dir / f"{stem}.mp4",
                         fps=args.video_fps,
                         crf=args.video_crf,
                         caption=Caption(

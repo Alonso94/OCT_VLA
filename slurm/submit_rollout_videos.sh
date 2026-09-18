@@ -67,14 +67,17 @@ for cell in "${CELLS[@]}"; do
     fi
 
     slug=$(echo "$label" | tr 'A-Z ' 'a-z_' | tr -cd 'a-z0-9_|' | tr '|' '-')
-    out="$STAGE/$slug"
+    # One file per cell, named for the cell and not the seed, so re-recording
+    # overwrites in place. The alternative accumulates a file per seed per
+    # refresh, which is what fills a quota.
+    out="$STAGE"
     mkdir -p "$out"
 
     jid=$(sbatch --parsable \
       --account="$SLURM_ACCOUNT" --partition="$SLURM_PARTITION" --gres=gpu:a40:1 \
       --time=01:00:00 --job-name="octvla-vid-$slug" \
       --output="$OCTVLA_OUTPUT_ROOT/slurm_logs/vid-$slug-%j.out" \
-      --export=ALL,EVAL_CHECKPOINT="$CKPT",EVAL_VARIANT="$variant",EVAL_DATASET="$dataset",EVAL_SEEDS="$SEED",EVAL_PROFILES=three_object,EVAL_MAX_STEPS=600,EVAL_TAG="videos/$slug-$SEED",EVAL_VIDEO_DIR="$out",EVAL_VIDEO_LABEL="$label",EVAL_VIDEO_SEEDS="$SEED" \
+      --export=ALL,EVAL_CHECKPOINT="$CKPT",EVAL_VARIANT="$variant",EVAL_DATASET="$dataset",EVAL_SEEDS="$SEED",EVAL_PROFILES=three_object,EVAL_MAX_STEPS=600,EVAL_TAG="videos/$slug-$SEED",EVAL_VIDEO_DIR="$out",EVAL_VIDEO_LABEL="$label",EVAL_VIDEO_SEEDS="$SEED",EVAL_VIDEO_NAME="$slug" \
       "$OCTVLA_REPO/slurm/eval_shelf_restock.sbatch")
     echo "$jid  $label"
   )

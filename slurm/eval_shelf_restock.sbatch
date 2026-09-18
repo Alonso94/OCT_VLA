@@ -80,6 +80,7 @@ if [ -n "${EVAL_VIDEO_DIR:-}" ]; then
   VIDEO_FLAG+=(--video-dir "$EVAL_VIDEO_DIR")
   [ -n "${EVAL_VIDEO_LABEL:-}" ] && VIDEO_FLAG+=(--video-label "$EVAL_VIDEO_LABEL")
   [ -n "${EVAL_VIDEO_SEEDS:-}" ] && VIDEO_FLAG+=(--video-seeds "$EVAL_VIDEO_SEEDS")
+  [ -n "${EVAL_VIDEO_NAME:-}" ] && VIDEO_FLAG+=(--video-name "$EVAL_VIDEO_NAME")
   [ -n "${EVAL_VIDEO_CRF:-}" ] && VIDEO_FLAG+=(--video-crf "$EVAL_VIDEO_CRF")
 fi
 
