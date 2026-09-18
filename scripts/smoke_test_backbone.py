@@ -49,6 +49,7 @@ def main() -> int:
 
     import torch
     from lerobot.configs.policies import PreTrainedConfig
+    from lerobot.datasets.factory import resolve_delta_timestamps
     from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
     from lerobot.policies.factory import make_policy, make_pre_post_processors
 
@@ -119,9 +120,16 @@ def main() -> int:
     )
     ok &= check("processors built", True)
 
-    chunk = getattr(config, "chunk_size", None)
-    delta = {"action": [i / metadata.fps for i in range(chunk)]} if chunk else None
+    # LeRobot's own resolver, not a hand-built action-only dict. Policies differ
+    # in what history they ask for, and the difference is not cosmetic:
+    # VLA-JEPA's world-model loss requests `num_video_frames` observation
+    # frames, so an action-only delta gives it one frame where it expects eight
+    # and it fails deep inside a reshape. Reading the config's own
+    # `*_delta_indices` is exactly what training does.
+    delta = resolve_delta_timestamps(config, metadata, rename_map)
     dataset = LeRobotDataset(args.repo_id, root=args.dataset_root, delta_timestamps=delta)
+    ok &= check("delta timestamps resolved", True,
+                f"{ {k: len(v) for k, v in (delta or {}).items()} }")
     loader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, num_workers=0)
     batch = next(iter(loader))
 

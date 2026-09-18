@@ -200,3 +200,39 @@ def test_resolve_module_walks_a_dotted_path():
     root.mid = mid
     assert resolve_module(root, "mid.leaf") is leaf
     assert resolve_module(root, "mid") is mid
+
+
+def test_a_config_declared_lora_target_is_used_when_the_backbone_has_none():
+    """GR00T and VLA-JEPA define no default targets. LeRobot refuses the run
+    rather than attaching LoRA to nothing, so the config must supply them."""
+    class WithTargets(Config):
+        lora_target_modules = r"action_head\..*"
+
+    class Policy(ObjectConditionedPolicyMixin, nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.config = WithTargets()
+            self.model = Host()
+
+    targets = Policy()._get_default_peft_targets()
+    assert targets["target_modules"] == r"action_head\..*"
+    assert targets["modules_to_save"] == ["model.object_conditioning"]
+
+
+def test_a_backbone_default_wins_over_the_config_declaration():
+    """pi0.5 and SmolVLA ship targets tuned to their own module names; a config
+    field must not silently override them."""
+    class WithTargets(Config):
+        lora_target_modules = r"should_not_win"
+
+    class Parent(nn.Module):
+        def _get_default_peft_targets(self):
+            return {"target_modules": "backbone_default"}
+
+    class Policy(ObjectConditionedPolicyMixin, Parent):
+        def __init__(self):
+            super().__init__()
+            self.config = WithTargets()
+            self.model = Host()
+
+    assert Policy()._get_default_peft_targets()["target_modules"] == "backbone_default"

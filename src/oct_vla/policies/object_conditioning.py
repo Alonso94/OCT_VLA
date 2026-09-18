@@ -321,12 +321,18 @@ class ObjectConditionedPolicyMixin:
     def _get_default_peft_targets(self) -> dict[str, Any]:
         """Same reasoning: only four LeRobot policies define this hook.
 
-        X-VLA and VLA-JEPA do not, so chaining unconditionally would raise for
-        exactly the backbones this refactor exists to support.
+        GR00T and VLA-JEPA do not, so chaining unconditionally would raise for
+        exactly the backbones this refactor exists to support. For those, the
+        config supplies `lora_target_modules` -- without it LeRobot refuses the
+        run outright, which is the good failure: LoRA attaching to nothing while
+        the object path still trains would look like a working experiment.
         """
         parent = getattr(super(), "_get_default_peft_targets", None)
-        targets = parent() if parent is not None else None
-        return self._add_object_peft_targets(dict(targets or {}))
+        targets = dict(parent() or {}) if parent is not None else {}
+        declared = getattr(self.config, "lora_target_modules", None)
+        if declared and not targets.get("target_modules"):
+            targets["target_modules"] = declared
+        return self._add_object_peft_targets(targets)
 
     def _add_object_state_defaults(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         """Keep freshly initialised object parameters when loading base weights.
