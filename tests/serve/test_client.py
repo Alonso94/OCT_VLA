@@ -103,11 +103,14 @@ def test_reset_decodes_observation(connected):
     observation = client.reset(seed=1000, profile="three_object")
     thread.join()
 
+    # The server reads the action encodings out of this header, so the defaults
+    # are part of the protocol: an older client must keep executing as it did.
     assert requests[0] == {
         "op": "reset",
         "seed": 1000,
         "profile": "three_object",
         "control_space": "cartesian",
+        "gripper_encoding": "measured_aperture",
     }
     assert observation.timestamp == 1.5
     assert observation.eef.left.gripper == 0.25

@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 
+from oct_vla.core.gripper import GRIPPER_ENCODINGS, binary_gripper_command
 from oct_vla.data.control_views import ALT_PREFIX, UNIFIED_CONTROL_SPACE
 from oct_vla.data.episode import Episode, validate_episode
 from oct_vla.data.object_tokens import (
@@ -168,6 +169,21 @@ def _joint_delta_action_vector(episode: Episode, index: int) -> tuple[float, ...
     return tuple(
         following[i] if i in grippers else following[i] - current[i]
         for i in range(len(current))
+    )
+
+
+def _binarise_grippers(
+    values: tuple[float, ...], indices: tuple[int, ...], gripper_encoding: str
+) -> tuple[float, ...]:
+    """Replace the named channels with the open/close command they imply.
+
+    A no-op under `measured_aperture`, so every dataset built before this and
+    every checkpoint trained on one keeps its exact behaviour.
+    """
+    if gripper_encoding != "binary_command":
+        return values
+    return tuple(
+        binary_gripper_command(v) if i in indices else v for i, v in enumerate(values)
     )
 
 
@@ -466,6 +482,7 @@ def export_episodes(
     privileged: bool = False,
     state_encoding: str = "position",
     joint_side_channel: bool = False,
+    gripper_encoding: str = "measured_aperture",
 ) -> ExportReport:
     """Convert canonical episode directories into a new local LeRobot dataset.
 
@@ -474,6 +491,10 @@ def export_episodes(
     ``output`` must not exist unless ``append`` is explicitly requested. This
     makes a long batch export restartable one finalized episode at a time.
     """
+    if gripper_encoding not in GRIPPER_ENCODINGS:
+        raise ValueError(
+            f"gripper_encoding must be one of {GRIPPER_ENCODINGS}, got {gripper_encoding!r}"
+        )
     source_paths = tuple(Path(source) for source in sources)
     if not source_paths:
         raise ValueError("At least one canonical episode directory is required")
@@ -526,11 +547,17 @@ def export_episodes(
         episode_ranks = stable_ranks(episode.samples[0].scene) if object_token_spec else {}
         for index, sample in enumerate(episode.samples):
             _require_joints(episode, control_space)
+            # Gripper channel positions differ by action layout: a 16-d joint or
+            # pose vector carries them at 7 and 15, a 14-d end-effector increment
+            # at 6 and 13.
+            joint_grips, eef_delta_grips = (7, 15), (6, 13)
             if _is_joint_space(control_space):
-                action = (
+                action = _binarise_grippers(
                     _joint_delta_action_vector(episode, index)
                     if control_space == "joint_delta"
-                    else _joint_action_vector(episode, index)
+                    else _joint_action_vector(episode, index),
+                    joint_grips,
+                    gripper_encoding,
                 )
                 frame = {
                     "observation.state": np.asarray(
@@ -545,9 +572,11 @@ def export_episodes(
                         _state_vector(episode, index), dtype=np.float32
                     ),
                     "action": np.asarray(
-                        _eef_action_vector(episode, index)
+                        _binarise_grippers(_eef_action_vector(episode, index),
+                                           joint_grips, gripper_encoding)
                         if control_space == "cartesian_absolute"
-                        else sample.action.to_vector(),
+                        else _binarise_grippers(tuple(sample.action.to_vector()),
+                                                eef_delta_grips, gripper_encoding),
                         dtype=np.float32,
                     ),
                     "task": sample.context.instruction,
@@ -557,16 +586,19 @@ def export_episodes(
                 # canonical pair came from, so no view can disagree with another
                 # about what happened at this frame.
                 frame[f"{ALT_PREFIX}joint_action_delta"] = np.asarray(
-                    _joint_delta_action_vector(episode, index), dtype=np.float32)
+                    _binarise_grippers(_joint_delta_action_vector(episode, index),
+                                       joint_grips, gripper_encoding), dtype=np.float32)
                 frame[f"{ALT_PREFIX}joint_state_velocity"] = np.asarray(
                     _joint_state_vector(episode, index, "position_velocity"),
                     dtype=np.float32)
                 frame[f"{ALT_PREFIX}eef_state"] = np.asarray(
                     _state_vector(episode, index), dtype=np.float32)
                 frame[f"{ALT_PREFIX}eef_action_abs"] = np.asarray(
-                    _eef_action_vector(episode, index), dtype=np.float32)
+                    _binarise_grippers(_eef_action_vector(episode, index),
+                                       joint_grips, gripper_encoding), dtype=np.float32)
                 frame[f"{ALT_PREFIX}eef_action_delta"] = np.asarray(
-                    sample.action.to_vector(), dtype=np.float32)
+                    _binarise_grippers(tuple(sample.action.to_vector()),
+                                       eef_delta_grips, gripper_encoding), dtype=np.float32)
 
             joint_state = (
                 _joint_state_vector(episode, index)
@@ -636,6 +668,9 @@ def export_episodes(
         # schema says the extra half is a velocity rather than a second pose,
         # and the evaluation client has to rebuild it exactly.
         info["state_encoding"] = state_encoding
+        # Which convention the gripper action column follows. Absent means the
+        # raw measurement, so every dataset built before this reads correctly.
+        info["gripper_encoding"] = gripper_encoding
         info_path.write_text(json.dumps(info, indent=4))
 
     return ExportReport(destination, tuple(source for source, _ in accepted), tuple(skipped))

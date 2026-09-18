@@ -28,7 +28,11 @@ case "$BACKBONE" in
   pi05)
     DEFAULT_BASE_MODEL="lerobot/pi05_base"
     OBJECT_POLICY_TYPE="control_pi05"
-    STOCK_POLICY_TYPE="pi05"
+    # masked_pi05, not stock pi05: identical network, but it excludes padded
+    # action targets from the loss the way ACT already does. Without it the RGB
+    # arm would fit repeated terminal actions that the object arms do not,
+    # confounding "conditioning" with "which arm trained on padding".
+    STOCK_POLICY_TYPE="masked_pi05"
     # Measured: batch 16 fits in 15.6 GB of an A40's 49 GB with both of these.
     PRECISION_ARGS=(--policy.dtype=bfloat16 --policy.gradient_checkpointing=true)
     ;;
@@ -92,8 +96,19 @@ if [ "$TRAIN_VARIANT" = "object" ]; then
     --policy.discover_packages_path=oct_vla.policies
     --policy.object_token_mode="$OBJECT_TOKEN_MODE"
   )
-else
+elif [ "$STOCK_POLICY_TYPE" = "$BACKBONE" ]; then
+  # A stock LeRobot type: load via --policy.path and take the type from the
+  # checkpoint, as before.
   POLICY_ARGS=(--policy.path="$BASE_MODEL")
+else
+  # A plugin type, so the same treatment the object arm gets: the type is not
+  # in LeRobot's registry until this package is imported, and the base weights
+  # come in separately.
+  POLICY_ARGS=(
+    --policy.type="$STOCK_POLICY_TYPE"
+    --policy.pretrained_path="$BASE_MODEL"
+    --policy.discover_packages_path=oct_vla.policies
+  )
 fi
 
 # Name the cell, not the job. A job-id-only directory makes a sweep's runs

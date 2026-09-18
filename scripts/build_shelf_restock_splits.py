@@ -172,6 +172,16 @@ def main() -> int:
         "can achieve. Implies --object-tokens.",
     )
     parser.add_argument(
+        "--gripper-encoding",
+        default="measured_aperture",
+        choices=["measured_aperture", "binary_command"],
+        help="'binary_command' thresholds the gripper action into {0, 1} at export, "
+        "using the bridge's own constant so it decodes identically. The measured "
+        "aperture puts 'open' in a band 0.0108 wide at the top of its range, "
+        "against a policy error of 0.0138-0.0377 -- so the open/close decision is "
+        "wrong more often than right. observation.state keeps the measurement.",
+    )
+    parser.add_argument(
         "--state-encoding",
         default="position",
         choices=["position", "position_velocity"],
@@ -239,6 +249,7 @@ def main() -> int:
         control_space=args.control_space,
         privileged=args.privileged,
         state_encoding=args.state_encoding,
+        gripper_encoding=args.gripper_encoding,
     )
     print(f"exported {len(report.exported)} episodes to {report.output}")
     for source, reason in report.skipped:

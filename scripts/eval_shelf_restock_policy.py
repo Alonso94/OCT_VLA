@@ -145,8 +145,10 @@ def run_episode(
     client, policy, preprocessor, postprocessor, *,
     seed, profile, max_steps, object_token_spec, torch, np, control_space="cartesian",
     privileged=False, uint8_images=True, state_encoding="position", video=None,
+    gripper_encoding="measured_aperture",
 ) -> dict:
-    observation = client.reset(seed, profile, control_space=control_space)
+    observation = client.reset(seed, profile, control_space=control_space,
+                               gripper_encoding=gripper_encoding)
     policy.reset()
     # Fixed once, from the scene at reset -- exactly as the exporter does.
     ranks = None
@@ -344,7 +346,9 @@ def main() -> int:
         # only mean a dataset exported before velocities existed, and those are
         # position-only. The shape check below is what actually catches a
         # mismatch, since a 32-d state against a 16-d checkpoint is not subtle.
-        state_encoding = str(json.loads(info_path.read_text()).get("state_encoding", "position"))
+        _info = json.loads(info_path.read_text())
+        state_encoding = str(_info.get("state_encoding", "position"))
+        gripper_encoding = str(_info.get("gripper_encoding", "measured_aperture"))
     elif any("_eef." in str(n) for n in action_names):
         # An absolute end-effector action is a 16-d pose and an increment is the
         # 14-d canonical action. Both are end-effector space, and executing one
@@ -353,9 +357,13 @@ def main() -> int:
         info_path = args.dataset_root / "meta" / "info.json"
         control_space = str(json.loads(info_path.read_text()).get("control_space", "cartesian"))
         state_encoding = "position"
+        gripper_encoding = str(json.loads(
+            (args.dataset_root / "meta" / "info.json").read_text()
+        ).get("gripper_encoding", "measured_aperture"))
     else:
         control_space = "cartesian"
         state_encoding = "position"
+        gripper_encoding = "measured_aperture"
     width = metadata.features["action"]["shape"][0]
     # A vision-free checkpoint declares environment_state and no image features.
     privileged = "observation.environment_state" in metadata.features
@@ -364,7 +372,7 @@ def main() -> int:
     state_width = metadata.features["observation.state"]["shape"][0]
     print(
         f"control space: {control_space} (action width {width}) "
-        f"state: {state_encoding} (width {state_width}) "
+        f"state: {state_encoding} (width {state_width}) gripper: {gripper_encoding} "
         f"privileged={privileged} visual_norm={visual_norm} uint8_images={uint8_images}"
     )
     # Applied before make_policy, and that ordering is load-bearing: the policy
@@ -443,7 +451,7 @@ def main() -> int:
                     object_token_spec=spec, torch=torch, np=np,
                     control_space=control_space, privileged=privileged,
                     uint8_images=uint8_images, state_encoding=state_encoding,
-                    video=video,
+                    gripper_encoding=gripper_encoding, video=video,
                 )
                 results.append(outcome)
                 print(json.dumps(outcome), flush=True)

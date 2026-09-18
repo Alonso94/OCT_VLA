@@ -177,12 +177,20 @@ def test_the_gripper_decode_is_memoryless():
     """An earlier version returned the previous command inside a dead band,
     making the command a function of history rather than the observation --
     and the dead band was not empty: 0.34% of the corpus fell inside it."""
-    import inspect
-
     from oct_vla.serve.server import _decode_gripper_target as decode
 
-    assert list(inspect.signature(decode).parameters) == ["requested"]
-    assert decode(0.82) == decode(0.82)
+    # Memoryless means the same input always gives the same command, whatever
+    # ran before it. Asserted directly rather than through the signature, which
+    # is a proxy that breaks the moment an unrelated parameter is added -- the
+    # encoding argument is a property of the dataset, not of history.
+    decode(0.0)
+    first = decode(0.82)
+    decode(1.0)
+    assert decode(0.82) == first
+
+    for encoding in ("measured_aperture", "binary_command"):
+        decode(0.0, encoding)
+        assert decode(0.82, encoding) == decode(0.82, encoding)
 
 
 def test_the_gripper_decode_is_monotonic():

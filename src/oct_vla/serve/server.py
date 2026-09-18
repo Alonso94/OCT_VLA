@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 
 from oct_vla.core.action import Action, action_between, apply_action
 from oct_vla.core.frames import Pose
+from oct_vla.core.gripper import GRIPPER_ENCODINGS, decode_gripper_command
 from oct_vla.core.objects import ObjectScene, TaskContext
 from oct_vla.core.observation import RobotObservation
 from oct_vla.core.state import ArmJoints, ArmState, EEFState, JointState
@@ -138,6 +139,10 @@ class _Episode:
     #: which object carries the "previous neighbour" role in the object tokens
     #: from the third transfer onward -- so the object-conditioned arms would be
     #: scored on a token layout they were never trained on.
+    #: How to read the policy's gripper output. Defaults to the raw measurement
+    #: so an older client, or a checkpoint trained on an older dataset, executes
+    #: exactly as it did before.
+    gripper_encoding: str = "measured_aperture"
     placed_seen: set[str] = field(default_factory=set)
     #: Every object raised clear of the lower shelf at any point this episode.
     #: Accumulated rather than sampled, so an object that is lifted and dropped
@@ -194,13 +199,18 @@ def _split_joint_action(values: list[float]) -> dict[str, tuple[tuple[float, ...
     }
 
 
-def _decode_gripper_target(requested: float) -> float:
+def _decode_gripper_target(requested: float, encoding: str = "measured_aperture") -> float:
     """Map a measured-aperture label to a force-preserving actuator command.
 
     Written in the numerically stable branches rather than as one expression:
     the sharpness makes the exponent large enough on real inputs (|x| ~ 300 at
     a full grip) that the naive form overflows.
     """
+    if encoding == "binary_command":
+        # Already a command, not a measurement: the exporter wrote 0 or 1, so
+        # the boundary belongs at the midpoint of the two classes rather than
+        # at the top of an aperture range 0.0108 wide.
+        return decode_gripper_command(requested, encoding)
     x = GRIPPER_DECISION_SHARPNESS * (requested - GRIPPER_DECISION_CENTRE)
     if x >= 0.0:
         return 1.0 / (1.0 + math.exp(-x))
@@ -298,13 +308,19 @@ class ShelfRestockEvalServer:
     # ------------------------------------------------------------ operations
 
     def reset(
-        self, seed: int, profile: str, max_steps: int, control_space: str = "cartesian"
+        self, seed: int, profile: str, max_steps: int, control_space: str = "cartesian",
+        gripper_encoding: str = "measured_aperture",
     ) -> tuple[dict, tuple[protocol.Blob, ...]]:
         if profile not in PROFILE_TASKS:
             raise EvalServerError(f"Unknown profile {profile!r}; have {sorted(PROFILE_TASKS)}")
         if control_space not in CONTROL_SPACES:
             raise EvalServerError(
                 f"Unknown control_space {control_space!r}; have {sorted(CONTROL_SPACES)}"
+            )
+        if gripper_encoding not in GRIPPER_ENCODINGS:
+            raise EvalServerError(
+                f"Unknown gripper_encoding {gripper_encoding!r}; "
+                f"have {sorted(GRIPPER_ENCODINGS)}"
             )
         # Rebuild the port only when the profile changes: each one is a distinct
         # RoboTwin task class, but reconstructing SAPIEN per episode is slow and
@@ -333,6 +349,7 @@ class ShelfRestockEvalServer:
             ),
             max_steps=max_steps,
             control_space=control_space,
+            gripper_encoding=gripper_encoding,
         )
         header, blobs, _ = self._snapshot()
         return header, blobs
@@ -386,7 +403,9 @@ class ShelfRestockEvalServer:
                 positions = tuple(
                     now + step for now, step in zip(measured, positions, strict=True)
                 )
-            commands.append((side, positions, _decode_gripper_target(gripper)))
+            commands.append((
+                side, positions, _decode_gripper_target(gripper, episode.gripper_encoding),
+            ))
 
         episode.tick_debt += 1.0 / (self._hz * self._port.dt)
         ticks, episode.tick_debt = divmod(episode.tick_debt, 1.0)
@@ -455,7 +474,10 @@ class ShelfRestockEvalServer:
                     episode.infeasible_steps += 1
                     episode.last_infeasible = str(failure)
             held[side] = infeasible
-            commands.append((side, now, joints, _decode_gripper_target(block[7])))
+            commands.append((
+                side, now, joints,
+                _decode_gripper_target(block[7], episode.gripper_encoding),
+            ))
 
         episode.tick_debt += 1.0 / (self._hz * self._port.dt)
         ticks, episode.tick_debt = divmod(episode.tick_debt, 1.0)
@@ -523,7 +545,10 @@ class ShelfRestockEvalServer:
                     episode.infeasible_steps += 1
                     episode.last_infeasible = str(failure)
             held[side] = infeasible
-            commands.append((side, now, joints, _decode_gripper_target(arm.gripper)))
+            commands.append((
+                side, now, joints,
+                _decode_gripper_target(arm.gripper, episode.gripper_encoding),
+            ))
         # Do not integrate a reference the arm was never commanded towards, or
         # the unreachable target is re-requested every step for the rest of the
         # episode and the arm never recovers.
@@ -628,6 +653,7 @@ class ShelfRestockEvalServer:
                         str(message.header["profile"]),
                         int(message.header.get("max_steps", 600)),
                         str(message.header.get("control_space", "cartesian")),
+                        str(message.header.get("gripper_encoding", "measured_aperture")),
                     )
                 elif op == "step":
                     header, blobs = self.step(list(message.header["action"]))

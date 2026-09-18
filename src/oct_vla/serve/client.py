@@ -137,6 +137,7 @@ class ShelfRestockEvalClient:
         seed: int,
         profile: str = "three_object",
         control_space: str = "cartesian",
+        gripper_encoding: str = "measured_aperture",
     ) -> RemoteObservation:
         """Start a fresh scene. Raises if the simulator cannot build that seed.
 
@@ -154,6 +155,7 @@ class ShelfRestockEvalClient:
                     "seed": seed,
                     "profile": profile,
                     "control_space": control_space,
+                    "gripper_encoding": gripper_encoding,
                 }
             )
         )

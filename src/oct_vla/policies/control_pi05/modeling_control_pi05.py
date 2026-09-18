@@ -18,6 +18,7 @@ from lerobot.utils.constants import ACTION, OBS_LANGUAGE_ATTENTION_MASK, OBS_LAN
 from lerobot.utils.import_utils import require_package
 from torch import Tensor
 
+from oct_vla.policies.masked_loss import masked_loss, padded_fraction
 from oct_vla.policies.object_conditioning import (
     ObjectConditionedPolicyMixin,
     ObjectInjectionMixin,
@@ -87,13 +88,16 @@ class ControlPI05Policy(ObjectConditionedPolicyMixin, PI05Policy):
                 states=states,
                 state_masks=state_masks,
             )[:, :, : self.config.output_features[ACTION].shape[0]]
-            loss_dict = {"loss_per_dim": losses.mean(dim=[0, 1]).detach().cpu().numpy().tolist()}
-            if reduction == "none":
-                result = losses.mean(dim=(1, 2))
-                loss_dict["loss"] = result.mean().item()
-                return result, loss_dict
-            result = losses.mean()
-            loss_dict["loss"] = result.item()
+            loss_dict = {
+                "loss_per_dim": losses.mean(dim=[0, 1]).detach().cpu().numpy().tolist(),
+                # Logged so a change in clip length shows up as a number rather
+                # than as an unexplained shift in the loss.
+                "padded_fraction": padded_fraction(batch),
+            }
+            result = masked_loss(losses, batch, reduction)
+            loss_dict["loss"] = (
+                result.mean().item() if reduction == "none" else result.item()
+            )
             return result, loss_dict
         finally:
             self.model.clear_object_inputs()
