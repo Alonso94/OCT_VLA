@@ -90,12 +90,31 @@ def main() -> int:
     params = sum(p.numel() for p in policy.parameters())
     ok &= check("policy constructed", True, f"{params / 1e9:.2f}B params")
 
+    # The features and statistics must come from *our* dataset, not the
+    # checkpoint's. A checkpoint trained on another embodiment carries its
+    # action width in both: VLA-JEPA's are 7-d against our 16-d, and the
+    # normalizer then fails inside `2 * (tensor - min) / denom - 1` rather than
+    # anywhere informative. Training applies the same overrides for the same
+    # reason (lerobot_train.py:505-520).
     preprocessor, postprocessor = make_pre_post_processors(
         policy_cfg=config,
         pretrained_path=args.pretrained or None,
+        dataset_stats=metadata.stats,
         preprocessor_overrides={
             "device_processor": {"device": str(policy.config.device)},
             "rename_observations_processor": {"rename_map": rename_map},
+            "normalizer_processor": {
+                "features": {**config.input_features, **config.output_features},
+                "norm_map": config.normalization_mapping,
+                "stats": metadata.stats,
+            },
+        },
+        postprocessor_overrides={
+            "unnormalizer_processor": {
+                "features": config.output_features,
+                "norm_map": config.normalization_mapping,
+                "stats": metadata.stats,
+            },
         },
     )
     ok &= check("processors built", True)
