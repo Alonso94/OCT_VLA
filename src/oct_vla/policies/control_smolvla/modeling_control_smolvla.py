@@ -23,25 +23,27 @@ from torch import Tensor
 
 from oct_vla.policies.object_conditioning import (
     ObjectConditionedPolicyMixin,
-    ObjectInjectionMixin,
+    ObjectConditioning,
 )
 
 from .configuration_control_smolvla import ControlSmolVLAConfig
 
 
-class ControlVLAFlowMatching(ObjectInjectionMixin, VLAFlowMatching):
+class ControlVLAFlowMatching(VLAFlowMatching):
     def __init__(self, config: ControlSmolVLAConfig, rtc_processor=None) -> None:
         super().__init__(config, rtc_processor=rtc_processor)
         # Every suffix projection in SmolVLA is expert_hidden_size wide, and
         # action_in_proj is the one PEFT already targets, so it is the stable
         # place to read that width from.
-        self.init_object_conditioning(config, self.action_in_proj.out_features)
+        self.object_conditioning = ObjectConditioning(
+            config, self.action_in_proj.out_features
+        )
 
     def embed_suffix(self, noisy_actions: Tensor, timestep: Tensor):
         # Three-tuple, unlike π0.5's four. `embs` here is the concatenated
         # action-time embedding, which is exactly what the residual conditions.
         embs, pad_masks, att_masks = super().embed_suffix(noisy_actions, timestep)
-        return self.object_residual(embs), pad_masks, att_masks
+        return self.object_conditioning.residual(embs), pad_masks, att_masks
 
 
 class ControlSmolVLAPolicy(ObjectConditionedPolicyMixin, SmolVLAPolicy):
@@ -60,23 +62,17 @@ class ControlSmolVLAPolicy(ObjectConditionedPolicyMixin, SmolVLAPolicy):
         self.model.to(config.device)
         self.reset()
 
-    def _prepare_pretrained_state_dict(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        return self._add_object_state_defaults(super()._prepare_pretrained_state_dict(state_dict))
-
     @torch.no_grad()
     def predict_action_chunk(self, batch: dict[str, Tensor], **kwargs: Any) -> Tensor:
         self._set_object_inputs(batch)
         try:
             return super().predict_action_chunk(batch, **kwargs)
         finally:
-            self.model.clear_object_inputs()
+            self._clear_object_inputs()
 
     def forward(self, batch: dict[str, Tensor], **kwargs: Any):
         self._set_object_inputs(batch)
         try:
             return super().forward(batch, **kwargs)
         finally:
-            self.model.clear_object_inputs()
-
-    def _get_default_peft_targets(self) -> dict[str, Any]:
-        return self._add_object_peft_targets(super()._get_default_peft_targets())
+            self._clear_object_inputs()

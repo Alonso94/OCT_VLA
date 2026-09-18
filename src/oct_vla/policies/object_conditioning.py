@@ -1,18 +1,34 @@
-"""Backbone-independent half of the object-conditioned policies.
+"""ControlVLA object conditioning, as one module any backbone can mount.
 
-π0.5 and SmolVLA differ only in where the residual is injected: both expose an
-``embed_suffix`` that builds the action tokens, but π0.5 returns four values
-and SmolVLA three. Everything else -- how tokens are summarised, how the
-ablation modes are applied, which parameters PEFT must save -- is identical,
-and lives here so the two arms cannot quietly diverge into measuring different
-things.
+The mechanism is a zero-initialised broadcast residual on already-embedded
+action tokens::
 
-The zero-initialised injection is the ControlVLA idea: at step 0 the policy is
-exactly its pretrained self, and any deviation from that is evidence the object
-tokens are being used. That is why ``object_injection`` starts at zero and why
-its weight is the thing to check after a smoke run -- ``batch.get()`` returns
-``None`` for a missing key rather than raising, so a healthy loss curve does not
-prove the conditioning is live.
+    action_emb + injection(pool(object_tokens))
+
+Nothing about the host's attention mask, position ids or sequence length
+changes, which is why it ports cheaply: a backbone needs only *somewhere* that
+produces ``[B, chunk, width]`` action embeddings. The zero initialisation is the
+ControlVLA idea and the thing that makes arms comparable -- at step 0 the
+conditioned policy is numerically its pretrained self, so any deviation is
+evidence the tokens are being used.
+
+Everything used to be spread across two mixins that assumed the host lived at
+``self.model``. π0.5 and SmolVLA both happen to satisfy that, so the assumption
+was never tested; X-VLA holds its action embedding at ``model.transformer`` and
+VLA-JEPA at ``model.action_model``. So the mechanism is now a single
+``ObjectConditioning`` module, and the policy side resolves its location from
+one ``object_module_path`` attribute rather than hard-coding ``model``.
+
+Mounting it on a new backbone is two lines -- construct with the host's own
+width, and wrap the action embedding::
+
+    self.object_conditioning = ObjectConditioning(config, width)
+    ...
+    return self.object_conditioning.residual(action_emb), *rest
+
+The failure this guards against is silent: ``batch.get()`` returns ``None`` for
+a missing key rather than raising, so a healthy loss curve does not prove the
+conditioning is live. Check ``injection.weight`` has left zero after a smoke run.
 """
 
 from __future__ import annotations
@@ -33,12 +49,43 @@ def batched(value: Tensor | None, *, unbatched_ndim: int) -> Tensor | None:
     through the pipeline untouched. During training that is invisible, because
     the dataloader has already collated a batch. At inference there is no
     dataloader: `observation.state` arrives as [1, 16] while the tokens are
-    still [8, 15], and `ObjectExpert` rejects the rank-2 tensor outright. So
-    the policy would train happily and then die on its first eval step.
+    still [8, 15], and the pooler rejects the rank-2 tensor outright. So the
+    policy would train happily and then die on its first eval step.
     """
     if value is None or value.ndim != unbatched_ndim:
         return value
     return value.unsqueeze(0)
+
+
+class ObjectConditioningError(RuntimeError):
+    """A backbone is wired to its conditioning module incorrectly.
+
+    Deliberately *not* an AttributeError. `nn.Module.__getattr__` catches those
+    and re-raises its own generic message, so an AttributeError from inside a
+    property on a policy surfaces as "'Policy' object has no attribute
+    'object_conditioning'" -- discarding exactly the detail that says which path
+    component was wrong.
+    """
+
+
+def resolve_module(root: nn.Module, path: str) -> nn.Module:
+    """Walk a dotted attribute path, naming what was missing if it breaks.
+
+    A plain `getattr` chain would report `'PI05Pytorch' object has no attribute
+    'action_model'` without saying which policy or which path produced it, and
+    the paths differ per backbone precisely because this is the part that moves.
+    """
+    node = root
+    parts = path.split(".")
+    for index, attribute in enumerate(parts):
+        if not hasattr(node, attribute):
+            walked = ".".join(parts[:index]) or "<policy>"
+            raise ObjectConditioningError(
+                f"object_module_path {path!r} is wrong for "
+                f"{type(root).__name__}: {walked} has no attribute {attribute!r}"
+            )
+        node = getattr(node, attribute)
+    return node
 
 
 class ObjectTokenConfigMixin:
@@ -51,7 +98,7 @@ class ObjectTokenConfigMixin:
 
     @property
     def effective_object_token_dim(self) -> int:
-        """Width the ObjectExpert projects, after the mode's ablation.
+        """Width the pooler projects, after the mode's ablation.
 
         Derived rather than configured: a hand-set width that disagreed with
         the mode would surface as a shape error deep inside cross-attention,
@@ -119,38 +166,97 @@ class ObjectExpert(nn.Module):
         return self.output_norm(attended.mean(dim=1))
 
 
-class ObjectInjectionMixin:
-    """The ``nn.Module`` half: owns the expert and the zero-init residual."""
+class ObjectConditioning(nn.Module):
+    """The whole ControlVLA mechanism: pool the tokens, return a zero residual.
 
-    def init_object_conditioning(self, config: Any, width: int) -> None:
-        self.object_expert = ObjectExpert(config, width)
-        self.object_injection = nn.Linear(width, width)
-        nn.init.zeros_(self.object_injection.weight)
-        nn.init.zeros_(self.object_injection.bias)
-        self._object_inputs: tuple[Tensor | None, Tensor | None] | None = None
+    Self-contained on purpose. A host backbone constructs one with its own
+    embedding width and calls `residual` on its action tokens; it needs to know
+    nothing about token modes, padding, batching or PEFT.
 
-    def set_object_inputs(self, tokens: Tensor | None, mask: Tensor | None) -> None:
-        self._object_inputs = (tokens, mask)
+    The per-forward inputs are held on the module rather than threaded through
+    the host's call signature, because the hosts differ: π0.5's `embed_suffix`
+    returns four values and SmolVLA's three, X-VLA's hook is a `forward` two
+    levels down. `ObjectConditionedPolicyMixin` sets and clears them around each
+    forward pass, and `clear` is called in a `finally` so a raised exception
+    cannot leave one batch's tokens attached to the next.
+    """
 
-    def clear_object_inputs(self) -> None:
-        self._object_inputs = None
+    def __init__(self, config: Any, width: int) -> None:
+        super().__init__()
+        self.width = width
+        self.expert = ObjectExpert(config, width)
+        self.injection = nn.Linear(width, width)
+        # Zero, not small-random: this is what makes the conditioned policy
+        # numerically identical to its pretrained self at step 0.
+        nn.init.zeros_(self.injection.weight)
+        nn.init.zeros_(self.injection.bias)
+        self._inputs: tuple[Tensor | None, Tensor | None] | None = None
 
-    def object_residual(self, action_emb: Tensor) -> Tensor:
+    def set_inputs(self, tokens: Tensor | None, mask: Tensor | None) -> None:
+        self._inputs = (tokens, mask)
+
+    def clear(self) -> None:
+        self._inputs = None
+
+    @property
+    def is_live(self) -> bool:
+        """True once the injection has moved off its zero initialisation.
+
+        The check worth running after a smoke run: a missing token key yields
+        `None` rather than an error, so the loss falls either way.
+        """
+        return bool(self.injection.weight.any().item())
+
+    def residual(self, action_emb: Tensor) -> Tensor:
         """Add the object context to already-embedded action tokens.
 
         Broadcast over the chunk axis: the scene summary conditions the whole
-        action chunk, not one step of it.
+        action chunk, not one step of it. A no-op when no tokens are set, so a
+        host can be conditioned and unconditioned by the same code path.
         """
-        if self._object_inputs is None:
+        if self._inputs is None:
             return action_emb
-        context = self.object_expert(*self._object_inputs)
+        context = self.expert(*self._inputs)
         if context is None:
             return action_emb
-        return action_emb + self.object_injection(context).unsqueeze(1)
+        return action_emb + self.injection(context).unsqueeze(1)
 
 
 class ObjectConditionedPolicyMixin:
-    """The policy half: feeds the batch in, and keeps PEFT from dropping it."""
+    """The policy half: feeds the batch in, and keeps PEFT from dropping it.
+
+    `object_module_path` is the one thing a new backbone overrides. Everything
+    that needs to name the conditioning module -- the per-forward plumbing, the
+    state-dict defaults, the PEFT `modules_to_save` -- derives from it, so a
+    backbone that mounts the module somewhere other than `self.model` cannot end
+    up half-wired.
+    """
+
+    #: Dotted path from the policy to the module owning `ObjectConditioning`.
+    #: π0.5 and SmolVLA embed actions in `self.model`; X-VLA does it in
+    #: `model.transformer`, VLA-JEPA in `model.action_model`.
+    object_module_path: str = "model"
+
+    #: Attribute name the host mounts the module under. Declared rather than
+    #: assumed so the state-dict prefix and the PEFT target agree with wherever
+    #: a backbone actually put it.
+    object_module_attr: str = "object_conditioning"
+
+    @property
+    def object_conditioning(self) -> ObjectConditioning:
+        host = resolve_module(self, self.object_module_path)
+        module = getattr(host, self.object_module_attr, None)
+        if not isinstance(module, ObjectConditioning):
+            raise ObjectConditioningError(
+                f"{self.object_module_path}.{self.object_module_attr} is "
+                f"{type(module).__name__}, not ObjectConditioning. The host module "
+                "must construct one in its __init__."
+            )
+        return module
+
+    @property
+    def _object_state_prefix(self) -> str:
+        return f"{self.object_module_path}.{self.object_module_attr}."
 
     def _set_object_inputs(self, batch: dict[str, Tensor]) -> None:
         # The single place tokens enter the model, so the arm's ablation is
@@ -165,17 +271,56 @@ class ObjectConditionedPolicyMixin:
             # apply_token_mode then falls back to per-frame position sorting.
             rank=batched(batch.get(self.config.object_token_rank_key), unbatched_ndim=1),
         )
-        self.model.set_object_inputs(tokens, mask)
+        self.object_conditioning.set_inputs(tokens, mask)
+
+    def _clear_object_inputs(self) -> None:
+        self.object_conditioning.clear()
+
+    def _prepare_pretrained_state_dict(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
+        """Chain to the backbone's hook if it has one, then add our defaults.
+
+        Defined here rather than in each plugin because the hook is *not*
+        universal: `PI05Policy` defines it, `SmolVLAPolicy` and
+        `PreTrainedPolicy` do not. The SmolVLA plugin used to call
+        `super()._prepare_pretrained_state_dict(...)` unconditionally, which was
+        dead code -- so its object parameters were never defaulted into a
+        pretrained load, and the arm would have trained with the object path
+        pinned at its zero init while the loss fell normally.
+
+        Probing with `getattr` makes that impossible to reintroduce, and means a
+        new backbone works whether or not it happens to define the hook.
+        """
+        parent = getattr(super(), "_prepare_pretrained_state_dict", None)
+        if parent is not None:
+            state_dict = parent(state_dict)
+        return self._add_object_state_defaults(state_dict)
+
+    def _get_default_peft_targets(self) -> dict[str, Any]:
+        """Same reasoning: only four LeRobot policies define this hook.
+
+        X-VLA and VLA-JEPA do not, so chaining unconditionally would raise for
+        exactly the backbones this refactor exists to support.
+        """
+        parent = getattr(super(), "_get_default_peft_targets", None)
+        targets = parent() if parent is not None else None
+        return self._add_object_peft_targets(dict(targets or {}))
 
     def _add_object_state_defaults(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         """Keep freshly initialised object parameters when loading base weights.
 
-        The pretrained backbone has no object expert, so without this the
+        The pretrained backbone has no conditioning module, so without this the
         checkpoint load would either fail on missing keys or leave them
         uninitialised.
+
+        Applied unconditionally by `ObjectConditionedPolicyMixin`, not by
+        chaining to a backbone hook. `PI05Policy` happens to define
+        `_prepare_pretrained_state_dict`; `SmolVLAPolicy` does not, and calling
+        `super()` on a hook only one parent has is how the SmolVLA arm ended up
+        never defaulting its object parameters at all.
         """
+        prefix = self._object_state_prefix
         for key, value in self.state_dict().items():
-            if key.startswith(("model.object_expert.", "model.object_injection.")):
+            if key.startswith(prefix):
                 state_dict.setdefault(key, value)
         return state_dict
 
@@ -189,7 +334,6 @@ class ObjectConditionedPolicyMixin:
         object path never moves off its zero init.
         """
         targets["modules_to_save"] = list(targets.get("modules_to_save", [])) + [
-            "model.object_expert",
-            "model.object_injection",
+            self._object_state_prefix.rstrip(".")
         ]
         return targets

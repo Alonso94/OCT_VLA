@@ -21,24 +21,37 @@ from torch import Tensor
 from oct_vla.policies.masked_loss import masked_loss, padded_fraction
 from oct_vla.policies.object_conditioning import (
     ObjectConditionedPolicyMixin,
-    ObjectInjectionMixin,
+    ObjectConditioning,
 )
 
 from .configuration_control_pi05 import ControlPI05Config
 
 
-class ControlPI05Pytorch(ObjectInjectionMixin, PI05Pytorch):
+class ControlPI05Pytorch(PI05Pytorch):
+    """π0.5 with the conditioning module mounted on its action embedding.
+
+    The width comes from the projection rather than the config: it is the
+    action expert's width, which the config expresses only as a variant name.
+    """
+
     def __init__(self, config: ControlPI05Config, rtc_processor=None) -> None:
         super().__init__(config, rtc_processor=rtc_processor)
-        self.init_object_conditioning(config, self.action_in_proj.out_features)
+        self.object_conditioning = ObjectConditioning(
+            config, self.action_in_proj.out_features
+        )
 
     def embed_suffix(self, noisy_actions: Tensor, timestep: Tensor):
-        # π0.5 returns four values; SmolVLA's analogue returns three. That
-        # difference is the only reason these two plugins are separate files.
+        # π0.5 returns four values here; SmolVLA's analogue returns three. That
+        # arity is now the only difference between the two plugins.
         action_emb, pad_masks, att_masks, adarms_cond = super().embed_suffix(
             noisy_actions, timestep
         )
-        return self.object_residual(action_emb), pad_masks, att_masks, adarms_cond
+        return (
+            self.object_conditioning.residual(action_emb),
+            pad_masks,
+            att_masks,
+            adarms_cond,
+        )
 
 
 class ControlPI05Policy(ObjectConditionedPolicyMixin, PI05Policy):
@@ -60,8 +73,6 @@ class ControlPI05Policy(ObjectConditionedPolicyMixin, PI05Policy):
         self.model.to(config.device)
         self.reset()
 
-    def _prepare_pretrained_state_dict(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
-        return self._add_object_state_defaults(super()._prepare_pretrained_state_dict(state_dict))
 
     @torch.no_grad()
     def predict_action_chunk(self, batch: dict[str, Tensor], **kwargs: Any) -> Tensor:
@@ -69,7 +80,7 @@ class ControlPI05Policy(ObjectConditionedPolicyMixin, PI05Policy):
         try:
             return super().predict_action_chunk(batch, **kwargs)
         finally:
-            self.model.clear_object_inputs()
+            self._clear_object_inputs()
 
     def forward(self, batch: dict[str, Tensor], reduction: str = "mean") -> tuple[Tensor, dict]:
         self._set_object_inputs(batch)
@@ -100,7 +111,4 @@ class ControlPI05Policy(ObjectConditionedPolicyMixin, PI05Policy):
             )
             return result, loss_dict
         finally:
-            self.model.clear_object_inputs()
-
-    def _get_default_peft_targets(self) -> dict[str, Any]:
-        return self._add_object_peft_targets(super()._get_default_peft_targets())
+            self._clear_object_inputs()
