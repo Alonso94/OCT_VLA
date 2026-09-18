@@ -76,10 +76,26 @@ if [ "${EVAL_SHUFFLE_TOKENS:-0}" = "1" ]; then
 fi
 
 cd "$OCTVLA_REPO"
+# The dataset supplies the action width, the control space and the state
+# encoding, so it has to be the one the checkpoint was fit on -- not merely one
+# of the same variant. EVAL_DATASET names it directly; the default reproduces
+# the original three_object_<variant> convention.
+EVAL_DATASET="${EVAL_DATASET:-three_object_${EVAL_VARIANT}}"
+EVAL_DATASET_DIR="$OCTVLA_DATASET_ROOT/$EVAL_DATASET"
+[ -d "$EVAL_DATASET_DIR" ] || { echo "No dataset at $EVAL_DATASET_DIR" >&2; exit 2; }
+# Matches how build_shelf_restock_splits.sbatch names the repo it created; a
+# dataset built under the old convention keeps its three_object- form.
+if [ "$EVAL_DATASET" = "three_object_${EVAL_VARIANT}" ]; then
+  EVAL_REPO_ID="local/oct-vla-shelf-restock-three_object-${EVAL_VARIANT}"
+else
+  EVAL_REPO_ID="local/oct-vla-shelf-restock-${EVAL_DATASET#three_object_}"
+fi
+echo "eval dataset : $EVAL_DATASET_DIR ($EVAL_REPO_ID)"
+
 "$OCTVLA_POLICY_PYTHON" -u -B scripts/eval_shelf_restock_policy.py \
   --checkpoint "$EVAL_CHECKPOINT" \
-  --dataset-root "$OCTVLA_DATASET_ROOT/three_object_${EVAL_VARIANT}" \
-  --repo-id "local/oct-vla-shelf-restock-three_object-${EVAL_VARIANT}" \
+  --dataset-root "$EVAL_DATASET_DIR" \
+  --repo-id "$EVAL_REPO_ID" \
   --host 127.0.0.1 --port "$EVAL_PORT" \
   --profiles "${EVAL_PROFILES:-two_object,three_object,four_object}" \
   --seeds "$EVAL_SEEDS" \
