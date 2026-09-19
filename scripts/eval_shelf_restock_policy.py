@@ -360,8 +360,14 @@ def main() -> int:
         control_space = str(recorded_space or "cartesian")
         state_encoding = "position"
     width = metadata.features["action"]["shape"][0]
-    # A vision-free checkpoint declares environment_state and no image features.
-    privileged = "observation.environment_state" in metadata.features
+    # Whether to build observation.environment_state at all. Not the same as
+    # "vision-free": a dataset can carry both the cameras and the flattened
+    # object tokens, which is the RGB + objects arm. The builder writes the
+    # camera tensors either way and the policy's own config decides what it
+    # reads, so this only has to answer "is environment_state expected".
+    env_state = "observation.environment_state" in metadata.features
+    privileged = env_state
+    has_cameras = any(k.startswith("observation.images.") for k in metadata.features)
     visual_norm = str((config.normalization_mapping or {}).get("VISUAL", "IDENTITY"))
     # Never uint8, whatever the normalization mapping says. Training converts
     # every camera key to float32/255 for *every* policy before the processor
@@ -380,7 +386,8 @@ def main() -> int:
     print(
         f"control space: {control_space} (action width {width}) "
         f"state: {state_encoding} (width {state_width}) gripper: {gripper_encoding} "
-        f"privileged={privileged} visual_norm={visual_norm} uint8_images={uint8_images}"
+        f"env_state={env_state} cameras={has_cameras} "
+        f"visual_norm={visual_norm} uint8_images={uint8_images}"
     )
     # Applied before make_policy, and that ordering is load-bearing: the policy
     # sizes its action queue from n_action_steps in reset(), and only builds a
