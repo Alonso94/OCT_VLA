@@ -45,6 +45,9 @@ def main() -> int:
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--peft", action="store_true",
                         help="Also wrap with LoRA and check the targets attach.")
+    parser.add_argument("--injection-mode", default="",
+                        help="Override config.object_injection_mode "
+                             "(controlvla or pooled) before the policy is built.")
     args = parser.parse_args()
 
     import torch
@@ -83,6 +86,13 @@ def main() -> int:
     # X-VLA's config.json is a transformers-style one carrying `model_type`
     # rather than `type`, so `PreTrainedConfig.from_pretrained` refuses it.
     config = PreTrainedConfig._choice_registry[args.policy_type]()
+    if args.injection_mode:
+        if not hasattr(config, "object_injection_mode"):
+            print(f"  [FAIL] {args.policy_type} has no object_injection_mode")
+            return 1
+        config.object_injection_mode = args.injection_mode
+        config.validate_object_tokens()
+        print(f"           : injection mode {args.injection_mode}")
     if args.pretrained:
         config.pretrained_path = args.pretrained
 
@@ -141,7 +151,8 @@ def main() -> int:
         try:
             conditioning = policy.object_conditioning
             ok &= check("object module reachable", True,
-                        f"at {policy.object_module_path}, width {conditioning.width}")
+                        f"at {policy.object_module_path}, width {conditioning.width}, "
+                        f"mode {conditioning.mode}")
             ok &= check("object residual starts at zero", not conditioning.is_live)
         except Exception as error:  # noqa: BLE001 - reported, not raised
             ok &= check("object module reachable", False, str(error))

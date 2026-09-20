@@ -85,6 +85,19 @@ esac
 # third variant with a dataset of its own.
 OBJECT_TOKEN_MODE="${OBJECT_TOKEN_MODE:-full}"
 case "$OBJECT_TOKEN_MODE" in full|role_stripped) ;; *) echo "Invalid OBJECT_TOKEN_MODE" >&2; exit 2 ;; esac
+
+# How the object set reaches the action stream. "controlvla" is the published
+# dual-attention injection over the unpooled set; "pooled" is the weaker
+# broadcast residual every arm recorded before 2026-09-20 used, kept so the two
+# can be compared directly rather than across a code change.
+OBJECT_INJECTION_MODE="${OBJECT_INJECTION_MODE:-controlvla}"
+case "$OBJECT_INJECTION_MODE" in controlvla|pooled) ;; *) echo "Invalid OBJECT_INJECTION_MODE" >&2; exit 2 ;; esac
+
+# A learned code across entity slots. Off keeps the encoder
+# permutation-invariant; on makes it order-sensitive, which is the only setting
+# in which the shuffled-token evaluation control measures anything.
+OBJECT_ENTITY_POSITIONAL="${OBJECT_ENTITY_POSITIONAL:-false}"
+case "$OBJECT_ENTITY_POSITIONAL" in true|false) ;; *) echo "OBJECT_ENTITY_POSITIONAL must be true or false" >&2; exit 2 ;; esac
 if [ "$TRAIN_VARIANT" = "rgb" ] && [ "$OBJECT_TOKEN_MODE" != "full" ]; then
   echo "OBJECT_TOKEN_MODE=$OBJECT_TOKEN_MODE is meaningless for TRAIN_VARIANT=rgb" >&2
   exit 2
@@ -133,6 +146,8 @@ if [ "$TRAIN_VARIANT" = "object" ]; then
     --policy.type="$OBJECT_POLICY_TYPE"
     --policy.discover_packages_path=oct_vla.policies
     --policy.object_token_mode="$OBJECT_TOKEN_MODE"
+    --policy.object_injection_mode="$OBJECT_INJECTION_MODE"
+    --policy.object_entity_positional="$OBJECT_ENTITY_POSITIONAL"
   )
   [ -n "$BASE_MODEL" ] && POLICY_ARGS+=(--policy.pretrained_path="$BASE_MODEL")
 elif [ -z "$BASE_MODEL" ]; then
@@ -165,6 +180,15 @@ fi
 # and aggregation has nothing to group by. Job id goes in run_metadata.json
 # below instead, where it is still available but is not the identity.
 RUN_NAME="${BACKBONE}_${TRAIN_VARIANT}_${OBJECT_TOKEN_MODE}_s${TRAIN_SEED}"
+if [ "$TRAIN_VARIANT" = "object" ]; then
+  # Only for object arms, and only when it is not the default, so every
+  # directory written before this knob existed keeps its name.
+  [ "$OBJECT_INJECTION_MODE" != "controlvla" ] && RUN_NAME="${RUN_NAME}_${OBJECT_INJECTION_MODE}"
+  [ "$OBJECT_ENTITY_POSITIONAL" = "true" ] && RUN_NAME="${RUN_NAME}_entpos"
+fi
+# TRAIN_TAG distinguishes cells this name cannot -- a different dataset view,
+# most of all, since the action encoding does not appear in the name at all.
+[ -n "${TRAIN_TAG:-}" ] && RUN_NAME="${RUN_NAME}_${TRAIN_TAG}"
 OUTPUT="$OCTVLA_OUTPUT_ROOT/$RUN_NAME"
 # Refuse to touch an existing cell rather than resuming or overwriting it.
 # Two runs of one cell silently sharing a directory is the failure that would

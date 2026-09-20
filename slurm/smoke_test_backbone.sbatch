@@ -34,6 +34,7 @@ ARGS=(
 )
 if [ -n "${SMOKE_PRETRAINED:-}" ]; then ARGS+=(--pretrained "$SMOKE_PRETRAINED"); fi
 if [ "${SMOKE_PEFT:-0}" = "1" ]; then ARGS+=(--peft); fi
+if [ -n "${SMOKE_INJECTION_MODE:-}" ]; then ARGS+=(--injection-mode "$SMOKE_INJECTION_MODE"); fi
 
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 srun "$OCTVLA_POLICY_PYTHON" -u -B "$OCTVLA_REPO/scripts/smoke_test_backbone.py" "${ARGS[@]}"
