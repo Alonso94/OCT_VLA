@@ -281,6 +281,33 @@ class ObjectConditionedPolicyMixin:
     def _object_state_prefix(self) -> str:
         return f"{self.object_module_path}.{self.object_module_attr}."
 
+    def select_action(self, batch: dict[str, Tensor], **kwargs: Any) -> Tensor:
+        """Condition the closed-loop path too, whatever route the backbone takes.
+
+        Each plugin wraps `forward` and `predict_action_chunk`, which is enough
+        only if `select_action` reaches the network through one of them. π0.5
+        and GR00T do -- both call `self.predict_action_chunk`, so the override
+        runs. **SmolVLA does not**: its `select_action` calls
+        `self._get_action_chunk` directly, skipping `predict_action_chunk`
+        entirely, so `_inputs` stayed None and `residual` returned the action
+        embedding untouched.
+
+        That arm would have trained *with* conditioning and evaluated
+        *without* it, silently -- the training loss falls normally and the
+        rollout is simply the unconditioned policy's, which is indistinguishable
+        from "object conditioning did not help". Wrapping here rather than in
+        each plugin means a backbone's internal routing cannot reintroduce it.
+
+        Setting the inputs twice is harmless: the backbones that do route
+        through `predict_action_chunk` re-set the same tensors, and the inner
+        `finally` clears only after the forward that used them.
+        """
+        self._set_object_inputs(batch)
+        try:
+            return super().select_action(batch, **kwargs)
+        finally:
+            self._clear_object_inputs()
+
     def _set_object_inputs(self, batch: dict[str, Tensor]) -> None:
         # The single place tokens enter the model, so the arm's ablation is
         # applied here: training and evaluation then cannot disagree about the

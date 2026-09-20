@@ -236,3 +236,69 @@ def test_a_backbone_default_wins_over_the_config_declaration():
             self.model = Host()
 
     assert Policy()._get_default_peft_targets()["target_modules"] == "backbone_default"
+
+
+# ------------------------------------------- the closed-loop path is wrapped
+
+
+def test_select_action_conditions_even_when_it_skips_predict_action_chunk():
+    """SmolVLA's `select_action` calls `_get_action_chunk` directly rather than
+    `predict_action_chunk`, so wrapping only the latter left that arm training
+    *with* conditioning and evaluating *without* it -- silently, because the
+    training loss falls normally and the rollout is simply the unconditioned
+    policy's. This pins the wrap at the mixin, where a backbone's internal
+    routing cannot route around it."""
+    seen = {}
+
+    class Backbone(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.model = Host()
+
+        def select_action(self, batch, **kwargs):
+            # Stands in for the backbone reaching the network by its own route.
+            seen["inputs"] = self.model.object_conditioning._inputs
+            return torch.zeros(1, 1)
+
+    class Policy(ObjectConditionedPolicyMixin, Backbone):
+        object_module_path = "model"
+
+        def __init__(self):
+            super().__init__()
+            self.config = Config()
+
+    policy = Policy()
+    tokens = torch.randn(2, 8, 15)
+    mask = torch.ones(2, 8)
+    policy.select_action({
+        "observation.object_tokens": tokens,
+        "observation.object_token_mask": mask,
+    })
+    assert seen["inputs"] is not None, "select_action reached the backbone unconditioned"
+    assert seen["inputs"][0].shape == tokens.shape
+    # Cleared afterwards, so one step's tokens cannot leak into the next.
+    assert policy.object_conditioning._inputs is None
+
+
+def test_select_action_clears_its_inputs_when_the_backbone_raises():
+    """A raised exception must not leave one observation's tokens attached to
+    the next, or a recovered episode silently conditions on a stale scene."""
+    class Backbone(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.model = Host()
+
+        def select_action(self, batch, **kwargs):
+            raise RuntimeError("backbone failed")
+
+    class Policy(ObjectConditionedPolicyMixin, Backbone):
+        object_module_path = "model"
+
+        def __init__(self):
+            super().__init__()
+            self.config = Config()
+
+    policy = Policy()
+    with pytest.raises(RuntimeError, match="backbone failed"):
+        policy.select_action({"observation.object_tokens": torch.randn(2, 8, 15)})
+    assert policy.object_conditioning._inputs is None
