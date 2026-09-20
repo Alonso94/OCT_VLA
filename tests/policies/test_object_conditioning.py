@@ -302,3 +302,119 @@ def test_select_action_clears_its_inputs_when_the_backbone_raises():
     with pytest.raises(RuntimeError, match="backbone failed"):
         policy.select_action({"observation.object_tokens": torch.randn(2, 8, 15)})
     assert policy.object_conditioning._inputs is None
+
+
+# ------------------------------------------------- the published ControlVLA
+
+
+class ControlVLAConfig(Config):
+    object_injection_mode = "controlvla"
+    object_entity_positional = False
+    object_max_entities = 16
+
+
+def controlvla(width=64, **overrides):
+    cfg = ControlVLAConfig()
+    for key, value in overrides.items():
+        setattr(cfg, key, value)
+    return ObjectConditioning(cfg, width)
+
+
+def make_live(oc):
+    """Move the zero-initialised KV projections off zero, as training would."""
+    with torch.no_grad():
+        oc.attention.to_k.weight.normal_(std=0.5)
+        oc.attention.to_v.weight.normal_(std=0.5)
+    return oc
+
+
+def test_controlvla_zero_init_is_identity():
+    """The paper's guarantee: zero-initialised K_z and V_z make the conditioned
+    policy numerically its pretrained self at step 0."""
+    oc = controlvla()
+    emb = torch.randn(2, 10, 64)
+    oc.set_inputs(torch.randn(2, 8, 15), torch.ones(2, 8))
+    assert torch.equal(oc.residual(emb), emb)
+    assert not oc.is_live
+
+
+def test_controlvla_conditions_each_action_token_separately():
+    """The property the pooled mode structurally cannot have. ControlVLA's added
+    term is softmax(QK_z)V_z, so action token i computes its own weights over the
+    objects; the pooled residual adds one identical bias to every token, which
+    means it cannot attend to the grasp object and the place target at different
+    points in the same chunk."""
+    emb = torch.randn(2, 10, 64)
+    tokens, mask = torch.randn(2, 8, 15), torch.ones(2, 8)
+
+    oc = make_live(controlvla())
+    oc.set_inputs(tokens, mask)
+    delta = oc.residual(emb) - emb
+    spread = (delta - delta.mean(dim=1, keepdim=True)).abs().max().item()
+    assert spread > 1e-3, "controlvla added the same vector to every action token"
+
+    pooled = conditioning()
+    with torch.no_grad():
+        pooled.injection.weight.normal_(std=0.5)
+    pooled.set_inputs(tokens, mask)
+    pooled_delta = pooled.residual(emb) - emb
+    assert torch.allclose(
+        pooled_delta, pooled_delta.mean(dim=1, keepdim=True), atol=1e-5
+    ), "the pooled mode is supposed to be a broadcast bias; this test is stale"
+
+
+def test_controlvla_masks_padding_and_survives_an_empty_scene():
+    """Five of eight slots are empty in a three_object scene. Unmasked, the
+    encoder attends to zero rows as though they were objects; all-masked, the
+    softmax divides by zero and NaN poisons the batch."""
+    oc = make_live(controlvla())
+    emb = torch.randn(2, 6, 64)
+    tokens = torch.randn(2, 8, 15)
+    present = torch.zeros(2, 8)
+    present[:, :3] = 1
+
+    oc.set_inputs(tokens, present)
+    masked = oc.residual(emb)
+    # Padding rows must not affect the result: change them and nothing moves.
+    scrambled = tokens.clone()
+    scrambled[:, 3:] = torch.randn_like(scrambled[:, 3:]) * 10
+    oc.set_inputs(scrambled, present)
+    assert torch.allclose(masked, oc.residual(emb), atol=1e-5)
+
+    oc.set_inputs(tokens, torch.zeros(2, 8))
+    assert torch.isfinite(oc.residual(emb)).all(), "an empty scene produced NaN"
+
+
+def test_entity_positional_is_what_makes_the_shuffle_control_valid():
+    """Off by default the encoder is permutation-invariant, which is why the
+    shuffled-token control has been a no-op. The flag is the fix, and it is
+    opt-in so the production arms stay invariant."""
+    emb = torch.randn(2, 10, 64)
+    tokens, mask = torch.randn(2, 8, 15), torch.ones(2, 8)
+    order = torch.randperm(8)
+
+    invariant = make_live(controlvla())
+    invariant.set_inputs(tokens, mask)
+    before = invariant.residual(emb)
+    invariant.set_inputs(tokens[:, order], mask[:, order])
+    assert torch.allclose(before, invariant.residual(emb), atol=1e-5)
+
+    ordered = make_live(controlvla(object_entity_positional=True))
+    with torch.no_grad():
+        ordered.embedding.entity_code.normal_(std=0.5)
+    ordered.set_inputs(tokens, mask)
+    before = ordered.residual(emb)
+    ordered.set_inputs(tokens[:, order], mask[:, order])
+    assert not torch.allclose(before, ordered.residual(emb), atol=1e-5)
+
+
+def test_an_unknown_injection_mode_is_refused():
+    with pytest.raises(ValueError, match="object_injection_mode"):
+        controlvla(object_injection_mode="dual_attention")
+
+
+def test_heads_must_divide_the_host_width():
+    """A backbone whose width is not a multiple of the head count would
+    otherwise fail inside a reshape, far from the cause."""
+    with pytest.raises(ValueError, match="does not divide"):
+        controlvla(width=100)

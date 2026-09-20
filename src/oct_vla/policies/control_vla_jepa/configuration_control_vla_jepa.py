@@ -34,6 +34,16 @@ class ControlVLAJEPAConfig(ObjectTokenConfigMixin, VLAJEPAConfig):
     object_token_mode: str = "full"
     #: Evaluation-only control: permute tokens across objects.
     object_token_shuffle: bool = False
+    #: "controlvla" for the published dual-attention injection over the
+    #: unpooled object set; "pooled" for the weaker broadcast residual every
+    #: result recorded before 2026-09-20 was measured with.
+    object_injection_mode: str = "controlvla"
+    #: Learned code across entity slots. Off keeps the encoder
+    #: permutation-invariant; on makes it order-sensitive, which is what the
+    #: shuffled-token control needs in order to measure anything.
+    object_entity_positional: bool = False
+    object_max_entities: int = 16
+    #: Used by the "pooled" mode only.
     object_queries: int = 4
     object_attention_heads: int = 8
 

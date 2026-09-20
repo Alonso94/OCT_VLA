@@ -1,26 +1,42 @@
-"""ControlVLA object conditioning, as one module any backbone can mount.
+"""Object conditioning, as one module any backbone can mount.
 
-The mechanism is a zero-initialised broadcast residual on already-embedded
-action tokens::
+Two mechanisms, selected by ``config.object_injection_mode``.
 
-    action_emb + injection(pool(object_tokens))
+``"controlvla"`` is the published method (arXiv:2506.16211, eq. for the
+dual-attention block). The object set is kept *unpooled* and enters as a second
+attention term beside the block's existing one::
 
-Nothing about the host's attention mask, position ids or sequence length
-changes, which is why it ports cheaply: a backbone needs only *somewhere* that
-produces ``[B, chunk, width]`` action embeddings. The zero initialisation is the
-ControlVLA idea and the thing that makes arms comparable -- at step 0 the
-conditioned policy is numerically its pretrained self, so any deviation is
-evidence the tokens are being used.
+    softmax(QKᵀ/√d)V + softmax(QK_zᵀ/√d)V_z
 
-Everything used to be spread across two mixins that assumed the host lived at
-``self.model``. π0.5 and SmolVLA both happen to satisfy that, so the assumption
-was never tested; X-VLA holds its action embedding at ``model.transformer`` and
-VLA-JEPA at ``model.action_model``. So the mechanism is now a single
-``ObjectConditioning`` module, and the policy side resolves its location from
-one ``object_module_path`` attribute rather than hard-coding ``model``.
+with ``K_z = W_z·Z + B_z`` and ``V_z`` **zero-initialised**, which is what makes
+the conditioned policy numerically its pretrained self at step 0. The property
+that matters is that the added term is *content-dependent*: action token ``i`` at
+chunk step ``t`` computes its own weights over the objects, so the policy can
+attend to different objects at different points in the trajectory -- which is
+what a pick-then-place task needs.
 
-Mounting it on a new backbone is two lines -- construct with the host's own
-width, and wrap the action embedding::
+``"pooled"`` is what this module did before, kept because every result recorded
+so far used it and re-reading those checkpoints must stay possible::
+
+    action_emb + injection(pool(Z))
+
+It collapses the object set to one vector and adds the *same* bias to every
+action token. That is strictly weaker, and it is why the shuffled-token control
+is a no-op: the set is destroyed before it ever meets the action stream, so
+there is no per-object structure left to scramble. It is a reasonable ablation
+-- "does a global scene summary suffice?" -- but it is not ControlVLA, and this
+module used to say it was.
+
+Both modes preserve the zero-init guarantee, so arms stay comparable.
+
+``object_entity_positional`` adds a learned code across entity slots. Off by
+default, which keeps the encoder permutation-invariant. Turning it on makes it
+order-sensitive *on purpose*: that is the valid permutation control this project
+has lacked, borrowed from the Alfa-d entity encoders, where the same flag exists
+for the same diagnostic.
+
+Mounting on a new backbone is two lines -- construct with the host's own width,
+and wrap the action embedding::
 
     self.object_conditioning = ObjectConditioning(config, width)
     ...
@@ -28,7 +44,7 @@ width, and wrap the action embedding::
 
 The failure this guards against is silent: ``batch.get()`` returns ``None`` for
 a missing key rather than raising, so a healthy loss curve does not prove the
-conditioning is live. Check ``injection.weight`` has left zero after a smoke run.
+conditioning is live. Check ``is_live`` after a smoke run.
 """
 
 from __future__ import annotations
@@ -39,6 +55,12 @@ import torch
 from torch import Tensor, nn
 
 from oct_vla.data.token_transforms import TOKEN_MODES, apply_token_mode, token_dim_for_mode
+
+#: How the object set reaches the action stream. "controlvla" is the published
+#: method -- an unpooled second attention term with zero-init KV projections.
+#: "pooled" is the weaker broadcast residual every result so far was measured
+#: with, kept so those checkpoints stay loadable.
+INJECTION_MODES = ("controlvla", "pooled")
 
 
 def batched(value: Tensor | None, *, unbatched_ndim: int) -> Tensor | None:
@@ -107,6 +129,27 @@ class ObjectTokenConfigMixin:
         return token_dim_for_mode(self.object_token_dim, self.object_token_mode)
 
     def validate_object_tokens(self) -> None:
+        mode = getattr(self, "object_injection_mode", "pooled")
+        if mode not in INJECTION_MODES:
+            raise ValueError(
+                f"object_injection_mode must be one of {INJECTION_MODES}, got {mode!r}"
+            )
+        if self.object_token_shuffle and not getattr(self, "object_entity_positional", False):
+            # Not an error -- an existing checkpoint may carry both -- but the
+            # combination measures nothing and has already been reported as a
+            # control. Permuting whole token rows cannot change a
+            # permutation-invariant encoder's output, so the "shuffled" arm is
+            # numerically the unshuffled one.
+            import warnings
+
+            warnings.warn(
+                "object_token_shuffle is a no-op without object_entity_positional: "
+                "the object encoder is permutation-invariant, so permuting token "
+                "rows cannot change its output. Set object_entity_positional=True "
+                "to make the shuffled control measure something.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
         if self.object_token_mode not in TOKEN_MODES:
             raise ValueError(
                 f"object_token_mode must be one of {TOKEN_MODES}, got {self.object_token_mode!r}"
@@ -166,6 +209,125 @@ class ObjectExpert(nn.Module):
         return self.output_norm(attended.mean(dim=1))
 
 
+class ObjectTokenEmbedding(nn.Module):
+    """Project the stored tokens to the host's width, and mask the padding.
+
+    Shared by both injection modes so they cannot disagree about what a token
+    is. The padding handling is the part worth stating: a `three_object` scene
+    fills 3 of 8 slots, so five rows are zeros, and a set encoder with no mask
+    attends to them as if they were objects. Alfa-d's entity encoders have
+    exactly this gap -- their vector wrapper zero-pads to the max entity count
+    and no encoder builds a key-padding mask -- which is why it is explicit here.
+    """
+
+    def __init__(self, config: Any, width: int) -> None:
+        super().__init__()
+        self.projection = nn.Sequential(
+            nn.LayerNorm(config.effective_object_token_dim),
+            nn.Linear(config.effective_object_token_dim, width),
+            nn.GELU(),
+        )
+        # Off by default, which keeps the encoder permutation-invariant: the
+        # tokens are a set and nothing distinguishes slot 3 from slot 5 except
+        # its contents. Turning it on makes the encoder order-sensitive on
+        # purpose, which is the only way the shuffled-token control measures
+        # anything -- without it, permuting whole rows cannot change the output.
+        self.entity_positional = bool(getattr(config, "object_entity_positional", False))
+        if self.entity_positional:
+            self.entity_code = nn.Parameter(
+                torch.zeros(1, getattr(config, "object_max_entities", 16), width)
+            )
+
+    def forward(self, tokens: Tensor, mask: Tensor | None) -> tuple[Tensor, Tensor]:
+        """Return `[B, N, width]` memory and a `[B, N]` bool key-padding mask."""
+        if tokens.ndim == 4:
+            tokens = tokens[:, -1]
+        if tokens.ndim != 3:
+            raise ValueError(
+                f"object tokens must be [B,N,D] or [B,T,N,D], got {tuple(tokens.shape)}"
+            )
+        memory = self.projection(tokens)
+        if self.entity_positional:
+            memory = memory + self.entity_code[:, : memory.shape[1]].to(memory.dtype)
+        if mask is None:
+            padding = torch.zeros(tokens.shape[:2], dtype=torch.bool, device=tokens.device)
+        else:
+            if mask.ndim == 3:
+                mask = mask[:, -1]
+            if mask.shape != tokens.shape[:2]:
+                raise ValueError("object token mask must have shape [B,N]")
+            padding = ~mask.bool()
+        # A row masked everywhere makes softmax divide by zero and return NaN,
+        # which then poisons the whole batch. Unmask one slot and zero it, so
+        # the attention reads an explicit "no objects" rather than a NaN.
+        empty = padding.all(dim=1)
+        if empty.any():
+            memory, padding = memory.clone(), padding.clone()
+            memory[empty, 0] = 0
+            padding[empty, 0] = False
+        return memory, padding
+
+
+class ObjectCrossAttention(nn.Module):
+    """ControlVLA's added attention term, over the unpooled object set.
+
+    Implements ``softmax(QK_zᵀ/√d)V_z`` with the key and value projections zero
+    initialised, per arXiv:2506.16211: "We zero-initialize the additional
+    KV-projection layers to ensure the expert policy behaves similarly to the
+    pre-trained general-purpose policy during the early stage of fine-tuning."
+
+    The paper reuses the host block's own Q. We inject at the action-embedding
+    seam rather than inside each block -- the seam is the one thing every
+    backbone here has in common -- so Q is projected from the action embeddings.
+    That keeps the property the pooled mode lacks: every action token computes
+    its own weights over the objects.
+
+    Written out rather than delegated to `nn.MultiheadAttention`, because that
+    module fuses Q, K and V into one packed `in_proj_weight` and zeroing only
+    the K and V thirds of a fused tensor is exactly the kind of thing that looks
+    right and silently is not.
+    """
+
+    def __init__(self, config: Any, width: int) -> None:
+        super().__init__()
+        heads = config.object_attention_heads
+        if width % heads:
+            raise ValueError(
+                f"object_attention_heads={heads} does not divide the host width {width}"
+            )
+        self.heads = heads
+        self.head_dim = width // heads
+        self.query_norm = nn.LayerNorm(width)
+        self.to_q = nn.Linear(width, width, bias=False)
+        self.to_k = nn.Linear(width, width)
+        self.to_v = nn.Linear(width, width)
+        # The zero init, and the whole comparability argument. Both projections,
+        # weight and bias: K_z = W_z·Z + B_z = 0 and V_z = 0.
+        for projection in (self.to_k, self.to_v):
+            nn.init.zeros_(projection.weight)
+            nn.init.zeros_(projection.bias)
+
+    @property
+    def is_live(self) -> bool:
+        return bool(self.to_v.weight.any().item() or self.to_v.bias.any().item())
+
+    def forward(self, action_emb: Tensor, memory: Tensor, padding: Tensor) -> Tensor:
+        batch, steps, _ = action_emb.shape
+        objects = memory.shape[1]
+        memory = memory.to(action_emb.dtype)
+
+        def split(x: Tensor, length: int) -> Tensor:
+            return x.view(batch, length, self.heads, self.head_dim).transpose(1, 2)
+
+        q = split(self.to_q(self.query_norm(action_emb)), steps)
+        k = split(self.to_k(memory), objects)
+        v = split(self.to_v(memory), objects)
+        scores = (q @ k.transpose(-2, -1)) / (self.head_dim ** 0.5)
+        scores = scores.masked_fill(padding[:, None, None, :], float("-inf"))
+        attended = torch.softmax(scores, dim=-1) @ v
+        return attended.transpose(1, 2).reshape(batch, steps, -1)
+
+
 class ObjectConditioning(nn.Module):
     """The whole ControlVLA mechanism: pool the tokens, return a zero residual.
 
@@ -184,12 +346,21 @@ class ObjectConditioning(nn.Module):
     def __init__(self, config: Any, width: int) -> None:
         super().__init__()
         self.width = width
-        self.expert = ObjectExpert(config, width)
-        self.injection = nn.Linear(width, width)
-        # Zero, not small-random: this is what makes the conditioned policy
-        # numerically identical to its pretrained self at step 0.
-        nn.init.zeros_(self.injection.weight)
-        nn.init.zeros_(self.injection.bias)
+        self.mode = getattr(config, "object_injection_mode", "pooled")
+        if self.mode not in INJECTION_MODES:
+            raise ValueError(
+                f"object_injection_mode must be one of {INJECTION_MODES}, got {self.mode!r}"
+            )
+        if self.mode == "controlvla":
+            self.embedding = ObjectTokenEmbedding(config, width)
+            self.attention = ObjectCrossAttention(config, width)
+        else:
+            self.expert = ObjectExpert(config, width)
+            self.injection = nn.Linear(width, width)
+            # Zero, not small-random: this is what makes the conditioned policy
+            # numerically identical to its pretrained self at step 0.
+            nn.init.zeros_(self.injection.weight)
+            nn.init.zeros_(self.injection.bias)
         self._inputs: tuple[Tensor | None, Tensor | None] | None = None
 
     def set_inputs(self, tokens: Tensor | None, mask: Tensor | None) -> None:
@@ -205,18 +376,28 @@ class ObjectConditioning(nn.Module):
         The check worth running after a smoke run: a missing token key yields
         `None` rather than an error, so the loss falls either way.
         """
+        if self.mode == "controlvla":
+            return self.attention.is_live
         return bool(self.injection.weight.any().item())
 
     def residual(self, action_emb: Tensor) -> Tensor:
         """Add the object context to already-embedded action tokens.
 
-        Broadcast over the chunk axis: the scene summary conditions the whole
-        action chunk, not one step of it. A no-op when no tokens are set, so a
-        host can be conditioned and unconditioned by the same code path.
+        In `controlvla` mode each action token attends to the object set on its
+        own, so the conditioning varies along the chunk. In `pooled` mode a
+        single scene summary is broadcast over the chunk axis instead. A no-op
+        when no tokens are set, so a host can be conditioned and unconditioned
+        by the same code path.
         """
         if self._inputs is None:
             return action_emb
-        context = self.expert(*self._inputs)
+        tokens, mask = self._inputs
+        if tokens is None:
+            return action_emb
+        if self.mode == "controlvla":
+            memory, padding = self.embedding(tokens, mask)
+            return action_emb + self.attention(action_emb, memory, padding)
+        context = self.expert(tokens, mask)
         if context is None:
             return action_emb
         return action_emb + self.injection(context).unsqueeze(1)
