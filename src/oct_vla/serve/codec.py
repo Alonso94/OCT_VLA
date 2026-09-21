@@ -81,6 +81,7 @@ def scene_to_json(scene: ObjectScene) -> dict:
                 "visibility": obj.visibility,
                 "confidence": obj.confidence,
                 "support_surface": obj.support_surface,
+                "category": obj.category,
             }
             for obj in scene.objects
         ],
@@ -98,6 +99,9 @@ def scene_from_json(data: dict) -> ObjectScene:
                 visibility=obj["visibility"],
                 confidence=obj["confidence"],
                 support_surface=obj["support_surface"],
+                # `.get`: an older server on the other end of the wire sends no
+                # category, and the client must not fail on that.
+                category=obj.get("category"),
             )
             for obj in data["objects"]
         ),

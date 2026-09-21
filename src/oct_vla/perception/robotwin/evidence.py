@@ -59,6 +59,10 @@ class TrackedActor:
     confidence: float = 1.0
     upright_rotation: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0)
     center_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    #: The RoboTwin asset this actor was built from, e.g. "113_coffee-box".
+    #: Reported as the object's category so a multi-category scene is
+    #: describable; None reproduces the single-asset corpora exactly.
+    category: str | None = None
 
 
 class RoboTwinObjectEvidenceSource:
@@ -85,6 +89,7 @@ class RoboTwinObjectEvidenceSource:
                     visibility=entry.visibility,
                     confidence=entry.confidence,
                     support_surface=entry.support_surface,
+                    category=entry.category,
                 )
             )
         return tuple(evidence)

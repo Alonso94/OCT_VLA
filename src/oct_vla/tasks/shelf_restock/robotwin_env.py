@@ -60,17 +60,43 @@ HEAD_CAMERA_OVERRIDE = {
     "left": [-1, 0, 0],
 }
 
-#: The object being restocked: a real scanned mesh rather than a procedural
-#: box. A box's uniform faces and exact symmetry would make the
+#: The objects being restocked: real scanned meshes rather than procedural
+#: boxes. A box's uniform faces and exact symmetry would make the
 #: object-centric conditioning this research evaluates easier than the real
 #: task, and the policy should see the kind of object it would at deployment.
 #:
-#: Its dimensions are a property of the asset (create_actor overwrites its own
-#: `scale` argument with the value inside model_data<N>.json), so
-#: ObjectVariation's size sampling no longer applies to spawning; the
-#: per-episode size variation is now which of the asset's variants is chosen,
-#: once per episode and shared by every object in it (see `_load_objects`).
-OBJECT_MODEL = "113_coffee-box"
+#: Their dimensions are a property of the asset (create_actor overwrites its
+#: own `scale` argument with the value inside model_data<N>.json), so
+#: ObjectVariation's size sampling does not apply to spawning; size varies by
+#: which asset and which of its variants is chosen.
+#:
+#: Several assets rather than one, sampled *per object*. With a single asset
+#: every object in every scene was a coffee box, so "which object is this" had
+#: no answer beyond its position, and a semantic channel in the object-centric
+#: representation carried exactly zero information -- there was nothing for a
+#: compositional claim to be about except object count. These six share a grasp
+#: affordance, so the oracle's planner should discard at roughly the same rate,
+#: while differing in mesh, size and appearance.
+#: Chosen by measurement, not by name. `MIN_OBJECT_SEPARATION` is 0.15 m
+#: centre-to-centre in x, so what matters is the upright *footprint*, not the
+#: largest extent -- several plausible-sounding boxes are 0.19-0.29 m wide and
+#: would overlap their neighbours, and `037_box` and `042_wooden_box` carry no
+#: `scale` field at all, so `upright_size` raises on them. These six sit inside
+#: the coffee box's envelope (footprint <= 0.115 m, height <= 0.156 m), share
+#: an upright side-grasp affordance, and between them offer 32 mesh variants.
+OBJECT_MODELS = (
+    "113_coffee-box",
+    "112_tea-box",
+    "071_can",
+    "105_sauce-can",
+    "080_pillbottle",
+    "073_rubikscube",
+)
+
+#: Kept as the single-asset default so a corpus can still be collected the old
+#: way, and so every reference to "the" object model resolves to what the
+#: existing corpora hold.
+OBJECT_MODEL = OBJECT_MODELS[0]
 
 
 class ShelfRestockTask(Base_Task):
@@ -120,14 +146,19 @@ class ShelfRestockTask(Base_Task):
         rng = random.Random(self._episode_seed)
 
         self.tracked_objects: dict[str, Any] = {}
-        # One variant for the whole episode, not one per object: a mixed-size
-        # row makes the placement/compaction geometry vary per object for
-        # reasons the policy cannot see, and the per-episode variation this
-        # research wants is pose, not a silent size change mid-row.
-        model_id = rng.choice(available_model_ids(OBJECT_MODEL))
-        size = upright_size(OBJECT_MODEL, model_id)
-        offset = upright_center_offset(OBJECT_MODEL, model_id)
+        # An asset and a variant *per object*, where this used to draw one
+        # variant for the whole episode. The old comment justified that by
+        # saying a mixed-size row "makes the placement/compaction geometry vary
+        # per object for reasons the policy cannot see" -- which was right
+        # while the policy saw only pixels and a pose. An object-centric
+        # representation carries each object's size and category, so the
+        # variation is now observable, and making it observable is the point.
+        models = getattr(self, "object_models", None) or OBJECT_MODELS
         for index, x in enumerate(self._spaced_x_positions(spec, rng)):
+            model = rng.choice(models)
+            model_id = rng.choice(available_model_ids(model))
+            size = upright_size(model, model_id)
+            offset = upright_center_offset(model, model_id)
             sampled = spec.object_variation.sample_pose(0.0, rng)
             yaw = _yaw_of(sampled.orientation)
             orientation = exp((0.0, 0.0, yaw))
@@ -149,19 +180,19 @@ class ShelfRestockTask(Base_Task):
             actor = create_actor(
                 scene=self,
                 pose=_sapien_pose(position, multiply(orientation, UPRIGHT_ROTATION)),
-                modelname=OBJECT_MODEL,
+                modelname=model,
                 convex=True,
                 model_id=model_id,
             )
             if actor is None:
-                raise RuntimeError(f"RoboTwin could not build {OBJECT_MODEL} model_id={model_id}")
+                raise RuntimeError(f"RoboTwin could not build {model} model_id={model_id}")
             # create_actor names every instance after the asset, so all three
             # would be '113_coffee-box'. Contact reports and the oracle's
             # allow_contact_with both key on this name, so identical names
             # would let a contact with any object be excused as the held one.
             actor.actor.set_name(f"restock_object_{index}")
             self.tracked_objects[f"obj_{index}"] = TrackedObject(
-                actor, size, UPRIGHT_ROTATION, offset
+                actor, size, UPRIGHT_ROTATION, offset, category=model
             )
 
     def _spaced_x_positions(self, spec, rng) -> list[float]:
@@ -244,7 +275,7 @@ class TrackedObject:
     both when reporting a canonical ObjectState.
     """
 
-    __slots__ = ("actor", "size_xyz", "upright_rotation", "center_offset")
+    __slots__ = ("actor", "size_xyz", "upright_rotation", "center_offset", "category")
 
     def __init__(
         self,
@@ -252,11 +283,14 @@ class TrackedObject:
         size_xyz: tuple[float, float, float],
         upright_rotation: tuple[float, float, float, float] = UPRIGHT_ROTATION,
         center_offset: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        category: str | None = None,
     ) -> None:
         self.actor = actor
         self.size_xyz = size_xyz
         self.upright_rotation = upright_rotation
         self.center_offset = center_offset
+        #: The asset name, reported as the object's category.
+        self.category = category
 
 
 def _yaw_of(orientation: tuple[float, float, float, float]) -> float:

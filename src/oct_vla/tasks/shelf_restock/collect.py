@@ -121,6 +121,7 @@ def collect_episode(
             size_xyz=entry.size_xyz,
             upright_rotation=entry.upright_rotation,
             center_offset=entry.center_offset,
+            category=getattr(entry, "category", None),
         )
         for track_id, entry in task.tracked_objects.items()
     }

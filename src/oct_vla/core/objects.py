@@ -1,9 +1,20 @@
-"""Canonical object-centric scene: identity and geometry only, never task role.
+"""Canonical object-centric scene: identity, geometry and category; never task role.
 
 Task roles (target, previous neighbor, other) are derived from a TaskContext
-against an ObjectScene's track_ids, never stored on ObjectState itself. This
-keeps compositional-generalization experiments honest: nothing here is a
-permanent semantic label like an asset name, only an episode-local track_id.
+against an ObjectScene's track_ids, never stored on ObjectState itself. That
+part is unchanged, and it is what keeps a compositional-generalization
+experiment honest: a policy must find the target from the instruction and the
+scene, not read it off a field.
+
+`category` is a deliberate exception to the rule this file used to state -- that
+nothing here may be "a permanent semantic label like an asset name". A corpus
+of one asset made the rule free: every object was a coffee box, so a category
+channel carried no information and excluding it cost nothing. A multi-category
+corpus changes that. "Restock the leftmost object" over mixed assets is a task
+where *what the thing is* is part of the scene, and a representation that omits
+it is not object-centric so much as geometry-centric. The role ban stands
+because a role is the task's claim about an object; a category is the object's
+own property.
 """
 
 from dataclasses import dataclass
@@ -39,6 +50,10 @@ class ObjectState:
     support_surface: str | None = None
     mask: bytes | None = None
     embedding: tuple[float, ...] | None = None
+    #: The asset this object is an instance of, e.g. "113_coffee-box". None on
+    #: every corpus recorded before the multi-category change, which is why
+    #: every reader must default it rather than require it.
+    category: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "track_id", _nonempty(self.track_id, "track_id"))
@@ -58,6 +73,8 @@ class ObjectState:
             object.__setattr__(
                 self, "embedding", finite_values(self.embedding, len(self.embedding))
             )
+        if self.category is not None:
+            object.__setattr__(self, "category", _nonempty(self.category, "category"))
 
 
 @dataclass(frozen=True)
