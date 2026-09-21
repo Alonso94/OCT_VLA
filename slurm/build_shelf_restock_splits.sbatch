@@ -45,6 +45,13 @@ ARGS=(
 # command, so the short form would abort the job whenever a flag is off.
 if [ "${OBJECT_TOKENS:-0}" = "1" ]; then ARGS+=(--object-tokens); fi
 if [ "${PRIVILEGED:-0}" = "1" ]; then ARGS+=(--privileged); fi
+# The entity-v2 export. It fits its normalization on the reserved *training*
+# partition alone and records the fitting sources in the split manifest, so it
+# has to be the split builder rather than export_lerobot_dataset.py, whose
+# --entity-training-sources is named by hand and unchecked.
+if [ "${ENTITY_TOKENS:-0}" = "1" ]; then ARGS+=(--entity-tokens); fi
+if [ -n "${MAX_ENTITIES:-}" ]; then ARGS+=(--max-entities "$MAX_ENTITIES"); fi
+if [ -n "${EPISODE_KIND:-}" ]; then ARGS+=(--episode-kind "$EPISODE_KIND"); fi
 if [ -n "${MAX_RUNS:-}" ]; then ARGS+=(--max-runs "$MAX_RUNS"); fi
 
 echo "building $OUTPUT"

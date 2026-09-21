@@ -205,7 +205,12 @@ class LayerwiseObjectAttention(nn.Module):
             .view(batch, -1, heads, head_dim)
             .transpose(1, 2)
         )
-        scores = (projected_query.float() @ k.float().transpose(-2, -1)) * (
+        # Scores in at least float32: bf16 accumulation over the head
+        # dimension loses enough precision to shift the softmax. `.float()`
+        # would also *down*cast a float64 input, which silently caps the
+        # precision of any numerical gradient check on this branch.
+        accum = torch.promote_types(projected_query.dtype, torch.float32)
+        scores = (projected_query.to(accum) @ k.to(accum).transpose(-2, -1)) * (
             scaling if scaling is not None else 1 / math.sqrt(head_dim)
         )
         # Prevent NaNs; reset empty rows to zero after attention to guarantee
