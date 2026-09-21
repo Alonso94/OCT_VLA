@@ -97,6 +97,7 @@ def collect_episode(
     spec: ShelfRestockSpec = DEFAULT_SPEC,
     hz: float = DEFAULT_HZ,
     metadata: Mapping[str, str] | None = None,
+    episode_kind: str = "atomic",
 ) -> tuple[Episode, ...]:
     """Attempt one continuous shelf-emptying run for `seed`, once, cut into
     atomic clips.
@@ -109,6 +110,8 @@ def collect_episode(
     see `collect_dataset` and `collect_n_atomic_demonstrations`, which sample
     a fresh seed instead.
     """
+    if episode_kind not in ("atomic", "full_run"):
+        raise ValueError("episode_kind must be 'atomic' or 'full_run'")
     port.reset(seed)
     task = port.task
 
@@ -202,6 +205,33 @@ def collect_episode(
     # labelled frames.
     spans = label_spans(records)
 
+    if episode_kind == "full_run":
+        # Build from the original recorder stream.  Do not reconstruct this by
+        # concatenating atomic clips: atomic construction intentionally drops
+        # each terminal frame, which would silently remove transfer-boundary
+        # actions from a purportedly continuous demonstration.
+        episode = build_episode(
+            recorder.frames,
+            spans,
+            seed=seed,
+            instruction=spec.instruction,
+            success=True,
+            metadata={
+                "task": type(task).__name__,
+                "task_profile": profile_name(len(tracked)),
+                "object_count": str(len(tracked)),
+                "episode_kind": "full_run",
+                "transfers": str(len(records)),
+                "hz": str(hz),
+                "dt": str(port.dt),
+                **(metadata or {}),
+            },
+        )
+        problems = validate_episode(episode)
+        if problems:
+            raise CollectionError(f"seed {seed}: full run failed validation: {problems}")
+        return (episode,)
+
     episodes: list[Episode] = []
     for index, (record, frames) in enumerate(atomic_clips(recorder.frames, records)):
         if not frames:
@@ -248,17 +278,19 @@ def _write_clips(
     reports = []
     for index, episode in enumerate(episodes):
         path = write_episode(episode, directory / f"episode_{seed:04d}_{index}")
-        reports.append(
-            {
-                "seed": seed,
-                "clip": index,
-                "status": "ok",
-                "samples": len(episode.samples),
-                "neighbour": episode.metadata["previous_neighbor_track_id"] or "-",
-                "compacted": episode.metadata["compacted"],
-                "path": str(path),
-            }
-        )
+        report = {
+            "seed": seed,
+            "clip": index,
+            "status": "ok",
+            "samples": len(episode.samples),
+            "episode_kind": episode.metadata.get("episode_kind", "atomic_restock"),
+            "transfers": episode.metadata.get("transfers", "1"),
+            "path": str(path),
+        }
+        if report["episode_kind"] == "atomic_restock":
+            report["neighbour"] = episode.metadata.get("previous_neighbor_track_id", "") or "-"
+            report["compacted"] = episode.metadata.get("compacted", "false")
+        reports.append(report)
     return tuple(reports)
 
 
@@ -269,6 +301,7 @@ def collect_dataset(
     *,
     spec: ShelfRestockSpec = DEFAULT_SPEC,
     hz: float = DEFAULT_HZ,
+    episode_kind: str = "atomic",
 ) -> tuple[dict[str, Any], ...]:
     """Attempt each of `seeds` exactly once, in order, never retrying one.
 
@@ -279,10 +312,17 @@ def collect_dataset(
     to attempt matter (e.g. reproducing a known batch); use
     `collect_n_atomic_demonstrations` when only the resulting count matters.
     """
+    if episode_kind not in ("atomic", "full_run"):
+        raise ValueError("episode_kind must be 'atomic' or 'full_run'")
     reports = []
     for seed in seeds:
         try:
-            episodes = collect_episode(port, seed=seed, spec=spec, hz=hz)
+            # Preserve the original call shape for atomic collection so existing
+            # injectable collectors remain compatible. Full runs are opt-in.
+            kwargs = {"seed": seed, "spec": spec, "hz": hz}
+            if episode_kind != "atomic":
+                kwargs["episode_kind"] = episode_kind
+            episodes = collect_episode(port, **kwargs)
         except Exception as error:  # noqa: BLE001 - one bad seed must not end the batch
             reports.append(
                 {"seed": seed, "status": "discarded", "detail": f"{type(error).__name__}: {error}"}

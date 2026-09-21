@@ -24,6 +24,10 @@ def main() -> int:
         "--profile", choices=("two_object", "three_object", "four_object"), required=True
     )
     parser.add_argument("--seeds", required=True, help="Comma-separated scene seeds")
+    parser.add_argument(
+        "--episode-kind", choices=("atomic", "full_run"), default="atomic",
+        help="Store transfer clips (default) or the original continuous shelf-emptying run.",
+    )
     args = parser.parse_args()
     # Every profile shares DEFAULT_SPEC and differs only in object_count, so
     # the spec cannot disagree with the scene the task class builds. It is
@@ -45,7 +49,9 @@ def main() -> int:
     )
     args.output.mkdir(parents=True, exist_ok=True)
     seeds = tuple(int(value) for value in args.seeds.split(",") if value.strip())
-    reports = collect_dataset(port, args.output, seeds, spec=spec)
+    reports = collect_dataset(
+        port, args.output, seeds, spec=spec, episode_kind=args.episode_kind
+    )
     (args.output / "collection_report.json").write_text(json.dumps(reports, indent=2) + "\n")
     print(json.dumps(reports, indent=2))
     return 0

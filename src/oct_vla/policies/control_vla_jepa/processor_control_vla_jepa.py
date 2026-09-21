@@ -9,7 +9,9 @@ it cannot be forgotten -- a plugin without one trains fine and then fails at
 
 from __future__ import annotations
 
-from lerobot.policies.vla_jepa.processor_vla_jepa import make_vla_jepa_pre_post_processors
+from oct_vla.policies.adapted_vla_jepa.processor_adapted_vla_jepa import (
+    make_adapted_vla_jepa_pre_post_processors,
+)
 
 from .configuration_control_vla_jepa import ControlVLAJEPAConfig
 
@@ -17,4 +19,4 @@ from .configuration_control_vla_jepa import ControlVLAJEPAConfig
 def make_control_vla_jepa_pre_post_processors(
     config: ControlVLAJEPAConfig, dataset_stats: dict | None = None
 ):
-    return make_vla_jepa_pre_post_processors(config, dataset_stats)
+    return make_adapted_vla_jepa_pre_post_processors(config, dataset_stats)

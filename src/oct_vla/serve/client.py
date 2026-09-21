@@ -21,6 +21,7 @@ from oct_vla.serve.codec import (
     eef_from_json,
     joints_from_json,
     scene_from_json,
+    supports_from_json,
 )
 
 #: Camera order is fixed by the wire format and matches the canonical episode
@@ -40,6 +41,7 @@ class RemoteObservation:
     cameras: dict[str, RGBFrame]
     scene: ObjectScene
     context: TaskContext
+    supports: tuple = ()
 
     def frame(self, name: str) -> RGBFrame:
         try:
@@ -88,6 +90,7 @@ def _observation(message: protocol.Message) -> RemoteObservation:
         cameras=cameras,
         scene=scene_from_json(header["scene"]),
         context=context_from_json(header["context"]),
+        supports=supports_from_json(header.get("supports", [])),
     )
 
 

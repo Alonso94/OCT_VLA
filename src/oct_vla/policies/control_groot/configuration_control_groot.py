@@ -31,6 +31,9 @@ from oct_vla.policies.object_conditioning import ObjectTokenConfigMixin
 class ControlGrootConfig(ObjectTokenConfigMixin, GrootConfig):
     """GR00T N1.7 with a zero-initialized residual from precomputed scene tokens."""
 
+    object_representation: str = "legacy"
+    object_entity_normalizer: dict | None = None
+
     object_token_key: str = "observation.object_tokens"
     object_token_mask_key: str = "observation.object_token_mask"
     #: Episode-stable slot ordering, used only by the role-stripped mode.
@@ -60,11 +63,14 @@ class ControlGrootConfig(ObjectTokenConfigMixin, GrootConfig):
     #: working run. The diffusion head's attention and its action projections
     #: are the analogue of what pi0.5 targets.
     lora_target_modules: str = field(
-        default=(
-            r"(action_head\.model\.transformer_blocks\.\d+\.attn1\.to_(q|v)"
-            r"|action_head\.(action_encoder|state_encoder|action_decoder)\..*)"
-        )
+        default=r"action_head\.model\.transformer_blocks\.\d+\.attn1\.to_(q|v)"
     )
+    # Keep the pretrained VLM frozen. New embodiment projections are selected
+    # as full modules_to_save by ControlGrootPolicy, while only native action
+    # attention Q/V receives LoRA.
+    lora_rank: int = 16
+    lora_alpha: int = 32
+    lora_full_model: bool = False
 
     def __post_init__(self) -> None:
         super().__post_init__()

@@ -16,6 +16,14 @@ from pathlib import Path
 
 from oct_vla.core.gripper import GRIPPER_ENCODINGS, binary_gripper_command
 from oct_vla.data.control_views import ALT_PREFIX, UNIFIED_CONTROL_SPACE
+from oct_vla.data.entity_tokens import (
+    ENTITY_TOKEN_DIM,
+    ENTITY_TOKEN_SCHEMA,
+    EntitySupport,
+    EntityTokenNormalizer,
+    build_entity_tokens,
+    shelf_support_entities,
+)
 from oct_vla.data.episode import Episode, validate_episode
 from oct_vla.data.object_tokens import (
     ObjectTokenSpec,
@@ -24,6 +32,7 @@ from oct_vla.data.object_tokens import (
     stable_ranks,
 )
 from oct_vla.data.store import read_episode
+from oct_vla.tasks.shelf_restock.spec import DEFAULT_SPEC
 
 CAMERA_FEATURES = {
     "head_rgb": "observation.images.head",
@@ -167,8 +176,7 @@ def _joint_delta_action_vector(episode: Episode, index: int) -> tuple[float, ...
     half = len(current) // 2
     grippers = (half - 1, 2 * half - 1)
     return tuple(
-        following[i] if i in grippers else following[i] - current[i]
-        for i in range(len(current))
+        following[i] if i in grippers else following[i] - current[i] for i in range(len(current))
     )
 
 
@@ -182,9 +190,7 @@ def _binarise_grippers(
     """
     if gripper_encoding != "binary_command":
         return values
-    return tuple(
-        binary_gripper_command(v) if i in indices else v for i, v in enumerate(values)
-    )
+    return tuple(binary_gripper_command(v) if i in indices else v for i, v in enumerate(values))
 
 
 def _joint_action_vector(episode: Episode, index: int) -> tuple[float, ...] | None:
@@ -230,7 +236,11 @@ def _eef_action_vector(episode: Episode, index: int) -> tuple[float, ...]:
 
 
 CONTROL_SPACES = (
-    "cartesian", "cartesian_absolute", "joint", "joint_delta", UNIFIED_CONTROL_SPACE,
+    "cartesian",
+    "cartesian_absolute",
+    "joint",
+    "joint_delta",
+    UNIFIED_CONTROL_SPACE,
 )
 
 
@@ -282,14 +292,13 @@ def _features(
     privileged: bool = False,
     state_encoding: str = "position",
     joint_side_channel: bool = False,
+    entity_token_max_entities: int | None = None,
 ) -> dict[str, dict]:
     observation = episode.samples[0].observation
     if control_space not in CONTROL_SPACES:
         raise ValueError(f"control_space must be one of {CONTROL_SPACES}, got {control_space!r}")
     if state_encoding not in STATE_ENCODINGS:
-        raise ValueError(
-            f"state_encoding must be one of {STATE_ENCODINGS}, got {state_encoding!r}"
-        )
+        raise ValueError(f"state_encoding must be one of {STATE_ENCODINGS}, got {state_encoding!r}")
     if state_encoding != "position" and not _is_joint_space(control_space):
         raise ValueError(
             f"state_encoding={state_encoding!r} is only defined for a joint-space "
@@ -329,9 +338,7 @@ def _features(
                 "names": {"motors": joint_names},
             },
         }
-        alt_block = (
-            _alt_features(joint_names) if control_space == UNIFIED_CONTROL_SPACE else {}
-        )
+        alt_block = _alt_features(joint_names) if control_space == UNIFIED_CONTROL_SPACE else {}
         if privileged:
             # No cameras: this variant exists to measure what privileged scene
             # state alone can do, as an upper bound on what vision could add.
@@ -343,6 +350,7 @@ def _features(
             **alt_block,
             **_camera_features(observation),
             **_object_features(object_token_spec),
+            **_entity_features(entity_token_max_entities),
         }
     features = {
         "observation.state": {
@@ -385,6 +393,7 @@ def _features(
         }
     features.update(_camera_features(observation))
     features.update(_object_features(object_token_spec))
+    features.update(_entity_features(entity_token_max_entities))
     return features
 
 
@@ -399,17 +408,24 @@ def _alt_features(joint_names: list[str]) -> dict[str, dict]:
     width = len(joint_names)
     return {
         f"{ALT_PREFIX}joint_action_delta": {
-            "dtype": "float32", "shape": (width,), "names": {"motors": joint_names},
+            "dtype": "float32",
+            "shape": (width,),
+            "names": {"motors": joint_names},
         },
         f"{ALT_PREFIX}joint_state_velocity": {
-            "dtype": "float32", "shape": (2 * width,),
+            "dtype": "float32",
+            "shape": (2 * width,),
             "names": {"motors": _state_motor_names(joint_names, "position_velocity")},
         },
         f"{ALT_PREFIX}eef_state": {
-            "dtype": "float32", "shape": (16,), "names": {"motors": _EEF_POSE_NAMES},
+            "dtype": "float32",
+            "shape": (16,),
+            "names": {"motors": _EEF_POSE_NAMES},
         },
         f"{ALT_PREFIX}eef_action_abs": {
-            "dtype": "float32", "shape": (16,), "names": {"motors": _EEF_POSE_NAMES},
+            "dtype": "float32",
+            "shape": (16,),
+            "names": {"motors": _EEF_POSE_NAMES},
         },
         f"{ALT_PREFIX}eef_action_delta": {"dtype": "float32", "shape": (14,)},
     }
@@ -441,6 +457,26 @@ def _object_features(spec: ObjectTokenSpec | None) -> dict[str, dict]:
         # rather than recomputed per frame because it is a property of the
         # episode's first scene, which a single frame cannot recover.
         "observation.object_token_rank": {"dtype": "float32", "shape": (spec.max_objects,)},
+    }
+
+
+def _entity_features(max_entities: int | None) -> dict[str, dict]:
+    """Optional raw, role-free schema-v2 entity inputs.
+
+    Raw tokens are the on-disk and online contract.  A policy checkpoint owns
+    train-split statistics, preventing validation/test leakage and double
+    normalization in the exporter.
+    """
+    if max_entities is None:
+        return {}
+    if max_entities <= 0:
+        raise ValueError("entity_token_max_entities must be positive")
+    return {
+        "observation.entity_tokens": {
+            "dtype": "float32",
+            "shape": (max_entities, ENTITY_TOKEN_DIM),
+        },
+        "observation.entity_mask": {"dtype": "float32", "shape": (max_entities,)},
     }
 
 
@@ -483,6 +519,9 @@ def export_episodes(
     state_encoding: str = "position",
     joint_side_channel: bool = False,
     gripper_encoding: str = "measured_aperture",
+    entity_token_max_entities: int | None = None,
+    entity_supports: tuple[EntitySupport, ...] | None = None,
+    entity_normalizer: EntityTokenNormalizer | None = None,
 ) -> ExportReport:
     """Convert canonical episode directories into a new local LeRobot dataset.
 
@@ -495,6 +534,15 @@ def export_episodes(
         raise ValueError(
             f"gripper_encoding must be one of {GRIPPER_ENCODINGS}, got {gripper_encoding!r}"
         )
+    if entity_normalizer is not None and entity_token_max_entities is None:
+        raise ValueError("entity_normalizer requires entity_token_max_entities")
+    if entity_token_max_entities is not None and entity_token_max_entities <= 0:
+        raise ValueError("entity_token_max_entities must be positive")
+    if entity_token_max_entities is not None and privileged:
+        raise ValueError("entity-token export is not implemented for privileged-only datasets")
+    # Include both physical shelf decks by default; callers with another task
+    # must supply its exact support geometry for export/inference parity.
+    supports = shelf_support_entities(DEFAULT_SPEC) if entity_supports is None else entity_supports
     source_paths = tuple(Path(source) for source in sources)
     if not source_paths:
         raise ValueError("At least one canonical episode directory is required")
@@ -534,6 +582,7 @@ def export_episodes(
             privileged=privileged,
             state_encoding=state_encoding,
             joint_side_channel=joint_side_channel,
+            entity_token_max_entities=entity_token_max_entities,
         )
         dataset = LeRobotDataset.create(
             repo_id=repo_id,
@@ -572,11 +621,13 @@ def export_episodes(
                         _state_vector(episode, index), dtype=np.float32
                     ),
                     "action": np.asarray(
-                        _binarise_grippers(_eef_action_vector(episode, index),
-                                           joint_grips, gripper_encoding)
+                        _binarise_grippers(
+                            _eef_action_vector(episode, index), joint_grips, gripper_encoding
+                        )
                         if control_space == "cartesian_absolute"
-                        else _binarise_grippers(tuple(sample.action.to_vector()),
-                                                eef_delta_grips, gripper_encoding),
+                        else _binarise_grippers(
+                            tuple(sample.action.to_vector()), eef_delta_grips, gripper_encoding
+                        ),
                         dtype=np.float32,
                     ),
                     "task": sample.context.instruction,
@@ -586,19 +637,29 @@ def export_episodes(
                 # canonical pair came from, so no view can disagree with another
                 # about what happened at this frame.
                 frame[f"{ALT_PREFIX}joint_action_delta"] = np.asarray(
-                    _binarise_grippers(_joint_delta_action_vector(episode, index),
-                                       joint_grips, gripper_encoding), dtype=np.float32)
+                    _binarise_grippers(
+                        _joint_delta_action_vector(episode, index), joint_grips, gripper_encoding
+                    ),
+                    dtype=np.float32,
+                )
                 frame[f"{ALT_PREFIX}joint_state_velocity"] = np.asarray(
-                    _joint_state_vector(episode, index, "position_velocity"),
-                    dtype=np.float32)
+                    _joint_state_vector(episode, index, "position_velocity"), dtype=np.float32
+                )
                 frame[f"{ALT_PREFIX}eef_state"] = np.asarray(
-                    _state_vector(episode, index), dtype=np.float32)
+                    _state_vector(episode, index), dtype=np.float32
+                )
                 frame[f"{ALT_PREFIX}eef_action_abs"] = np.asarray(
-                    _binarise_grippers(_eef_action_vector(episode, index),
-                                       joint_grips, gripper_encoding), dtype=np.float32)
+                    _binarise_grippers(
+                        _eef_action_vector(episode, index), joint_grips, gripper_encoding
+                    ),
+                    dtype=np.float32,
+                )
                 frame[f"{ALT_PREFIX}eef_action_delta"] = np.asarray(
-                    _binarise_grippers(tuple(sample.action.to_vector()),
-                                       eef_delta_grips, gripper_encoding), dtype=np.float32)
+                    _binarise_grippers(
+                        tuple(sample.action.to_vector()), eef_delta_grips, gripper_encoding
+                    ),
+                    dtype=np.float32,
+                )
 
             joint_state = (
                 _joint_state_vector(episode, index)
@@ -637,6 +698,15 @@ def export_episodes(
                     ),
                     dtype=np.float32,
                 )
+            if entity_token_max_entities is not None:
+                tokens, mask = build_entity_tokens(
+                    sample.scene,
+                    sample.observation.eef,
+                    supports=supports,
+                    max_entities=entity_token_max_entities,
+                )
+                frame["observation.entity_tokens"] = np.asarray(tokens, dtype=np.float32)
+                frame["observation.entity_mask"] = np.asarray(mask, dtype=np.float32)
             for attr, feature_name in ({} if privileged else CAMERA_FEATURES).items():
                 rgb = getattr(sample.observation, attr)
                 frame[feature_name] = np.frombuffer(rgb.data, dtype=np.uint8).reshape(
@@ -671,6 +741,22 @@ def export_episodes(
         # Which convention the gripper action column follows. Absent means the
         # raw measurement, so every dataset built before this reads correctly.
         info["gripper_encoding"] = gripper_encoding
+        if entity_token_max_entities is not None:
+            info["entity_tokens"] = {
+                "schema": ENTITY_TOKEN_SCHEMA,
+                "token_dim": ENTITY_TOKEN_DIM,
+                "capacity": entity_token_max_entities,
+                "raw_on_disk": True,
+                "normalization": entity_normalizer.to_dict() if entity_normalizer else None,
+                "supports": [
+                    {
+                        "position": list(item.pose.position),
+                        "orientation": list(item.pose.orientation),
+                        "size_xyz": list(item.size_xyz),
+                    }
+                    for item in supports
+                ],
+            }
         info_path.write_text(json.dumps(info, indent=4))
 
     return ExportReport(destination, tuple(source for source, _ in accepted), tuple(skipped))

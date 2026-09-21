@@ -15,6 +15,9 @@ from oct_vla.policies.object_conditioning import ObjectTokenConfigMixin
 class ControlPI05Config(ObjectTokenConfigMixin, PI05Config):
     """π0.5 with a zero-initialized residual from precomputed scene tokens."""
 
+    object_representation: str = "legacy"
+    object_entity_normalizer: dict | None = None
+
     object_token_key: str = "observation.object_tokens"
     object_token_mask_key: str = "observation.object_token_mask"
     #: Episode-stable slot ordering, used only by the role-stripped mode.
@@ -44,3 +47,5 @@ class ControlPI05Config(ObjectTokenConfigMixin, PI05Config):
     def __post_init__(self) -> None:
         super().__post_init__()
         self.validate_object_tokens()
+        if self.object_injection_mode == "layerwise" and self.gradient_checkpointing:
+            raise ValueError("layerwise pi0.5 currently requires gradient_checkpointing=False")

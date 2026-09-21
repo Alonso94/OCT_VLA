@@ -287,7 +287,11 @@ class ShelfRestockEvalServer:
     def _snapshot(self) -> tuple[dict, tuple[protocol.Blob, ...], ObjectScene]:
         observation = self._observe()
         scene = self._scene(observation)
+        from oct_vla.data.entity_tokens import shelf_support_entities
+        from oct_vla.serve.codec import supports_to_json
+
         header = {
+            "supports": supports_to_json(shelf_support_entities(self._episode.spec)),
             "timestamp": observation.timestamp,
             "eef": eef_to_json(observation.eef),
             "joints": joints_to_json(observation.joints),

@@ -23,8 +23,13 @@ case "$COLLECTION_PROFILE" in
   *) echo "Invalid COLLECTION_PROFILE=$COLLECTION_PROFILE" >&2; exit 2 ;;
 esac
 
+EPISODE_KIND="${EPISODE_KIND:-atomic}"
+case "$EPISODE_KIND" in atomic|full_run) ;; *) echo "Invalid EPISODE_KIND" >&2; exit 2 ;; esac
 SEED="${SLURM_ARRAY_TASK_ID:?Slurm array index is required}"
 DESTINATION="$OCTVLA_COLLECTION_ROOT/$COLLECTION_PROFILE/seed_$SEED"
+if [ "$EPISODE_KIND" = full_run ]; then
+  DESTINATION="$OCTVLA_COLLECTION_ROOT/full_run/$COLLECTION_PROFILE/seed_$SEED"
+fi
 mkdir -p "$DESTINATION"
 
 export PYTHONPATH="$OCTVLA_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
@@ -36,4 +41,5 @@ srun "$OCTVLA_ROBOTWIN_PYTHON" -u -B "$OCTVLA_REPO/scripts/collect_shelf_restock
   --robotwin-root "$OCTVLA_ROBOTWIN_ROOT" \
   --output "$DESTINATION" \
   --profile "$COLLECTION_PROFILE" \
+  --episode-kind "$EPISODE_KIND" \
   --seeds "$SEED"

@@ -91,7 +91,7 @@ case "$OBJECT_TOKEN_MODE" in full|role_stripped) ;; *) echo "Invalid OBJECT_TOKE
 # broadcast residual every arm recorded before 2026-09-20 used, kept so the two
 # can be compared directly rather than across a code change.
 OBJECT_INJECTION_MODE="${OBJECT_INJECTION_MODE:-controlvla}"
-case "$OBJECT_INJECTION_MODE" in controlvla|pooled) ;; *) echo "Invalid OBJECT_INJECTION_MODE" >&2; exit 2 ;; esac
+case "$OBJECT_INJECTION_MODE" in controlvla|pooled|layerwise) ;; *) echo "Invalid OBJECT_INJECTION_MODE" >&2; exit 2 ;; esac
 
 # A learned code across entity slots. Off keeps the encoder
 # permutation-invariant; on makes it order-sensitive, which is the only setting
@@ -101,6 +101,17 @@ case "$OBJECT_ENTITY_POSITIONAL" in true|false) ;; *) echo "OBJECT_ENTITY_POSITI
 if [ "$TRAIN_VARIANT" = "rgb" ] && [ "$OBJECT_TOKEN_MODE" != "full" ]; then
   echo "OBJECT_TOKEN_MODE=$OBJECT_TOKEN_MODE is meaningless for TRAIN_VARIANT=rgb" >&2
   exit 2
+fi
+
+OBJECT_REPRESENTATION="${OBJECT_REPRESENTATION:-legacy}"
+case "$OBJECT_REPRESENTATION" in legacy|entity_v2) ;; *) echo "Invalid OBJECT_REPRESENTATION" >&2; exit 2 ;; esac
+if [ "$OBJECT_REPRESENTATION" = entity_v2 ]; then
+  [ "$TRAIN_VARIANT" = object ] && [ "$OBJECT_TOKEN_MODE" = full ] && [ "$OBJECT_ENTITY_POSITIONAL" = false ] || { echo "entity_v2 requires object/full with positional codes disabled" >&2; exit 2; }
+  OBJECT_INJECTION_MODE=layerwise
+fi
+# Hooks retain batch context only during forward; checkpoint recomputation is unsupported.
+if [ "$OBJECT_INJECTION_MODE" = layerwise ] && [ "$BACKBONE" = pi05 ]; then
+  PRECISION_ARGS=(--policy.dtype=bfloat16 --policy.gradient_checkpointing=false)
 fi
 
 TRAIN_SEED="${TRAIN_SEED:-1000}"
@@ -167,6 +178,12 @@ else
   )
 fi
 
+if [ "$OBJECT_REPRESENTATION" = entity_v2 ]; then
+  ENTITY_ARGS_TEXT=$("$OCTVLA_POLICY_PYTHON" "$OCTVLA_REPO/scripts/entity_training_args.py" "$DATASET")
+  mapfile -t ENTITY_ARGS <<< "$ENTITY_ARGS_TEXT"
+  POLICY_ARGS+=("${ENTITY_ARGS[@]}")
+fi
+
 # The execution horizon is a measured convention (25; see
 # docs/experiment_matrix.md), and the backbones disagree on it -- pi0.5 and
 # SmolVLA default to 50, GR00T to 40. Set it at training so the checkpoint
@@ -184,6 +201,7 @@ if [ "$TRAIN_VARIANT" = "object" ]; then
   # Only for object arms, and only when it is not the default, so every
   # directory written before this knob existed keeps its name.
   [ "$OBJECT_INJECTION_MODE" != "controlvla" ] && RUN_NAME="${RUN_NAME}_${OBJECT_INJECTION_MODE}"
+  [ "$OBJECT_REPRESENTATION" != legacy ] && RUN_NAME="${RUN_NAME}_${OBJECT_REPRESENTATION}"
   [ "$OBJECT_ENTITY_POSITIONAL" = "true" ] && RUN_NAME="${RUN_NAME}_entpos"
 fi
 # TRAIN_TAG distinguishes cells this name cannot -- a different dataset view,
@@ -244,6 +262,8 @@ cat > "$OCTVLA_OUTPUT_ROOT/run_metadata/${RUN_NAME}.json" <<JSON
   "backbone": "$BACKBONE",
   "conditioning": "$TRAIN_VARIANT",
   "token_mode": "$OBJECT_TOKEN_MODE",
+  "object_representation": "$OBJECT_REPRESENTATION",
+  "injection_mode": "$OBJECT_INJECTION_MODE",
   "seed": $TRAIN_SEED,
   "steps": ${TRAIN_STEPS:-20000},
   "batch_size": ${BATCH_SIZE:-4},

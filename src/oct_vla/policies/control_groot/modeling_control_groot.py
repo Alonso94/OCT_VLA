@@ -40,7 +40,14 @@ class ControlGrootPolicy(ObjectConditionedPolicyMixin, GrootPolicy):
         super().__init__(config, **kwargs)
         head = self._groot_model.action_head
         head.object_conditioning = ObjectConditioning(config, head.input_embedding_dim)
-        self._object_hook = head.object_conditioning.attach_to(head.action_encoder)
+        if config.object_injection_mode == "layerwise":
+            from oct_vla.policies.layerwise_backbones import install_diffusers_layerwise
+
+            self._object_hooks = install_diffusers_layerwise(
+                head.model, head.object_conditioning, conditioning_owner=head
+            )
+        else:
+            self._object_hook = head.object_conditioning.attach_to(head.action_encoder)
 
     @torch.no_grad()
     def predict_action_chunk(self, batch: dict[str, Tensor], **kwargs: Any) -> Tensor:
@@ -56,3 +63,16 @@ class ControlGrootPolicy(ObjectConditionedPolicyMixin, GrootPolicy):
             return super().forward(batch, **kwargs)
         finally:
             self._clear_object_inputs()
+
+    def _get_default_peft_targets(self) -> dict[str, Any]:
+        targets = super()._get_default_peft_targets()
+        # These are fresh embodiment-specific projections, not pretrained
+        # weights to approximate with LoRA. Keep them fully trainable and in
+        # the adapter checkpoint alongside the layerwise object modules.
+        saves = list(targets.get("modules_to_save", []))
+        saves.extend(
+            f"_groot_model.action_head.{name}"
+            for name in ("action_encoder", "state_encoder", "action_decoder")
+        )
+        targets["modules_to_save"] = list(dict.fromkeys(saves))
+        return targets

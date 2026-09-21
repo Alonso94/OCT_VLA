@@ -20,6 +20,9 @@ from oct_vla.policies.object_conditioning import ObjectTokenConfigMixin
 class ControlSmolVLAConfig(ObjectTokenConfigMixin, SmolVLAConfig):
     """SmolVLA with a zero-initialized residual from precomputed scene tokens."""
 
+    object_representation: str = "legacy"
+    object_entity_normalizer: dict | None = None
+
     object_token_key: str = "observation.object_tokens"
     object_token_mask_key: str = "observation.object_token_mask"
     #: Episode-stable slot ordering, used only by the role-stripped mode.

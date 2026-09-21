@@ -26,9 +26,14 @@ import json
 import math
 import sys
 from pathlib import Path
+from typing import Any
 
 #: 95% two-sided normal quantile.
 Z = 1.959963984540054
+GROUP_FIELDS = ("object_representation", "evaluation_split", "steps_per_object")
+PROFILE_OBJECTS = {"two_object": 2, "three_object": 3, "four_object": 4}
+ArmContext = tuple[tuple[str, Any], ...]
+ArmId = tuple[str, ArmContext]
 
 
 # ------------------------------------------------------------------ statistics
@@ -95,6 +100,27 @@ def paired_difference(pairs: list[tuple[bool, bool]]) -> dict:
     }
 
 
+def paired_mean_difference(pairs: list[tuple[float, float]]) -> dict:
+    """Paired mean difference for scalar per-episode metrics."""
+    n = len(pairs)
+    if n == 0:
+        return {"pairs": 0}
+    differences = [treat - base for base, treat in pairs]
+    mean = sum(differences) / n
+    if n == 1:
+        half = 0.0
+    else:
+        variance = sum((diff - mean) ** 2 for diff in differences) / (n - 1)
+        half = Z * math.sqrt(variance / n)
+    return {
+        "pairs": n,
+        "baseline_mean": sum(base for base, _ in pairs) / n,
+        "treatment_mean": sum(treat for _, treat in pairs) / n,
+        "difference": mean,
+        "ci95": [mean - half, mean + half],
+    }
+
+
 # ----------------------------------------------------------------- arm identity
 
 
@@ -136,6 +162,40 @@ def arm_of(report: dict, run_metadata: dict[str, dict]) -> tuple[str, int]:
         # horizon sweep exists to measure.
         label += f"__{tag}"
     return label, int(seed)
+
+
+def evaluation_context(report: dict, metadata: dict | None = None) -> ArmContext:
+    """Fields that must match before rows are merged or paired."""
+    metadata = metadata or {}
+    context = {
+        "object_representation": (
+            report.get("object_representation")
+            or report.get("object_token_schema")
+            or metadata.get("object_representation")
+            or metadata.get("object_token_schema")
+        ),
+        "evaluation_split": (
+            report.get("evaluation_split") or report.get("split") or report.get("eval_split")
+        ),
+        "steps_per_object": report.get("steps_per_object") or metadata.get("steps_per_object"),
+    }
+    return tuple(sorted((key, value) for key, value in context.items() if value is not None))
+
+
+def _row_context(base: ArmContext, row: dict) -> ArmContext:
+    context = dict(base)
+    for key in GROUP_FIELDS:
+        if row.get(key) is not None:
+            context[key] = row[key]
+    return tuple(sorted(context.items()))
+
+
+def _arm_label(arm_id: ArmId) -> str:
+    arm, context = arm_id
+    if not context:
+        return arm
+    suffix = "__" + "__".join(f"{key}={value}" for key, value in context)
+    return f"{arm}{suffix}"
 
 
 def _run_name(checkpoint: Path) -> str:
@@ -252,62 +312,104 @@ def main() -> int:
 
     metadata = load_run_metadata(args.run_metadata)
 
-    # (arm, training seed, profile, scene seed) -> success / transfers. Keyed
-    # this tightly so pairing can match episodes exactly; a duplicate key means
-    # the same cell was evaluated twice and silently averaging the two would
-    # hide whichever run was broken.
+    # (arm, evaluation context, training seed, profile, scene seed) -> episode.
+    # Training seed stays in the key so two independently trained checkpoints do
+    # not become pseudo-replicates of the same scene.
     episodes: dict[tuple, dict] = {}
-    arms: set[str] = set()
+    arm_ids: set[ArmId] = set()
     for path, report in reports:
+        run_name = _run_name(Path(report["checkpoint"]))
+        meta = metadata.get(run_name, {})
         arm, seed = arm_of(report, metadata)
-        arms.add(arm)
+        base_context = evaluation_context(report, meta)
         for row in report["episodes"]:
-            key = (arm, seed, row["profile"], row["seed"])
+            context = _row_context(base_context, row)
+            arm_id = (arm, context)
+            arm_ids.add(arm_id)
+            key = (arm, context, seed, row["profile"], row["seed"])
             if key in episodes:
                 print(f"warning: duplicate episode {key} (also in {path.name})", file=sys.stderr)
             episodes[key] = row
 
-    def rows_for(arm: str, profile: str | None = None) -> list[dict]:
+    def rows_for(arm_id: ArmId, profile: str | None = None) -> list[dict]:
+        arm, context = arm_id
         return [
             row
-            for (a, _, p, _), row in episodes.items()
-            if a == arm and (profile is None or p == profile)
+            for (a, c, _, p, _), row in episodes.items()
+            if (a, c) == (arm, context) and (profile is None or p == profile)
         ]
 
-    profiles = sorted({key[2] for key in episodes})
+    profiles = sorted({key[3] for key in episodes})
     per_arm = {}
-    for arm in sorted(arms):
-        per_arm[arm] = {"overall": _describe(rows_for(arm))}
+    for arm_id in sorted(arm_ids, key=_arm_label):
+        label = _arm_label(arm_id)
+        per_arm[label] = {"overall": _describe(rows_for(arm_id))}
         # The count-shift breakdown: the same policy on 2/3/4 objects, which is
         # the sweep's free generalisation axis.
-        per_arm[arm]["per_profile"] = {p: _describe(rows_for(arm, p)) for p in profiles}
+        per_arm[label]["per_profile"] = {p: _describe(rows_for(arm_id, p)) for p in profiles}
+        per_arm[label]["grouping"] = dict(arm_id[1])
 
     comparisons = {}
-    if args.baseline in arms:
-        for arm in sorted(arms - {args.baseline}):
+    baseline_ids = {arm_id for arm_id in arm_ids if arm_id[0] == args.baseline}
+    if baseline_ids:
+        for arm_id in sorted(arm_ids, key=_arm_label):
+            if arm_id[0] == args.baseline:
+                continue
+            baseline_id = (args.baseline, arm_id[1])
+            if baseline_id not in baseline_ids:
+                print(
+                    f"warning: no {args.baseline!r} baseline for {_arm_label(arm_id)}; "
+                    "skipping paired comparison for that evaluation context",
+                    file=sys.stderr,
+                )
+                continue
             shared = [
-                key[1:]
+                key[2:]
                 for key in episodes
-                if key[0] == arm and (args.baseline, *key[1:]) in episodes
+                if key[:2] == arm_id and (baseline_id[0], baseline_id[1], *key[2:]) in episodes
             ]
             pairs = [
                 (
-                    bool(episodes[(args.baseline, *key)]["success"]),
-                    bool(episodes[(arm, *key)]["success"]),
+                    bool(episodes[(baseline_id[0], baseline_id[1], *key)]["success"]),
+                    bool(episodes[(arm_id[0], arm_id[1], *key)]["success"]),
                 )
                 for key in sorted(shared)
             ]
-            comparisons[f"{arm}_vs_{args.baseline}"] = paired_difference(pairs)
-            unmatched = len(rows_for(arm)) - len(pairs)
+            first_pairs = [
+                (
+                    _first_transfer(episodes[(baseline_id[0], baseline_id[1], *key)]),
+                    _first_transfer(episodes[(arm_id[0], arm_id[1], *key)]),
+                )
+                for key in sorted(shared)
+            ]
+            normalized_pairs = [
+                (
+                    _normalized_transfers(episodes[(baseline_id[0], baseline_id[1], *key)]),
+                    _normalized_transfers(episodes[(arm_id[0], arm_id[1], *key)]),
+                )
+                for key in sorted(shared)
+            ]
+            comparison = paired_difference(pairs)
+            comparison["metrics"] = {
+                "success": paired_difference(pairs),
+                "first_transfer": paired_difference(first_pairs),
+                "normalized_transfers": paired_mean_difference(normalized_pairs),
+            }
+            name = f"{_arm_label(arm_id)}_vs_{_arm_label(baseline_id)}"
+            comparisons[name] = comparison
+            unmatched = len(rows_for(arm_id)) - len(pairs)
             if unmatched:
                 print(
-                    f"warning: {arm} has {unmatched} episode(s) with no {args.baseline} "
-                    "counterpart; they are excluded from the paired comparison",
+                    f"warning: {_arm_label(arm_id)} has {unmatched} episode(s) with no "
+                    f"{_arm_label(baseline_id)} counterpart; they are excluded from the "
+                    "paired comparison",
                     file=sys.stderr,
                 )
-    elif arms:
-        print(f"warning: baseline arm {args.baseline!r} not found; skipping comparisons",
-              file=sys.stderr)
+    elif arm_ids:
+        print(
+            f"warning: baseline arm {args.baseline!r} not found; skipping comparisons",
+            file=sys.stderr,
+        )
 
     merged = {
         "reports": [str(path) for path in paths],
@@ -331,8 +433,9 @@ def _describe(rows: list[dict]) -> dict:
     # strictest one is uninterpretable without the coarser two: they say
     # whether the policies did nothing at all, or got part of the way.
     lifted = sum(row.get("objects_lifted", 0) for row in rows)
-    total = sum(row.get("objects_total", 0) for row in rows)
+    total = sum(_object_count(row) for row in rows)
     any_lift = sum(1 for row in rows if row.get("objects_lifted", 0) > 0)
+    first_transfer = sum(1 for row in rows if _first_transfer(row))
     return {
         "episodes": len(rows),
         "successes": successes,
@@ -341,10 +444,15 @@ def _describe(rows: list[dict]) -> dict:
         # Coarsest: did the policy ever pick anything up?
         "episodes_with_a_lift": any_lift,
         "lift_rate": any_lift / len(rows),
+        "episodes_with_first_transfer": first_transfer,
+        "first_transfer_rate": first_transfer / len(rows),
         "mean_objects_lifted": lifted / len(rows),
         # Per-object atomic credit, as a fraction of the objects present.
         "atomic_transfer_rate": (
             sum(row["transfers_completed"] for row in rows) / total if total else 0.0
+        ),
+        "mean_normalized_transfers": (
+            sum(_normalized_transfers(row) for row in rows) / len(rows)
         ),
         # Partial credit, already recorded per episode: a policy that moves two
         # of three objects is not the same as one that never grasps anything,
@@ -353,9 +461,29 @@ def _describe(rows: list[dict]) -> dict:
     }
 
 
+def _object_count(row: dict) -> int:
+    for key in ("objects_total", "object_count", "num_objects"):
+        if row.get(key):
+            return int(row[key])
+    return PROFILE_OBJECTS.get(str(row.get("profile")), 0)
+
+
+def _first_transfer(row: dict) -> bool:
+    if row.get("first_transfer") is not None:
+        return bool(row["first_transfer"])
+    if row.get("first_transfer_completed") is not None:
+        return bool(row["first_transfer_completed"])
+    return int(row.get("transfers_completed", 0)) > 0
+
+
+def _normalized_transfers(row: dict) -> float:
+    count = _object_count(row)
+    return int(row.get("transfers_completed", 0)) / count if count else 0.0
+
+
 def _print(merged: dict) -> None:
     print(
-        f"{'arm':<30} {'n':>4} {'lift':>6} {'atomic':>7} {'task':>6}  "
+        f"{'arm':<30} {'n':>4} {'first':>6} {'atomic':>7} {'task':>6}  "
         f"{'95% Wilson (task)':<20} {'transfers':>9}"
     )
     print("-" * 92)
@@ -366,13 +494,13 @@ def _print(merged: dict) -> None:
         low, high = overall["wilson95"]
         print(
             f"{arm:<30} {overall['episodes']:>4} "
-            f"{overall.get('lift_rate', 0.0):>6.3f} "
+            f"{overall.get('first_transfer_rate', 0.0):>6.3f} "
             f"{overall.get('atomic_transfer_rate', 0.0):>7.3f} "
             f"{overall['success_rate']:>6.3f}  "
             f"[{low:.3f}, {high:.3f}]       {overall['mean_transfers']:>9.2f}"
         )
     print()
-    print("  lift   = episodes where the policy raised at least one object")
+    print("  first = episodes where at least one object was restocked")
     print("  atomic = objects restocked, as a fraction of objects present")
     print("  task   = episodes where every object was restocked")
     for arm, stats in merged["arms"].items():

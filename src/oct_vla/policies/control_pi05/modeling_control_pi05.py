@@ -39,6 +39,10 @@ class ControlPI05Pytorch(PI05Pytorch):
         self.object_conditioning = ObjectConditioning(
             config, self.action_in_proj.out_features
         )
+        if config.object_injection_mode == "layerwise":
+            from oct_vla.policies.layerwise_backbones import install_pi_layerwise
+
+            install_pi_layerwise(self)
 
     def embed_suffix(self, noisy_actions: Tensor, timestep: Tensor):
         # π0.5 returns four values here; SmolVLA's analogue returns three. That

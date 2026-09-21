@@ -120,3 +120,16 @@ def context_from_json(data: dict) -> TaskContext:
         previous_neighbor_track_id=data["previous_neighbor_track_id"],
         phase=data["phase"],
     )
+
+
+def supports_to_json(supports) -> list[dict]:
+    """Measured/static support geometry; no oracle target labels."""
+    return [{"pose": pose_to_json(item.pose), "size_xyz": list(item.size_xyz)}
+            for item in supports]
+
+
+def supports_from_json(data):
+    from oct_vla.data.entity_tokens import EntitySupport
+
+    return tuple(EntitySupport(pose_from_json(item["pose"]), tuple(item["size_xyz"]))
+                 for item in data)

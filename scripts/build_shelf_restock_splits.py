@@ -74,8 +74,11 @@ def collect_clips(
         else:
             unreserved.append(seed)
     if unreserved:
-        print(f"note: ignoring {len(unreserved)} clip(s) from unreserved seeds "
-              f"{sorted(set(unreserved))}", file=sys.stderr)
+        print(
+            f"note: ignoring {len(unreserved)} clip(s) from unreserved seeds "
+            f"{sorted(set(unreserved))}",
+            file=sys.stderr,
+        )
     # Ascending seed, then clip name, so transfer order within a scene is kept.
     for name in grouped:
         grouped[name].sort(key=lambda p: (seed_of(p), p.name))
@@ -155,6 +158,9 @@ def main() -> int:
     parser.add_argument("--repo-id", required=True)
     parser.add_argument("--profile", default="three_object", choices=sorted(SPLIT_BLOCKS))
     parser.add_argument("--object-tokens", action="store_true")
+    parser.add_argument("--entity-tokens", action="store_true")
+    parser.add_argument("--max-entities", type=int, default=16)
+    parser.add_argument("--episode-kind", choices=["any", "atomic", "full_run"], default="any")
     parser.add_argument(
         "--max-runs",
         type=int,
@@ -207,6 +213,19 @@ def main() -> int:
 
     blocks = SPLIT_BLOCKS[args.profile]
     grouped = collect_clips(args.canonical_root, blocks)
+    if args.episode_kind != "any":
+        expected = "atomic_restock" if args.episode_kind == "atomic" else "full_run"
+        grouped = {
+            split: [
+                path
+                for path in paths
+                if json.loads((path / "episode.json").read_text())
+                .get("metadata", {})
+                .get("episode_kind", "atomic_restock")
+                == expected
+            ]
+            for split, paths in grouped.items()
+        }
     train, val = grouped.get("train", []), grouped.get("val", [])
     if not train:
         raise SystemExit(f"No train clips found under {args.canonical_root}")
@@ -217,8 +236,7 @@ def main() -> int:
     train_runs = len({seed_of(c) for c in train})
     val_runs = len({seed_of(c) for c in val})
     print(
-        f"train: {train_runs} runs / {len(train)} clips  |  "
-        f"val: {val_runs} runs / {len(val)} clips"
+        f"train: {train_runs} runs / {len(train)} clips  |  val: {val_runs} runs / {len(val)} clips"
     )
 
     ordered = train + val
@@ -240,6 +258,28 @@ def main() -> int:
     else:
         eval_split = 0.0
 
+    normalizer = None
+    if args.entity_tokens:
+        if args.privileged:
+            parser.error("entity-v2 is separate from the legacy flattened privileged baseline")
+        from oct_vla.data.entity_tokens import (
+            EntityTokenNormalizer,
+            build_entity_tokens,
+            shelf_support_entities,
+        )
+        from oct_vla.data.store import read_episode
+        from oct_vla.tasks.shelf_restock.spec import DEFAULT_SPEC
+
+        supports = shelf_support_entities(DEFAULT_SPEC)
+
+        def training_entities():
+            for source in train:
+                for sample in read_episode(source).samples:
+                    yield build_entity_tokens(
+                        sample.scene, sample.observation.eef, supports, args.max_entities
+                    )
+
+        normalizer = EntityTokenNormalizer.fit(training_entities())
     spec = ObjectTokenSpec() if (args.object_tokens or args.privileged) else None
     report = export_episodes(
         ordered,
@@ -250,6 +290,8 @@ def main() -> int:
         privileged=args.privileged,
         state_encoding=args.state_encoding,
         gripper_encoding=args.gripper_encoding,
+        entity_token_max_entities=args.max_entities if args.entity_tokens else None,
+        entity_normalizer=normalizer,
     )
     print(f"exported {len(report.exported)} episodes to {report.output}")
     for source, reason in report.skipped:
@@ -262,6 +304,10 @@ def main() -> int:
 
     manifest = {
         "profile": args.profile,
+        "episode_kind": args.episode_kind,
+        "entity_normalization_training_sources": [str(path) for path in train]
+        if args.entity_tokens
+        else None,
         "repo_id": args.repo_id,
         "total_episodes": total,
         "eval_split": eval_split,
@@ -281,8 +327,10 @@ def main() -> int:
     print(f"\ntrain: {boundary} episodes from {len(manifest['train']['seeds'])} seeds")
     print(f"val:   {n_val} episodes from {len(manifest['val']['seeds'])} seeds")
     if n_val:
-        print(f"boundary: episode {boundary - 1} (seed {seed_of(ordered[boundary - 1])}) | "
-              f"episode {boundary} (seed {seed_of(ordered[boundary])})")
+        print(
+            f"boundary: episode {boundary - 1} (seed {seed_of(ordered[boundary - 1])}) | "
+            f"episode {boundary} (seed {seed_of(ordered[boundary])})"
+        )
     print(f"\nlerobot-train --dataset.eval_split={eval_split!r}")
     return 0
 

@@ -10,24 +10,28 @@ mechanism for the action-dimension mismatch between its pretraining and our
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from lerobot.configs.policies import PreTrainedConfig
-from lerobot.policies.vla_jepa.configuration_vla_jepa import VLAJEPAConfig
+from oct_vla.policies.adapted_vla_jepa.configuration_adapted_vla_jepa import AdaptedVLAJEPAConfig
 
 from oct_vla.policies.object_conditioning import ObjectTokenConfigMixin
 
 
 @PreTrainedConfig.register_subclass("control_vla_jepa")
 @dataclass
-class ControlVLAJEPAConfig(ObjectTokenConfigMixin, VLAJEPAConfig):
+class ControlVLAJEPAConfig(ObjectTokenConfigMixin, AdaptedVLAJEPAConfig):
     """VLA-JEPA with a zero-initialized residual from precomputed scene tokens."""
+
+    object_representation: str = "legacy"
+    object_entity_normalizer: dict | None = None
 
     object_token_key: str = "observation.object_tokens"
     object_token_mask_key: str = "observation.object_token_mask"
     #: Episode-stable slot ordering, used only by the role-stripped mode.
     object_token_rank_key: str = "observation.object_token_rank"
     #: Width of the tokens *as stored in the dataset*, before any ablation.
+    # Legacy records remain the default. The 17-wide entity schema is explicit.
     object_token_dim: int = 15
     #: "full", or "role_stripped" to drop the role one-hot and the
     #: target-first ordering. See oct_vla.data.token_transforms.
@@ -46,18 +50,6 @@ class ControlVLAJEPAConfig(ObjectTokenConfigMixin, VLAJEPAConfig):
     #: Used by the "pooled" mode only.
     object_queries: int = 4
     object_attention_heads: int = 8
-
-    #: The action/state projections must be rebuilt for a 16-d embodiment; the
-    #: rest of the network keeps its pretrained weights. Declared here so the
-    #: mismatch is handled by the mechanism VLA-JEPA provides rather than by a
-    #: strict-load failure.
-    reinit_modules: list[str] | None = field(
-        default_factory=lambda: [
-            "model.action_model.action_encoder",
-            "model.action_model.state_encoder",
-            "model.action_model.action_decoder",
-        ]
-    )
 
     def __post_init__(self) -> None:
         super().__post_init__()

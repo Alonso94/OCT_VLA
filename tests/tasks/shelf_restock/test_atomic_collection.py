@@ -6,6 +6,8 @@ hardware, and which supplies the no-neighbour and with-neighbour cases without
 staging an artificial scene.
 """
 
+from pathlib import Path
+
 import pytest
 
 from oct_vla.core.frames import WORKCELL_FRAME, Pose
@@ -301,3 +303,21 @@ def test_profile_name_rejects_a_count_no_profile_spawns():
     the real profiles -- mislabelled provenance is invisible downstream."""
     with pytest.raises(CollectionError, match="6"):
         profile_name(6)
+
+
+def test_full_run_report_does_not_assume_atomic_metadata(tmp_path):
+    from oct_vla.tasks.shelf_restock.collect import _write_clips
+
+    episode = demo_episode(4, "obj_0", None)
+    episode = Episode(
+        samples=episode.samples,
+        seed=episode.seed,
+        instruction=episode.instruction,
+        success=episode.success,
+        metadata={"episode_kind": "full_run", "transfers": "2"},
+    )
+    report = _write_clips(tmp_path, 4, (episode,))[0]
+    assert report["episode_kind"] == "full_run"
+    assert report["transfers"] == "2"
+    assert "neighbour" not in report
+    assert read_episode(Path(report["path"])).success is True

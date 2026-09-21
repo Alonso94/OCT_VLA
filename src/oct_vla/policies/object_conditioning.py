@@ -2,9 +2,9 @@
 
 Two mechanisms, selected by ``config.object_injection_mode``.
 
-``"controlvla"`` is the published method (arXiv:2506.16211, eq. for the
-dual-attention block). The object set is kept *unpooled* and enters as a second
-attention term beside the block's existing one::
+``"controlvla"`` is the legacy single-seam dual-attention approximation.
+It keeps the object set *unpooled* but injects only at the action embedding
+seam, rather than at every native attention layer::
 
     softmax(QKᵀ/√d)V + softmax(QK_zᵀ/√d)V_z
 
@@ -56,11 +56,11 @@ from torch import Tensor, nn
 
 from oct_vla.data.token_transforms import TOKEN_MODES, apply_token_mode, token_dim_for_mode
 
-#: How the object set reaches the action stream. "controlvla" is the published
-#: method -- an unpooled second attention term with zero-init KV projections.
-#: "pooled" is the weaker broadcast residual every result so far was measured
-#: with, kept so those checkpoints stay loadable.
-INJECTION_MODES = ("controlvla", "pooled")
+#: How the object set reaches the action stream. "controlvla" is the legacy
+#: single-seam unpooled approximation; "layerwise" is the native-query,
+#: full-layer path. "pooled" is the weaker broadcast residual kept so earlier
+#: checkpoints stay loadable.
+INJECTION_MODES = ("controlvla", "pooled", "layerwise")
 
 
 def batched(value: Tensor | None, *, unbatched_ndim: int) -> Tensor | None:
@@ -77,6 +77,35 @@ def batched(value: Tensor | None, *, unbatched_ndim: int) -> Tensor | None:
     if value is None or value.ndim != unbatched_ndim:
         return value
     return value.unsqueeze(0)
+
+
+def unwrap_object_conditioning(module: nn.Module | object) -> "ObjectConditioning | None":
+    """Return the same object-conditioning copy PEFT will execute.
+
+    ``ModulesToSaveWrapper`` deep-copies a new module for each adapter.  Hooks
+    installed before wrapping must use that active copy; when adapters are
+    disabled or none is active, PEFT instead executes ``original_module``.
+    """
+    if isinstance(module, ObjectConditioning):
+        return module
+    original = getattr(module, "original_module", None)
+    copies = getattr(module, "modules_to_save", None)
+    if copies is None:
+        return None
+    if getattr(module, "disable_adapters", False):
+        return original if isinstance(original, ObjectConditioning) else None
+    active = getattr(module, "active_adapter", None)
+    if active is None:
+        active_many = getattr(module, "active_adapters", ())
+        active = active_many[0] if active_many else None
+    if active is None:
+        return original if isinstance(original, ObjectConditioning) else None
+    if active not in copies:
+        raise ObjectConditioningError(
+            f"PEFT active adapter {active!r} has no object-conditioning copy"
+        )
+    candidate = copies[active]
+    return candidate if isinstance(candidate, ObjectConditioning) else None
 
 
 class ObjectConditioningError(RuntimeError):
@@ -128,6 +157,28 @@ class ObjectTokenConfigMixin:
         """
         return token_dim_for_mode(self.object_token_dim, self.object_token_mode)
 
+    @property
+    def env_state_feature(self):
+        # Entity sets use ENV only to opt out of generic STATE normalization;
+        # they are not ACT's flattened observation.environment_state input.
+        return (
+            self.input_features.get("observation.environment_state")
+            if self.input_features
+            else None
+        )
+
+    def validate_features(self) -> None:
+        super().validate_features()
+        if getattr(self, "object_representation", "legacy") == "entity_v2":
+            from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
+
+            for name in ("observation.entity_tokens", "observation.entity_mask"):
+                if name in self.input_features:
+                    self.input_features[name] = PolicyFeature(
+                        type=FeatureType.ENV, shape=self.input_features[name].shape
+                    )
+            self.normalization_mapping[FeatureType.ENV] = NormalizationMode.IDENTITY
+
     def validate_object_tokens(self) -> None:
         mode = getattr(self, "object_injection_mode", "pooled")
         if mode not in INJECTION_MODES:
@@ -160,6 +211,17 @@ class ObjectTokenConfigMixin:
             raise ValueError("object_queries must be positive")
         if self.object_attention_heads <= 0:
             raise ValueError("object_attention_heads must be positive")
+        representation = getattr(self, "object_representation", "legacy")
+        if representation not in ("legacy", "entity_v2"):
+            raise ValueError("object_representation must be 'legacy' or 'entity_v2'")
+        if representation == "entity_v2":
+            self.object_token_dim = 17
+            self.object_token_key = "observation.entity_tokens"
+            self.object_token_mask_key = "observation.entity_mask"
+            if self.object_entity_positional or self.object_token_mode != "full":
+                raise ValueError("entity_v2 prohibits slot embeddings and oracle-role transforms")
+            if mode != "layerwise":
+                raise ValueError("entity_v2 requires layerwise injection")
 
 
 class ObjectExpert(nn.Module):
@@ -269,7 +331,7 @@ class ObjectTokenEmbedding(nn.Module):
 
 
 class ObjectCrossAttention(nn.Module):
-    """ControlVLA's added attention term, over the unpooled object set.
+    """Legacy single-seam added attention term over the unpooled object set.
 
     Implements ``softmax(QK_zᵀ/√d)V_z`` with the key and value projections zero
     initialised, per arXiv:2506.16211: "We zero-initialize the additional
@@ -322,14 +384,14 @@ class ObjectCrossAttention(nn.Module):
         q = split(self.to_q(self.query_norm(action_emb)), steps)
         k = split(self.to_k(memory), objects)
         v = split(self.to_v(memory), objects)
-        scores = (q @ k.transpose(-2, -1)) / (self.head_dim ** 0.5)
+        scores = (q @ k.transpose(-2, -1)) / (self.head_dim**0.5)
         scores = scores.masked_fill(padding[:, None, None, :], float("-inf"))
         attended = torch.softmax(scores, dim=-1) @ v
         return attended.transpose(1, 2).reshape(batch, steps, -1)
 
 
 class ObjectConditioning(nn.Module):
-    """The whole ControlVLA mechanism: pool the tokens, return a zero residual.
+    """The object-conditioning mechanism: return a zero-initialized residual.
 
     Self-contained on purpose. A host backbone constructs one with its own
     embedding width and calls `residual` on its action tokens; it needs to know
@@ -354,6 +416,9 @@ class ObjectConditioning(nn.Module):
         if self.mode == "controlvla":
             self.embedding = ObjectTokenEmbedding(config, width)
             self.attention = ObjectCrossAttention(config, width)
+        elif self.mode == "layerwise":
+            self.layers = nn.ModuleDict()
+            self._layer_config = config
         else:
             self.expert = ObjectExpert(config, width)
             self.injection = nn.Linear(width, width)
@@ -362,6 +427,16 @@ class ObjectConditioning(nn.Module):
             nn.init.zeros_(self.injection.weight)
             nn.init.zeros_(self.injection.bias)
         self._inputs: tuple[Tensor | None, Tensor | None] | None = None
+
+    def add_layer(self, name: str, width: int, heads: int) -> nn.Module:
+        from oct_vla.policies.layerwise_attention import LayerwiseObjectAttention
+
+        if self.mode != "layerwise":
+            raise ValueError("add_layer requires layerwise mode")
+        if name in self.layers:
+            raise ValueError(f"duplicate object layer {name}")
+        self.layers[name] = LayerwiseObjectAttention(self._layer_config, width, heads=heads)
+        return self.layers[name]
 
     def set_inputs(self, tokens: Tensor | None, mask: Tensor | None) -> None:
         self._inputs = (tokens, mask)
@@ -378,6 +453,8 @@ class ObjectConditioning(nn.Module):
         """
         if self.mode == "controlvla":
             return self.attention.is_live
+        if self.mode == "layerwise":
+            return any(layer.is_live for layer in self.layers.values())
         return bool(self.injection.weight.any().item())
 
     def residual(self, action_emb: Tensor) -> Tensor:
@@ -397,6 +474,8 @@ class ObjectConditioning(nn.Module):
         if self.mode == "controlvla":
             memory, padding = self.embedding(tokens, mask)
             return action_emb + self.attention(action_emb, memory, padding)
+        if self.mode == "layerwise":
+            return action_emb
         context = self.expert(tokens, mask)
         if context is None:
             return action_emb
@@ -450,13 +529,14 @@ class ObjectConditionedPolicyMixin:
     def object_conditioning(self) -> ObjectConditioning:
         host = resolve_module(self, self.object_module_path)
         module = getattr(host, self.object_module_attr, None)
-        if not isinstance(module, ObjectConditioning):
+        active = unwrap_object_conditioning(module)
+        if active is None:
             raise ObjectConditioningError(
                 f"{self.object_module_path}.{self.object_module_attr} is "
                 f"{type(module).__name__}, not ObjectConditioning. The host module "
                 "must construct one in its __init__."
             )
-        return module
+        return active
 
     @property
     def _object_state_prefix(self) -> str:
@@ -493,15 +573,22 @@ class ObjectConditionedPolicyMixin:
         # The single place tokens enter the model, so the arm's ablation is
         # applied here: training and evaluation then cannot disagree about the
         # layout, and the mode travels with the checkpoint's config.
-        tokens, mask = apply_token_mode(
-            batched(batch.get(self.config.object_token_key), unbatched_ndim=2),
-            batched(batch.get(self.config.object_token_mask_key), unbatched_ndim=1),
-            mode=self.config.object_token_mode,
-            shuffle=self.config.object_token_shuffle,
-            # Absent on datasets exported before the stable ordering existed;
-            # apply_token_mode then falls back to per-frame position sorting.
-            rank=batched(batch.get(self.config.object_token_rank_key), unbatched_ndim=1),
-        )
+        if getattr(self.config, "object_representation", "legacy") == "entity_v2":
+            tokens = batched(batch.get("observation.entity_tokens"), unbatched_ndim=2)
+            mask = batched(batch.get("observation.entity_mask"), unbatched_ndim=1)
+            if tokens is None or mask is None:
+                raise ValueError("entity_v2 requires both entity_tokens and entity_mask")
+            if self.config.object_token_shuffle:
+                order = torch.randperm(tokens.shape[-2], device=tokens.device)
+                tokens, mask = tokens[..., order, :], mask[..., order]
+        else:
+            tokens, mask = apply_token_mode(
+                batched(batch.get(self.config.object_token_key), unbatched_ndim=2),
+                batched(batch.get(self.config.object_token_mask_key), unbatched_ndim=1),
+                mode=self.config.object_token_mode,
+                shuffle=self.config.object_token_shuffle,
+                rank=batched(batch.get(self.config.object_token_rank_key), unbatched_ndim=1),
+            )
         self.object_conditioning.set_inputs(tokens, mask)
 
     def _clear_object_inputs(self) -> None:

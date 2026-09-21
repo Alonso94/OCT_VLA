@@ -35,7 +35,19 @@ SPLIT_MANIFEST="$DATASET/split_manifest.json"
 [ -f "$SPLIT_MANIFEST" ] || { echo "No split_manifest.json in $DATASET" >&2; exit 2; }
 EVAL_SPLIT=$("$OCTVLA_POLICY_PYTHON" -c "import json,sys; print(json.load(open(sys.argv[1]))['eval_split'])" "$SPLIT_MANIFEST")
 
-RUN_NAME="act_${ACT_DATASET}_s${TRAIN_SEED:-1000}"
+ACT_POLICY_TYPE="${ACT_POLICY_TYPE:-act}"
+POLICY_ARGS=(--policy.type="$ACT_POLICY_TYPE")
+case "$ACT_POLICY_TYPE" in
+  act) ;;
+  control_act)
+    ENTITY_ARGS_TEXT=$("$OCTVLA_POLICY_PYTHON" "$OCTVLA_REPO/scripts/entity_training_args.py" "$DATASET")
+    mapfile -t ENTITY_ARGS <<< "$ENTITY_ARGS_TEXT"
+    POLICY_ARGS+=(--policy.discover_packages_path=oct_vla.policies "${ENTITY_ARGS[@]}")
+    ACT_CONDITIONING=object
+    ;;
+  *) echo "Invalid ACT_POLICY_TYPE" >&2; exit 2 ;;
+esac
+RUN_NAME="${ACT_POLICY_TYPE}_${ACT_DATASET}_s${TRAIN_SEED:-1000}"
 OUTPUT="$OCTVLA_OUTPUT_ROOT/$RUN_NAME"
 if [ -e "$OUTPUT" ]; then
   echo "Run directory already exists: $OUTPUT" >&2
@@ -79,7 +91,7 @@ srun "$OCTVLA_POLICY_PYTHON" -u -m lerobot.scripts.lerobot_train \
   --dataset.repo_id="local/oct-vla-shelf-restock-${ACT_DATASET#three_object_}" \
   --dataset.root="$DATASET" \
   --dataset.eval_split="$EVAL_SPLIT" \
-  --policy.type=act \
+  "${POLICY_ARGS[@]}" \
   --policy.chunk_size="${CHUNK_SIZE:-50}" \
   --policy.n_action_steps="${N_ACTION_STEPS:-50}" \
   --policy.push_to_hub=false \

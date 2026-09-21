@@ -33,3 +33,6 @@ logs/
 *.orig
 * copy.py
 *_backup.py
+
+# Local correctness-check checkpoints
+/.validation/

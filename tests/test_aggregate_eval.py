@@ -212,3 +212,188 @@ def test_an_empty_tag_stays_comparable_with_older_reports():
         "conditioning": "rgb", "token_mode": "full", "seed": 1000, "backbone": "act"}}
     assert (aggregate_eval.arm_of({"checkpoint": checkpoint, "eval_tag": ""}, meta)
             == aggregate_eval.arm_of({"checkpoint": checkpoint}, meta))
+
+
+# ---------------------------------------------------------- grouping / metrics
+
+
+def eval_report(
+    run_name,
+    rows,
+    *,
+    object_representation="gt_roles",
+    evaluation_split="development",
+    steps_per_object=200,
+):
+    return {
+        "checkpoint": f"/out/{run_name}/checkpoints/best/pretrained_model",
+        "object_representation": object_representation,
+        "evaluation_split": evaluation_split,
+        "steps_per_object": steps_per_object,
+        "episodes": rows,
+        "summary": {
+            "three_object": {
+                "episodes": len(rows),
+                "success_rate": sum(bool(row["success"]) for row in rows) / len(rows),
+                "mean_transfers": sum(row["transfers_completed"] for row in rows) / len(rows),
+            }
+        },
+    }
+
+
+def object_episode(seed, success, transfers, *, profile="three_object", total=3):
+    row = episode(seed, profile, success, transfers)
+    row["objects_total"] = total
+    return row
+
+
+def run_aggregate(tmp_path, monkeypatch, reports, metadata):
+    report_paths = []
+    for index, report in enumerate(reports):
+        path = tmp_path / f"eval_{index}.json"
+        path.write_text(json.dumps(report))
+        report_paths.append(path)
+    meta_dir = tmp_path / "run_metadata"
+    meta_dir.mkdir()
+    for run_name, record in metadata.items():
+        (meta_dir / f"{run_name}.json").write_text(json.dumps(record))
+    output = tmp_path / "aggregate.json"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "aggregate",
+            *[str(path) for path in report_paths],
+            "--run-metadata",
+            str(meta_dir),
+            "--output",
+            str(output),
+        ],
+    )
+    assert aggregate_eval.main() == 0
+    return json.loads(output.read_text())
+
+
+def test_grouping_prevents_merging_different_object_representations(tmp_path, monkeypatch):
+    reports = [
+        eval_report("pi05_rgb_s1000", [object_episode(800, False, 0)]),
+        eval_report(
+            "pi05_object_full_s1000",
+            [object_episode(800, True, 1)],
+            object_representation="gt_roles",
+        ),
+        eval_report(
+            "pi05_object_full_s1001",
+            [object_episode(800, False, 0)],
+            object_representation="role_stripped",
+        ),
+    ]
+    metadata = {
+        "pi05_rgb_s1000": {"conditioning": "rgb", "seed": 1000, "backbone": "pi05"},
+        "pi05_object_full_s1000": {
+            "conditioning": "object",
+            "token_mode": "full",
+            "seed": 1000,
+            "backbone": "pi05",
+        },
+        "pi05_object_full_s1001": {
+            "conditioning": "object",
+            "token_mode": "full",
+            "seed": 1001,
+            "backbone": "pi05",
+        },
+    }
+
+    merged = run_aggregate(tmp_path, monkeypatch, reports, metadata)
+
+    object_arms = [name for name in merged["arms"] if name.startswith("object_full")]
+    assert len(object_arms) == 2
+    assert any("object_representation=gt_roles" in name for name in object_arms)
+    assert any("object_representation=role_stripped" in name for name in object_arms)
+
+
+def test_grouping_prevents_merging_different_eval_splits_and_step_budgets(tmp_path, monkeypatch):
+    reports = [
+        eval_report("pi05_rgb_s1000", [object_episode(800, False, 0)]),
+        eval_report(
+            "pi05_rgb_s1001",
+            [object_episode(800, True, 1)],
+            evaluation_split="development_holdout",
+        ),
+        eval_report(
+            "pi05_rgb_s1002",
+            [object_episode(800, True, 1)],
+            steps_per_object=300,
+        ),
+    ]
+    metadata = {
+        "pi05_rgb_s1000": {"conditioning": "rgb", "seed": 1000, "backbone": "pi05"},
+        "pi05_rgb_s1001": {"conditioning": "rgb", "seed": 1001, "backbone": "pi05"},
+        "pi05_rgb_s1002": {"conditioning": "rgb", "seed": 1002, "backbone": "pi05"},
+    }
+
+    merged = run_aggregate(tmp_path, monkeypatch, reports, metadata)
+
+    assert len(merged["arms"]) == 3
+    assert any("evaluation_split=development_holdout" in name for name in merged["arms"])
+    assert any("steps_per_object=300" in name for name in merged["arms"])
+
+
+def test_first_transfer_and_normalized_transfer_metrics_are_paired_by_scene_seed(
+    tmp_path, monkeypatch
+):
+    reports = [
+        eval_report(
+            "pi05_rgb_s1000",
+            [object_episode(800, False, 0), object_episode(801, False, 1)],
+        ),
+        eval_report(
+            "pi05_object_full_s1000",
+            [object_episode(800, True, 3), object_episode(801, False, 1)],
+        ),
+    ]
+    metadata = {
+        "pi05_rgb_s1000": {"conditioning": "rgb", "seed": 1000, "backbone": "pi05"},
+        "pi05_object_full_s1000": {
+            "conditioning": "object",
+            "token_mode": "full",
+            "seed": 1000,
+            "backbone": "pi05",
+        },
+    }
+
+    merged = run_aggregate(tmp_path, monkeypatch, reports, metadata)
+
+    object_arm = next(name for name in merged["arms"] if name.startswith("object_full"))
+    overall = merged["arms"][object_arm]["overall"]
+    assert overall["first_transfer_rate"] == pytest.approx(1.0)
+    assert overall["mean_normalized_transfers"] == pytest.approx((1.0 + 1 / 3) / 2)
+    comparison = next(iter(merged["paired_comparisons"].values()))
+    assert comparison["metrics"]["first_transfer"]["pairs"] == 2
+    assert comparison["metrics"]["first_transfer"]["difference"] == pytest.approx(0.5)
+    assert comparison["metrics"]["normalized_transfers"]["pairs"] == 2
+    assert comparison["metrics"]["normalized_transfers"]["difference"] == pytest.approx(0.5)
+
+
+def test_pairing_does_not_cross_training_seeds(tmp_path, monkeypatch):
+    reports = [
+        eval_report("pi05_rgb_s1000", [object_episode(800, False, 0)]),
+        eval_report("pi05_object_full_s1001", [object_episode(800, True, 3)]),
+    ]
+    metadata = {
+        "pi05_rgb_s1000": {"conditioning": "rgb", "seed": 1000, "backbone": "pi05"},
+        "pi05_object_full_s1001": {
+            "conditioning": "object",
+            "token_mode": "full",
+            "seed": 1001,
+            "backbone": "pi05",
+        },
+    }
+
+    merged = run_aggregate(tmp_path, monkeypatch, reports, metadata)
+
+    comparison = next(iter(merged["paired_comparisons"].values()))
+    assert comparison == {"pairs": 0, "metrics": {
+        "success": {"pairs": 0},
+        "first_transfer": {"pairs": 0},
+        "normalized_transfers": {"pairs": 0},
+    }}

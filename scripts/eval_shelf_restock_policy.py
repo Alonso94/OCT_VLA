@@ -75,6 +75,7 @@ def state_vector(eef) -> list[float]:
 def build_observation(
     obs, *, object_token_spec, torch, np, ranks=None, control_space="cartesian",
     privileged=False, uint8_images=True, state_encoding="position", previous_joints=None,
+    entity_max_entities=None,
 ):
     from oct_vla.data.object_tokens import object_token_ranks, object_tokens
 
@@ -128,6 +129,15 @@ def build_observation(
                 ))],
                 dtype=torch.float32,
             )
+    if entity_max_entities is not None:
+        from oct_vla.data.entity_tokens import build_entity_tokens
+
+        supports = getattr(obs, "supports", ())
+        if not supports:
+            raise ValueError("entity_v2 requires support geometry from an updated simulator server")
+        tokens, mask = build_entity_tokens(obs.scene, obs.eef, supports, entity_max_entities)
+        batch["observation.entity_tokens"] = torch.tensor([tokens], dtype=torch.float32)
+        batch["observation.entity_mask"] = torch.tensor([mask], dtype=torch.bool)
     if privileged:
         # Flattened object tokens, exactly as the privileged export writes them.
         # The vision-free policy reads only this and observation.state; the
@@ -146,6 +156,7 @@ def run_episode(
     seed, profile, max_steps, object_token_spec, torch, np, control_space="cartesian",
     privileged=False, uint8_images=True, state_encoding="position", video=None,
     gripper_encoding="measured_aperture",
+    entity_max_entities=None,
 ) -> dict:
     observation = client.reset(seed, profile, control_space=control_space,
                                gripper_encoding=gripper_encoding)
@@ -180,6 +191,7 @@ def run_episode(
             uint8_images=uint8_images,
             state_encoding=state_encoding,
             previous_joints=previous_joints,
+            entity_max_entities=entity_max_entities,
         )
         if observation.joints is not None:
             previous_joints = joint_vector(observation.joints)
@@ -235,14 +247,16 @@ def main() -> int:
     parser.add_argument("--profiles", default="two_object,three_object,four_object")
     parser.add_argument("--seeds", required=True, help="Comma-separated, or FIRST-LAST")
     parser.add_argument("--max-steps", type=int, default=600)
+    parser.add_argument("--steps-per-object", type=int, default=None,
+                        help="Use this many control steps per object instead of --max-steps.")
+    parser.add_argument("--evaluation-split", choices=("development", "test"), default="test",
+                        help="Only three-object development rollouts may select checkpoints.")
     parser.add_argument("--object-tokens", action="store_true")
     parser.add_argument(
         "--shuffle-tokens",
         action="store_true",
-        help="Permute object tokens across objects. The control for 'does the "
-        "policy use the tokens at all?': a policy that reads them degrades, one "
-        "that ignores them scores the same. Evaluation only -- it overrides the "
-        "checkpoint's own setting and never changes the weights.",
+        help="Permute complete token rows. This tests set invariance; it is not "
+        "a negative control for whether object information is used.",
     )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
@@ -300,6 +314,13 @@ def main() -> int:
     else:
         seeds = [int(v) for v in args.seeds.split(",") if v.strip()]
     profiles = [p.strip() for p in args.profiles.split(",") if p.strip()]
+
+    if args.max_steps <= 0 or (args.steps_per_object is not None and args.steps_per_object <= 0):
+        parser.error("step budgets must be positive")
+    if args.evaluation_split == "development" and profiles != ["three_object"]:
+        parser.error("checkpoint-development evaluation requires --profiles three_object")
+    if not seeds or len(set(seeds)) != len(seeds):
+        parser.error("provide a nonempty set of distinct evaluation seeds")
 
     # Registers any policy plugin this repo defines (control_pi05) before the
     # checkpoint's own config is resolved. LeRobot maps a saved policy type to
@@ -429,7 +450,12 @@ def main() -> int:
             "rename_observations_processor": {"rename_map": rename_map},
         },
     )
-    spec = ObjectTokenSpec() if (args.object_tokens or privileged) else None
+    entity_v2 = getattr(config, "object_representation", "legacy") == "entity_v2"
+    uses_legacy_tokens = (
+        args.object_tokens or hasattr(config, "object_token_key")
+    ) and not entity_v2
+    spec = ObjectTokenSpec() if (uses_legacy_tokens or privileged) else None
+    entity_max_entities = getattr(config, "object_max_entities", 16) if entity_v2 else None
 
     record = set(seeds)
     if args.video_dir and args.video_seeds:
@@ -461,12 +487,17 @@ def main() -> int:
                     )
                 outcome = run_episode(
                     client, policy, preprocessor, postprocessor,
-                    seed=seed, profile=profile, max_steps=args.max_steps,
+                    seed=seed, profile=profile,
+                    max_steps=(args.steps_per_object * {"two_object": 2, "three_object": 3,
+                                                       "four_object": 4}[profile]
+                               if args.steps_per_object is not None else args.max_steps),
                     object_token_spec=spec, torch=torch, np=np,
                     control_space=control_space, privileged=privileged,
                     uint8_images=uint8_images, state_encoding=state_encoding,
                     gripper_encoding=gripper_encoding, video=video,
+                    entity_max_entities=entity_max_entities,
                 )
+                outcome["evaluation_split"] = args.evaluation_split
                 results.append(outcome)
                 print(json.dumps(outcome), flush=True)
 
@@ -483,7 +514,10 @@ def main() -> int:
         }
     report = {
         "checkpoint": str(args.checkpoint),
-        "object_tokens": args.object_tokens,
+        "evaluation_split": args.evaluation_split,
+        "steps_per_object": args.steps_per_object,
+        "object_tokens": bool(spec is not None or entity_v2),
+        "object_representation": getattr(config, "object_representation", "legacy"),
         # Recorded, not inferred later from the checkpoint path: the shuffled
         # control reuses arm B's weights, so the path alone cannot distinguish
         # the two and aggregation would silently merge them into one arm.

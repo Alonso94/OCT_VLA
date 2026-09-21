@@ -38,6 +38,10 @@ class ControlVLAFlowMatching(VLAFlowMatching):
         self.object_conditioning = ObjectConditioning(
             config, self.action_in_proj.out_features
         )
+        if config.object_injection_mode == "layerwise":
+            from oct_vla.policies.layerwise_backbones import install_smol_layerwise
+
+            install_smol_layerwise(self)
 
     def embed_suffix(self, noisy_actions: Tensor, timestep: Tensor):
         # Three-tuple, unlike π0.5's four. `embs` here is the concatenated

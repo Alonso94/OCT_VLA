@@ -131,7 +131,9 @@ def _two_frame_episode():
     def obs(offset):
         frame = SimpleNamespace(height=240, width=320)
         return SimpleNamespace(
-            head_rgb=frame, left_wrist_rgb=frame, right_wrist_rgb=frame,
+            head_rgb=frame,
+            left_wrist_rgb=frame,
+            right_wrist_rgb=frame,
             joints=JointState(
                 ArmJoints(tuple(0.1 + offset for _ in range(7)), 0.8),
                 ArmJoints(tuple(0.2 + offset for _ in range(7)), 0.3),
@@ -212,12 +214,14 @@ def test_a_normal_export_still_carries_cameras():
 
 def _run_clips(seeds, per_run=3):
     from pathlib import Path
+
     return [Path(f"seed_{s}/episode_0{s}_{i}") for s in seeds for i in range(per_run)]
 
 
 def _splits_module():
     import importlib.util
     from pathlib import Path
+
     root = Path(__file__).resolve().parents[2]
     spec = importlib.util.spec_from_file_location(
         "bs", root / "scripts/build_shelf_restock_splits.py"
@@ -333,13 +337,19 @@ def _joint_episode(*configurations):
             left=NS(positions=tuple(left[:-1]), gripper=left[-1]),
             right=NS(positions=tuple(right[:-1]), gripper=right[-1]),
         )
-        joints.to_vector = (lambda j: lambda: (
-            *j.left.positions, j.left.gripper, *j.right.positions, j.right.gripper
-        ))(joints)
+        joints.to_vector = (
+            lambda j: (
+                lambda: (*j.left.positions, j.left.gripper, *j.right.positions, j.right.gripper)
+            )
+        )(joints)
         frame = NS(height=240, width=320)
-        samples.append(NS(observation=NS(
-            joints=joints, head_rgb=frame, left_wrist_rgb=frame, right_wrist_rgb=frame
-        )))
+        samples.append(
+            NS(
+                observation=NS(
+                    joints=joints, head_rgb=frame, left_wrist_rgb=frame, right_wrist_rgb=frame
+                )
+            )
+        )
     return NS(samples=tuple(samples), seed=1)
 
 
@@ -392,8 +402,7 @@ def test_the_state_feature_widens_but_the_action_does_not():
     from oct_vla.data.lerobot_export import _features
 
     episode = _joint_episode(((0.0, 1.0, 0.5), (2.0, 3.0, 0.8)))
-    features = _features(episode, control_space="joint_delta",
-                         state_encoding="position_velocity")
+    features = _features(episode, control_space="joint_delta", state_encoding="position_velocity")
     assert features["observation.state"]["shape"] == (12,)
     assert features["action"]["shape"] == (6,)
     names = features["observation.state"]["names"]["motors"]
@@ -428,21 +437,28 @@ def _eef_episode(*poses):
 
     samples = []
     for left, right in poses:
+
         def arm(p):
             return NS(pose=NS(position=p[:3], orientation=p[3:7]), gripper=p[7])
+
         frame = NS(height=240, width=320)
-        samples.append(NS(
-            observation=NS(eef=NS(left=arm(left), right=arm(right)), joints=None,
-                           head_rgb=frame, left_wrist_rgb=frame, right_wrist_rgb=frame),
-            action=NS(to_vector=lambda: tuple(range(14))),
-        ))
+        samples.append(
+            NS(
+                observation=NS(
+                    eef=NS(left=arm(left), right=arm(right)),
+                    joints=None,
+                    head_rgb=frame,
+                    left_wrist_rgb=frame,
+                    right_wrist_rgb=frame,
+                ),
+                action=NS(to_vector=lambda: tuple(range(14))),
+            )
+        )
     return NS(samples=tuple(samples), seed=1)
 
 
-POSE_A = ((0.1, 0.2, 0.3, 0.0, 0.0, 0.0, 1.0, 0.83),
-          (0.4, 0.5, 0.6, 0.0, 0.0, 1.0, 0.0, 0.17))
-POSE_B = ((0.15, 0.2, 0.35, 0.0, 0.0, 0.0, 1.0, 0.83),
-          (0.4, 0.55, 0.6, 0.0, 0.0, 1.0, 0.0, 0.80))
+POSE_A = ((0.1, 0.2, 0.3, 0.0, 0.0, 0.0, 1.0, 0.83), (0.4, 0.5, 0.6, 0.0, 0.0, 1.0, 0.0, 0.17))
+POSE_B = ((0.15, 0.2, 0.35, 0.0, 0.0, 0.0, 1.0, 0.83), (0.4, 0.55, 0.6, 0.0, 0.0, 1.0, 0.0, 0.80))
 
 
 def test_the_absolute_eef_action_is_the_next_frame_pose():
@@ -502,5 +518,19 @@ def test_a_privileged_cartesian_export_is_refused():
 
     episode = _eef_episode(POSE_A, POSE_B)
     with pytest.raises(ValueError, match="joint spaces only"):
-        _features(episode, control_space="cartesian", privileged=True,
-                  object_token_spec=ObjectTokenSpec())
+        _features(
+            episode, control_space="cartesian", privileged=True, object_token_spec=ObjectTokenSpec()
+        )
+
+
+def test_entity_feature_schema_is_opt_in_and_role_free():
+    episode = _eef_episode(POSE_A, POSE_B)
+    features = _features(episode, entity_token_max_entities=16)
+    assert features["observation.entity_tokens"] == {"dtype": "float32", "shape": (16, 17)}
+    assert features["observation.entity_mask"] == {"dtype": "float32", "shape": (16,)}
+
+
+@pytest.mark.parametrize("capacity", (0, -1))
+def test_entity_feature_schema_rejects_nonpositive_capacity(capacity):
+    with pytest.raises(ValueError, match="positive"):
+        _features(_eef_episode(POSE_A, POSE_B), entity_token_max_entities=capacity)
