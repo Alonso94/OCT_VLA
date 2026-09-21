@@ -162,6 +162,38 @@ def main() -> int:
     ok &= check("forward pass", torch.isfinite(torch.as_tensor(loss)).all().item(),
                 f"loss {float(torch.as_tensor(loss).mean()):.4f}")
 
+    # requires_grad is not enough, and neither is a falling loss: a backbone
+    # that freezes by *name* can leave the object path out of the optimiser
+    # while everything else trains normally. GR00T's action head calls
+    # set_trainable_parameters in its own __init__, before the conditioning
+    # module is attached, so the module is never named there -- true today, and
+    # exactly the kind of thing a LeRobot upgrade changes silently. So take a
+    # real gradient and require it to be non-zero.
+    if isinstance(policy, ObjectConditionedPolicyMixin):
+        prefix = policy._object_state_prefix
+        object_params = {
+            name: parameter
+            for name, parameter in policy.named_parameters()
+            if name.startswith(prefix)
+        }
+        ok &= check("object parameters exist", bool(object_params),
+                    f"{len(object_params)} tensors under {prefix}")
+        frozen = [name for name, parameter in object_params.items() if not parameter.requires_grad]
+        ok &= check("object parameters are trainable", not frozen,
+                    f"{len(frozen)} frozen" if frozen else "all require grad")
+        policy.zero_grad(set_to_none=True)
+        torch.as_tensor(policy.forward(preprocessor(batch))[0]).mean().backward()
+        moved = [
+            name for name, parameter in object_params.items()
+            if parameter.grad is not None and parameter.grad.abs().sum().item() > 0
+        ]
+        # Not every tensor: the zero-init projections receive no gradient on the
+        # very first step by construction, which is the mechanism working, not a
+        # fault. What must not happen is *nothing* in the object path moving.
+        ok &= check("object path receives gradient", bool(moved),
+                    f"{len(moved)}/{len(object_params)} tensors with non-zero grad")
+        policy.zero_grad(set_to_none=True)
+
     with torch.no_grad():
         actions = policy.predict_action_chunk(preprocessor(batch))
     ok &= check("action chunk predicted", actions.shape[-1] == action_dim,
