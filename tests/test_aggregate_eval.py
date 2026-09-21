@@ -247,7 +247,7 @@ def object_episode(seed, success, transfers, *, profile="three_object", total=3)
     return row
 
 
-def run_aggregate(tmp_path, monkeypatch, reports, metadata):
+def run_aggregate(tmp_path, monkeypatch, reports, metadata, baseline=None):
     report_paths = []
     for index, report in enumerate(reports):
         path = tmp_path / f"eval_{index}.json"
@@ -267,6 +267,7 @@ def run_aggregate(tmp_path, monkeypatch, reports, metadata):
             str(meta_dir),
             "--output",
             str(output),
+            *(["--baseline", baseline] if baseline else []),
         ],
     )
     assert aggregate_eval.main() == 0
@@ -305,10 +306,28 @@ def test_grouping_prevents_merging_different_object_representations(tmp_path, mo
 
     merged = run_aggregate(tmp_path, monkeypatch, reports, metadata)
 
+    # Still separate arms -- two representations must never be averaged.
     object_arms = [name for name in merged["arms"] if name.startswith("object_full")]
     assert len(object_arms) == 2
-    assert any("object_representation=gt_roles" in name for name in object_arms)
-    assert any("object_representation=role_stripped" in name for name in object_arms)
+    assert any("object_full_gt_roles" in name for name in object_arms)
+    assert any("object_full_role_stripped" in name for name in object_arms)
+
+    # ...but still *pairable* against the RGB baseline. The representation is
+    # the treatment; when it was a grouping field the two landed in different
+    # evaluation contexts and the headline comparison vanished from this JSON
+    # with only a line on stderr.
+    paired = merged["paired_comparisons"]
+    gt_roles = next(name for name in paired if "object_full_gt_roles" in name)
+    assert gt_roles.endswith("_vs_rgb__evaluation_split=development__steps_per_object=200")
+    assert paired[gt_roles]["pairs"] == 1, paired[gt_roles]
+    assert "unpaired_reason" not in paired[gt_roles]
+
+    # The role_stripped arm is seed 1001 and the baseline is seed 1000, so it
+    # legitimately has nothing to pair with -- training seed stays in the key so
+    # two independently trained checkpoints are not pseudo-replicates. That must
+    # still be *recorded* rather than silently absent.
+    role_stripped = next(name for name in paired if "object_full_role_stripped" in name)
+    assert paired[role_stripped]["pairs"] == 0
 
 
 def test_grouping_prevents_merging_different_eval_splits_and_step_budgets(tmp_path, monkeypatch):
@@ -397,3 +416,62 @@ def test_pairing_does_not_cross_training_seeds(tmp_path, monkeypatch):
         "first_transfer": {"pairs": 0},
         "normalized_transfers": {"pairs": 0},
     }}
+
+
+def test_an_entity_arm_pairs_with_a_legacy_baseline(tmp_path, monkeypatch):
+    """The production shape of the headline comparison.
+
+    `eval_shelf_restock_policy.py` writes `object_representation` on every
+    report, so an RGB baseline says "legacy" while an entity-conditioned arm
+    says "entity_v2". While the representation was a grouping field those two
+    landed in different evaluation contexts and never paired: the comparison
+    was dropped to a stderr warning and was absent from the JSON entirely,
+    which on a Slurm node means nobody sees it.
+    """
+    reports = [
+        eval_report("act_rgb_s1000", [object_episode(800, False, 0)],
+                    object_representation="legacy"),
+        eval_report("control_act_object_full_s1000", [object_episode(800, True, 1)],
+                    object_representation="entity_v2"),
+    ]
+    metadata = {
+        "act_rgb_s1000": {"conditioning": "rgb", "seed": 1000, "backbone": "act"},
+        "control_act_object_full_s1000": {
+            "conditioning": "object",
+            "token_mode": "full",
+            "seed": 1000,
+            "backbone": "act",
+            "object_representation": "entity_v2",
+        },
+    }
+
+    merged = run_aggregate(tmp_path, monkeypatch, reports, metadata, baseline="act_rgb")
+
+    name = next(n for n in merged["paired_comparisons"] if "entity_v2" in n)
+    comparison = merged["paired_comparisons"][name]
+    assert comparison["pairs"] == 1, comparison
+    assert "unpaired_reason" not in comparison
+    # The baseline keeps its own name: appending the representation to every
+    # label would rename it too and `--baseline` would find nothing.
+    assert "act_rgb__" in name or name.endswith("_vs_act_rgb")
+
+
+def test_a_missing_baseline_is_recorded_not_only_warned(tmp_path, monkeypatch):
+    """An absent comparison reads identically to one never requested."""
+    reports = [
+        eval_report("act_rgb_s1000", [object_episode(800, False, 0)], steps_per_object=200),
+        eval_report("control_act_object_full_s1000", [object_episode(800, True, 1)],
+                    object_representation="entity_v2", steps_per_object=300),
+    ]
+    metadata = {
+        "act_rgb_s1000": {"conditioning": "rgb", "seed": 1000, "backbone": "act"},
+        "control_act_object_full_s1000": {
+            "conditioning": "object", "token_mode": "full", "seed": 1000, "backbone": "act",
+        },
+    }
+
+    merged = run_aggregate(tmp_path, monkeypatch, reports, metadata, baseline="act_rgb")
+
+    name = next(n for n in merged["paired_comparisons"] if "object_full" in n)
+    assert merged["paired_comparisons"][name]["pairs"] == 0
+    assert "steps_per_object" in merged["paired_comparisons"][name]["unpaired_reason"]

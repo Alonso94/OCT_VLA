@@ -18,6 +18,18 @@ ENTITY_TOKEN_SCHEMA = "oct-vla-entity-tokens-v2"
 ENTITY_TOKEN_DIM = 17
 ENTITY_TYPES = ("movable", "left_gripper", "right_gripper", "support")
 
+#: Where the type one-hot starts, and which of its slots describe an entity that
+#: occupies space. Grippers do not: their `size_xyz` is a structural (0, 0, 0),
+#: not a measurement, so they must not enter the size statistics.
+_TYPE_OFFSET = ENTITY_TOKEN_DIM - len(ENTITY_TYPES)
+_SIZED_TYPES = ("movable", "support")
+
+
+def _has_size(token: Sequence[float]) -> bool:
+    return any(
+        float(token[_TYPE_OFFSET + ENTITY_TYPES.index(name)]) > 0.5 for name in _SIZED_TYPES
+    )
+
 
 @dataclass(frozen=True)
 class EntitySupport:
@@ -149,7 +161,8 @@ class EntityTokenNormalizer:
     def fit(
         cls, batches: Iterable[tuple[Sequence[Sequence[float]], Sequence[bool]]]
     ) -> EntityTokenNormalizer:
-        values = [[], [], [], [], [], []]
+        position_values = [[], [], []]
+        size_values = [[], [], []]
         for tokens, mask in batches:
             if len(tokens) != len(mask):
                 raise ValueError("tokens and entity mask must have the same length")
@@ -159,10 +172,27 @@ class EntityTokenNormalizer:
                         raise ValueError(f"expected {ENTITY_TOKEN_DIM}-d entity token")
                     if not all(isfinite(float(value)) for value in token):
                         raise ValueError("valid entity tokens must contain only finite values")
-                    for index, field in enumerate((0, 1, 2, 9, 10, 11)):
-                        values[index].append(float(token[field]))
-        if not values[0]:
+                    for index, field in enumerate((0, 1, 2)):
+                        position_values[index].append(float(token[field]))
+                    # Size statistics come from entities that *have* a size.
+                    # Grippers are given (0, 0, 0) because a gripper's extent is
+                    # not a scene quantity, and with two grippers and two
+                    # supports beside ~3 objects those structural zeros were
+                    # about 29 % of the samples -- dragging the mean toward zero
+                    # and inflating the deviation, so every real size normalized
+                    # to roughly the same place.
+                    if _has_size(token):
+                        for index, field in enumerate((9, 10, 11)):
+                            size_values[index].append(float(token[field]))
+        if not position_values[0]:
             raise ValueError("cannot fit entity normalization without valid training entities")
+        if not size_values[0]:
+            raise ValueError(
+                "cannot fit entity size normalization: no training entity has a size. "
+                "Only grippers carry (0, 0, 0), so a corpus of grippers alone is not "
+                "something to normalize against."
+            )
+        values = position_values + size_values
 
         def stats(column: list[float]) -> tuple[float, float]:
             mean = sum(column) / len(column)

@@ -30,7 +30,18 @@ from typing import Any
 
 #: 95% two-sided normal quantile.
 Z = 1.959963984540054
-GROUP_FIELDS = ("object_representation", "evaluation_split", "steps_per_object")
+#: Fields that must match before two rows may be *paired*. A pairing context is
+#: for things that make two numbers incommensurable -- a development split
+#: against a test split, a 200-step budget against a 300-step one.
+#:
+#: `object_representation` is deliberately NOT here. It is the treatment axis:
+#: the whole question is whether an entity-conditioned arm beats an RGB
+#: baseline, and those report different representations by construction. Making
+#: it a grouping field put them in different contexts, so the headline
+#: comparison was skipped with a warning to stderr and was simply absent from
+#: the output JSON -- invisible on a Slurm node. It belongs in the arm label,
+#: with `token_mode` and `shuffled_tokens`.
+GROUP_FIELDS = ("evaluation_split", "steps_per_object")
 PROFILE_OBJECTS = {"two_object": 2, "three_object": 3, "four_object": 4}
 ArmContext = tuple[tuple[str, Any], ...]
 ArmId = tuple[str, ArmContext]
@@ -151,6 +162,25 @@ def arm_of(report: dict, run_metadata: dict[str, dict]) -> tuple[str, int]:
     # which one produced a run; "rgb" alone no longer identifies an arm.
     if backbone and backbone != "pi05":
         label = f"{backbone}_{label}"
+    # The representation is part of the arm, not of the pairing context: an
+    # entity_v2 arm and an RGB baseline are exactly the contrast the sweep
+    # exists to draw, so they must remain pairable.
+    #
+    # Only for arms that read the tokens. Every report records a representation
+    # -- eval writes `getattr(config, "object_representation", "legacy")`
+    # whatever the arm -- so appending it unconditionally would rename the
+    # baseline too, and `--baseline rgb` would then find nothing. "legacy" is
+    # also left off, so labels recorded before representations existed keep
+    # their names.
+    if conditioning == "object":
+        representation = (
+            report.get("object_representation")
+            or report.get("object_token_schema")
+            or meta.get("object_representation")
+            or meta.get("object_token_schema")
+        )
+        if representation and representation != "legacy":
+            label += f"_{representation}"
     if report.get("shuffled_tokens"):
         # A separate arm, not a variant of B: same weights, different inputs.
         label += "_shuffled"
@@ -168,12 +198,6 @@ def evaluation_context(report: dict, metadata: dict | None = None) -> ArmContext
     """Fields that must match before rows are merged or paired."""
     metadata = metadata or {}
     context = {
-        "object_representation": (
-            report.get("object_representation")
-            or report.get("object_token_schema")
-            or metadata.get("object_representation")
-            or metadata.get("object_token_schema")
-        ),
         "evaluation_split": (
             report.get("evaluation_split") or report.get("split") or report.get("eval_split")
         ),
@@ -357,11 +381,19 @@ def main() -> int:
                 continue
             baseline_id = (args.baseline, arm_id[1])
             if baseline_id not in baseline_ids:
-                print(
-                    f"warning: no {args.baseline!r} baseline for {_arm_label(arm_id)}; "
-                    "skipping paired comparison for that evaluation context",
-                    file=sys.stderr,
+                # Recorded, not only warned. A comparison that is missing from
+                # the JSON is indistinguishable from one that was never asked
+                # for, and the reader has no way to tell that an arm went
+                # unscored -- which is how a headline result disappears.
+                reason = (
+                    f"no {args.baseline!r} baseline in evaluation context "
+                    f"{dict(arm_id[1]) or '{}'}"
                 )
+                comparisons[f"{_arm_label(arm_id)}_vs_{args.baseline}"] = {
+                    "pairs": 0,
+                    "unpaired_reason": reason,
+                }
+                print(f"warning: {_arm_label(arm_id)}: {reason}", file=sys.stderr)
                 continue
             shared = [
                 key[2:]

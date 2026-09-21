@@ -37,6 +37,33 @@ def stable_hash(value: Any) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
 
+#: What a throughput measurement and the cells it funds must agree on. Shared by
+#: both sides so they cannot drift into never matching. `batch_schema` is
+#: deliberately absent: it is recorded on the measurement because it explains the
+#: rate, but a cell does not carry one, so including it would make every
+#: measurement that names a batch schema match nothing.
+_IDENTITY_MATCH_FIELDS = (
+    "stage",
+    "backbone",
+    "representation",
+    "action_schema",
+    "dataset_revision",
+    "base_revision",
+    "adaptation",
+)
+
+
+def _identity_key(record: Any) -> tuple[tuple[str, str], ...]:
+    """The comparable identity of a cell or a measurement."""
+    return tuple(
+        sorted(
+            (field, canonical_json(getattr(record, field)))
+            for field in _IDENTITY_MATCH_FIELDS
+            if getattr(record, field, None) is not None
+        )
+    )
+
+
 @dataclass(frozen=True)
 class ExperimentCell:
     """One training/evaluation cell in the bounded development plan."""
@@ -199,20 +226,16 @@ class ThroughputMeasurement:
         return self.gpu_count * self.elapsed_seconds / 3600.0 / self.measured_steps
 
     def key(self) -> tuple[tuple[str, Any], ...]:
-        value = {
-            "stage": self.stage,
-            "backbone": self.backbone,
-            "representation": self.representation,
-            "action_schema": self.action_schema,
-            "dataset_revision": self.dataset_revision,
-            "base_revision": self.base_revision,
-            "adaptation": self.adaptation,
-            "batch_schema": self.batch_schema,
-        }
-        return tuple(sorted((k, canonical_json(v)) for k, v in value.items() if v is not None))
+        return _identity_key(self)
 
     def matches(self, cell: ExperimentCell) -> bool:
-        return self.key() == _measurement_key(cell)
+        """True when this measurement was taken on the kind of run `cell` is.
+
+        Without this the stage guard is decorative: it only requires *a*
+        measurement per stage, so one taken on a small ACT run would fund a
+        pi0.5 cell sitting in the same stage.
+        """
+        return self.key() == _identity_key(cell)
 
     def planned_gpu_hours(self, cell: ExperimentCell) -> float:
         if cell.to_manifest_record()["cell_hash"] in self.full_workload_cell_hashes:
@@ -275,18 +298,36 @@ def build_manifest(
             + ", ".join(missing)
         )
 
+    # A measurement may only fund cells it was actually taken on. Checked before
+    # any budget arithmetic, because a mismatched rate produces a number that
+    # looks authoritative and is not.
+    mismatched = [
+        cell.to_manifest_record()["cell_hash"]
+        for cell in cells
+        if not measurement_by_stage[cell.stage].matches(cell)
+    ]
+    if mismatched:
+        raise ValueError(
+            "Throughput measurement does not match the cell(s) it would fund: "
+            + ", ".join(sorted(mismatched))
+        )
+
     budget_records = []
     for stage in sorted(STAGE_GPU_HOUR_LIMITS):
         measurement = measurement_by_stage.get(stage)
-        measured_gpu_hours = measurement.measured_gpu_hours if measurement else 0.0
+        stage_cells = [cell for cell in cells if cell.stage == stage]
+        planned_gpu_hours = (
+            sum(measurement.planned_gpu_hours(cell) for cell in stage_cells) if measurement else 0.0
+        )
         limit = STAGE_GPU_HOUR_LIMITS[stage]
         budget_records.append(
             {
                 "stage": stage,
                 "limit_gpu_hours": limit,
-                "measured_stage_gpu_hours": measured_gpu_hours,
-                "remaining_gpu_hours": limit - measured_gpu_hours,
-                "fits": measured_gpu_hours <= limit,
+                "cells": len(stage_cells),
+                "planned_stage_gpu_hours": planned_gpu_hours,
+                "remaining_gpu_hours": limit - planned_gpu_hours,
+                "fits": planned_gpu_hours <= limit,
                 "source": measurement.source if measurement else None,
             }
         )
@@ -310,7 +351,10 @@ def build_manifest(
         "dry_run_only": True,
         "gpu_hour_limit_total": TOTAL_GPU_HOUR_LIMIT,
         "stage_gpu_hour_limits": STAGE_GPU_HOUR_LIMITS,
-        "budget_scope": "measured stage workload only; no per-step extrapolation",
+        "budget_scope": (
+            "per-cell extrapolation from a measured rate taken on a matching run; "
+            "a cell named in full_workload_cell_hashes uses the measured total directly"
+        ),
         "budget": budget_records,
         "throughput_measurements": throughput_records,
         "cells": cell_records,

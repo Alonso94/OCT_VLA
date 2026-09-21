@@ -14,7 +14,26 @@ from lerobot.policies.act.modeling_act import ACTPolicy
 from oct_vla.policies.control_act import ControlACTConfig, ControlACTPolicy
 
 
-def tiny_config():
+def tiny_config(*, flat_environment_state=False):
+    """A camera-bearing entity arm, as production runs are.
+
+    ACT requires at least one image *or* a flat environment state, and the
+    entity tokens are neither. An earlier version of this fixture supplied
+    `observation.environment_state` to satisfy that, which is the one
+    combination `validate_features` now refuses -- entity tokens retype ENV to
+    IDENTITY, and LeRobot resolves normalization per feature type, so a real
+    flat env state riding alongside them would stop being normalized.
+    """
+    features = {
+        "observation.state": PolicyFeature(type=FeatureType.STATE, shape=(16,)),
+        "observation.images.head": PolicyFeature(type=FeatureType.VISUAL, shape=(3, 32, 32)),
+        "observation.entity_tokens": PolicyFeature(type=FeatureType.STATE, shape=(8, 17)),
+        "observation.entity_mask": PolicyFeature(type=FeatureType.STATE, shape=(8,)),
+    }
+    if flat_environment_state:
+        features["observation.environment_state"] = PolicyFeature(
+            type=FeatureType.ENV, shape=(3,)
+        )
     return ControlACTConfig(
         device="cpu",
         dim_model=16,
@@ -27,12 +46,7 @@ def tiny_config():
         use_vae=False,
         dropout=0.0,
         pretrained_backbone_weights=None,
-        input_features={
-            "observation.state": PolicyFeature(type=FeatureType.STATE, shape=(16,)),
-            "observation.environment_state": PolicyFeature(type=FeatureType.ENV, shape=(3,)),
-            "observation.entity_tokens": PolicyFeature(type=FeatureType.STATE, shape=(8, 17)),
-            "observation.entity_mask": PolicyFeature(type=FeatureType.STATE, shape=(8,)),
-        },
+        input_features=features,
         output_features={"action": PolicyFeature(type=FeatureType.ACTION, shape=(16,))},
     )
 
@@ -40,7 +54,7 @@ def tiny_config():
 def batch():
     return {
         "observation.state": torch.randn(2, 16),
-        "observation.environment_state": torch.randn(2, 3),
+        "observation.images.head": torch.rand(2, 3, 32, 32),
         "observation.entity_tokens": torch.randn(2, 8, 17),
         "observation.entity_mask": torch.ones(2, 8, dtype=torch.bool),
         "action": torch.randn(2, 4, 16),
@@ -91,8 +105,23 @@ def test_actual_act_zero_identity_train_reload_and_select(tmp_path):
 
 def test_entity_features_are_identity_but_not_flat_environment():
     config = tiny_config()
+    # Entity tokens are typed ENV only to opt out of generic STATE
+    # normalization; `env_state_feature` must never mistake them for ACT's
+    # flat observation.environment_state input.
+    assert config.env_state_feature is None
     config.validate_features()
     assert config.normalization_mapping[FeatureType.ENV] == NormalizationMode.IDENTITY
-    assert config.env_state_feature.shape == (3,)
-    del config.input_features["observation.environment_state"]
+    assert config.input_features["observation.entity_tokens"].type == FeatureType.ENV
     assert config.env_state_feature is None
+
+
+def test_entity_tokens_beside_a_flat_environment_state_are_refused():
+    """LeRobot resolves a normalization mode per feature *type*, not per
+    feature, so setting ENV to IDENTITY for the entity tokens would also stop
+    normalizing a genuine observation.environment_state. Silently. Our exporter
+    already refuses to write both, so this guards a path that should not exist
+    -- but the failure it prevents is invisible, which is why it is loud."""
+    config = tiny_config(flat_environment_state=True)
+    assert config.env_state_feature.shape == (3,)
+    with pytest.raises(ValueError, match="observation.environment_state"):
+        config.validate_features()

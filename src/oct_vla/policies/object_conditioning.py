@@ -98,6 +98,13 @@ def unwrap_object_conditioning(module: nn.Module | object) -> "ObjectConditionin
     if active is None:
         active_many = getattr(module, "active_adapters", ())
         active = active_many[0] if active_many else None
+    # peft 0.20's AuxiliaryTrainingWrapper stores `_active_adapter` as a list,
+    # so `active_adapter` is `['default']` rather than `'default'`. Indexing a
+    # ModuleDict with it raises `TypeError: unhashable type: 'list'` from deep
+    # inside torch, naming neither PEFT nor this module. Older versions return
+    # the bare string, so normalise rather than assuming either shape.
+    if isinstance(active, (list, tuple)):
+        active = active[0] if active else None
     if active is None:
         return original if isinstance(original, ObjectConditioning) else None
     if active not in copies:
@@ -172,6 +179,24 @@ class ObjectTokenConfigMixin:
         if getattr(self, "object_representation", "legacy") == "entity_v2":
             from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
 
+            # Entity tokens are retyped ENV purely to opt out of generic STATE
+            # normalization -- the policy normalizes them itself, from
+            # training-only statistics carried in its config.
+            #
+            # LeRobot resolves a normalization mode per feature *type*, not per
+            # feature, so switching ENV to IDENTITY switches it for everything
+            # typed ENV -- including a genuine flat observation.environment_state,
+            # which would then silently stop being normalized. Refuse instead.
+            # The combination is already unreachable from our exporter, which
+            # rejects entity tokens alongside a privileged export, so this
+            # guards a path that should not exist rather than one in use.
+            if "observation.environment_state" in (self.input_features or {}):
+                raise ValueError(
+                    "entity_v2 retypes its tokens as ENV and sets ENV normalization to "
+                    "IDENTITY, which would also stop normalizing the flat "
+                    "observation.environment_state present in this config. Export one or "
+                    "the other: entity tokens, or a privileged environment_state."
+                )
             for name in ("observation.entity_tokens", "observation.entity_mask"):
                 if name in self.input_features:
                     self.input_features[name] = PolicyFeature(

@@ -10,6 +10,7 @@ from oct_vla.core.state import ArmState, EEFState
 from oct_vla.data.entity_tokens import (
     ENTITY_TOKEN_DIM,
     ENTITY_TOKEN_SCHEMA,
+    ENTITY_TYPES,
     EntitySupport,
     EntityTokenNormalizer,
     build_entity_tokens,
@@ -92,3 +93,35 @@ def test_rotation6_uses_xyzw_first_two_columns():
     obj = ObjectState("rotated", pose, (0.1, 0.2, 0.3), 1.0, 1.0)
     tokens, _ = build_entity_tokens(_scene(obj), _eef(), max_entities=3)
     assert tokens[0][3:9] == pytest.approx((0, 1, 0, -1, 0, 0), abs=1e-7)
+
+
+def _raw(position, size, aperture, kind):
+    """A 17-value token built by hand: pos(3) rot6(6) size(3) aperture(1) type(4)."""
+    one_hot = tuple(1.0 if name == kind else 0.0 for name in ENTITY_TYPES)
+    return (*position, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, *size, aperture, *one_hot)
+
+
+def test_size_statistics_ignore_entities_that_have_no_size():
+    """Grippers carry a structural (0, 0, 0), not a measurement.
+
+    With two grippers and two supports beside ~3 objects, those zeros were
+    about 29 % of the size samples -- pulling the mean toward zero and
+    inflating the deviation, so every real object size normalized to nearly the
+    same value.
+    """
+    box = _raw((0.3, 0.2, 1.0), (0.1, 0.1, 0.2), 0.0, "movable")
+    other = _raw((0.5, 0.2, 1.0), (0.3, 0.3, 0.6), 0.0, "movable")
+    gripper = _raw((0.0, 0.0, 1.2), (0.0, 0.0, 0.0), 1.0, "left_gripper")
+
+    with_grippers = EntityTokenNormalizer.fit([((box, other, gripper), (True, True, True))])
+    without = EntityTokenNormalizer.fit([((box, other), (True, True))])
+    assert with_grippers.size_mean == pytest.approx(without.size_mean)
+    assert with_grippers.size_std == pytest.approx(without.size_std)
+    # Position is unaffected: a gripper has a real position, so it still counts.
+    assert with_grippers.position_mean != pytest.approx(without.position_mean)
+
+
+def test_fitting_on_grippers_alone_is_refused():
+    gripper = _raw((0.0, 0.0, 1.2), (0.0, 0.0, 0.0), 1.0, "left_gripper")
+    with pytest.raises(ValueError, match="no training entity has a size"):
+        EntityTokenNormalizer.fit([((gripper,), (True,))])

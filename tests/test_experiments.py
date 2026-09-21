@@ -52,8 +52,47 @@ def cell(
     )
 
 
-def measured(stage: str = "stage_1", hours: float = 4.5) -> ThroughputMeasurement:
-    return ThroughputMeasurement(stage=stage, measured_gpu_hours=hours, source="sacct job 123")
+def measured(
+    stage: str = "stage_1",
+    hours: float = 4.5,
+    *,
+    steps: int = 20_000,
+    backbone: str = "act",
+    representation: str = "rgb",
+    action_schema: dict | None = None,
+    dataset_revision: str = "dataset-v1",
+    base_revision: str = "base-v1",
+    adaptation: str = "lora-r16",
+    source: str = "sacct job 123",
+    eval_overhead_gpu_hours: float = 0.0,
+    **overrides,
+) -> ThroughputMeasurement:
+    """A measurement of `hours` GPU-hours spent over `steps` steps.
+
+    A rate, not a total: the manifest extrapolates each cell's cost from it.
+    The identity fields default to the same values `cell()` uses, because a
+    measurement only funds cells it matches.
+    """
+    return ThroughputMeasurement(
+        stage=stage,
+        backbone=backbone,
+        representation=representation,
+        action_schema=action_schema
+        or {
+            "space": "absolute_joint",
+            "gripper": "binary_command",
+            "n_action_steps": 25,
+        },
+        dataset_revision=dataset_revision,
+        base_revision=base_revision,
+        adaptation=adaptation,
+        measured_steps=steps,
+        gpu_count=1,
+        elapsed_seconds=hours * 3600.0,
+        eval_overhead_gpu_hours=eval_overhead_gpu_hours,
+        source=source,
+        **overrides,
+    )
 
 
 def episode(
@@ -119,11 +158,17 @@ def test_stage_budget_is_exactly_one_hundred_gpu_hours():
 def test_manifest_is_deterministic_and_hashes_scientific_identity():
     first = build_manifest([cell()], [measured()])
     second = build_manifest([cell()], [measured()])
+    # The measurement moves with the cell: a rate taken on a joint_delta run is
+    # what funds a joint_delta cell, and `matches` now enforces that. Only
+    # train_steps may differ, because extrapolating step count from a measured
+    # per-step rate is the whole point.
+    other_action = {"space": "joint_delta", "gripper": "binary_command"}
     changed_action = build_manifest(
-        [cell(action_schema={"space": "joint_delta", "gripper": "binary_command"})],
-        [measured()],
+        [cell(action_schema=other_action)], [measured(action_schema=other_action)]
     )
-    changed_revision = build_manifest([cell(dataset_revision="dataset-v2")], [measured()])
+    changed_revision = build_manifest(
+        [cell(dataset_revision="dataset-v2")], [measured(dataset_revision="dataset-v2")]
+    )
     changed_steps = build_manifest([cell(train_steps=30_000)], [measured()])
 
     assert first == second
@@ -324,3 +369,45 @@ def test_plan_experiments_cli_writes_the_same_manifest(tmp_path, monkeypatch):
 
     assert plan_experiments.main() == 0
     assert json.loads(output.read_text()) == build_manifest([cell()], [measured()])
+
+
+def test_a_measurement_only_funds_cells_it_was_taken_on():
+    """The stage guard alone is decorative.
+
+    It requires *a* measurement per stage, so a rate measured on a small ACT run
+    would fund a pi0.5 cell sitting in the same stage and produce a budget
+    number that looks authoritative and is not. `matches` is what binds the two,
+    and it went unnoticed that it raised NameError because nothing called it.
+    """
+    with pytest.raises(ValueError, match="does not match the cell"):
+        build_manifest([cell(backbone="pi05")], [measured(backbone="act")])
+    with pytest.raises(ValueError, match="does not match the cell"):
+        build_manifest([cell(representation="object")], [measured(representation="rgb")])
+    with pytest.raises(ValueError, match="does not match the cell"):
+        build_manifest([cell(adaptation="full-finetune")], [measured(adaptation="lora-r16")])
+    # Seed and train_steps are not identity for this purpose: one measured rate
+    # legitimately funds another seed, and extrapolating the step count is what
+    # the per-step rate exists for.
+    build_manifest([cell(seed=1001, train_steps=40_000)], [measured()])
+
+
+def test_the_budget_extrapolates_each_cell_from_the_measured_rate():
+    """Four hours measured over 20k steps is 8 hours for two 20k-step cells."""
+    manifest = build_manifest(
+        [cell(seed=1000), cell(seed=1001)], [measured(hours=4.0, steps=20_000)]
+    )
+    stage_1 = next(row for row in manifest["budget"] if row["stage"] == "stage_1")
+    assert stage_1["cells"] == 2
+    assert stage_1["planned_stage_gpu_hours"] == pytest.approx(8.0)
+    assert stage_1["remaining_gpu_hours"] == pytest.approx(STAGE_GPU_HOUR_LIMITS["stage_1"] - 8.0)
+    assert stage_1["fits"] is True
+
+    # Over the ceiling must be visible, not silently rounded away.
+    over = build_manifest([cell(train_steps=100_000)], [measured(hours=4.0, steps=20_000)])
+    assert next(row for row in over["budget"] if row["stage"] == "stage_1")["fits"] is False
+
+
+def test_eval_overhead_is_charged_once_per_cell():
+    manifest = build_manifest([cell()], [measured(hours=1.0, eval_overhead_gpu_hours=0.5)])
+    stage_1 = next(row for row in manifest["budget"] if row["stage"] == "stage_1")
+    assert stage_1["planned_stage_gpu_hours"] == pytest.approx(1.5)

@@ -90,6 +90,12 @@ _RENAME_MAPS: dict[str, dict[str, str]] = {
     "control_groot": GROOT_RENAME_MAP,
     "vla_jepa": VLA_JEPA_RENAME_MAP,
     "control_vla_jepa": VLA_JEPA_RENAME_MAP,
+    # The unconditioned RGB baseline for the VLA-JEPA arm. It reaches LeRobot's
+    # registry transitively, because ControlVLAJEPAConfig imports it -- but
+    # `rename_map_for` raises on an unregistered type by design, and both
+    # launchers call it before submitting, so omitting it here fails the run at
+    # launch rather than anywhere informative.
+    "adapted_vla_jepa": VLA_JEPA_RENAME_MAP,
     "control_smolvla": SMOLVLA_RENAME_MAP,
 }
 

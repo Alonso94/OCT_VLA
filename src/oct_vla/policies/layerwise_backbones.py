@@ -72,8 +72,16 @@ def install_pi_layerwise(model):
     native_forward = host.forward
     # The global eager dispatcher receives only a Gemma attention module.
     # Attach the owning conditioned model so it can resolve PEFT's live copy.
+    #
+    # object.__setattr__, not plain assignment: nn.Module.__setattr__ files any
+    # Module value into `_modules`, so assigning the root model onto one of its
+    # own descendants makes the tree cyclic. `Module._apply` and `state_dict`
+    # both recurse over children with no memo, so `.to(device)` and
+    # `save_pretrained` then raise RecursionError -- while `named_parameters`
+    # survives, because it deduplicates, which is how this hides in a partial
+    # smoke test. Bypassing __setattr__ keeps the reference a plain attribute.
     for layer in (*host.paligemma.model.language_model.layers, *host.gemma_expert.model.layers):
-        layer.self_attn._octvla_control_host = model
+        object.__setattr__(layer.self_attn, "_octvla_control_host", model)
 
     def forward(_self, *args, **kwargs):
         embeddings = kwargs.get("inputs_embeds")
