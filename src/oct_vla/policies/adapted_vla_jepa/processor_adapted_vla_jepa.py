@@ -36,6 +36,19 @@ class DualRawGripperProcessorStep(ProcessorStep):
 def make_adapted_vla_jepa_pre_post_processors(
     config: AdaptedVLAJEPAConfig, dataset_stats: dict[str, dict[str, torch.Tensor]] | None = None
 ):
+    # Before the normalizer is built, always. `validate_features` is what
+    # retypes the entity tokens to ENV and pins ENV normalization to IDENTITY;
+    # without it they stay typed STATE, and every backbone here maps STATE to
+    # MEAN_STD over `dataset.meta.stats` -- which LeRobot computes across the
+    # whole repo, train and validation together. So the guard is the only thing
+    # standing between an entity_v2 run and a validation-statistics leak.
+    #
+    # Here rather than only in the model's __init__: control_groot and
+    # control_smolvla called it in neither place, and the ones that do call it
+    # there rely on `make_policy` running before `make_pre_post_processors` on
+    # the same mutated config -- true in lerobot_train today, but an
+    # undocumented ordering dependency in third-party code. It is idempotent.
+    config.validate_features()
     pre, post = make_vla_jepa_pre_post_processors(config, dataset_stats)
     # The stock one-gripper processors are disabled by this config. Insert after
     # unnormalisation and before the final to-CPU step, in raw [0, 1] space.

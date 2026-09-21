@@ -145,7 +145,24 @@ def install_smol_layerwise(model):
                 suffix = inputs_embeds[1]
                 branch = branches.get(id(expert)) if suffix is not None else None
                 steps = suffix.shape[1] if suffix is not None else 0
-                skip = int(cross and inputs_embeds[0] is not None)
+                # Mirror upstream's own predicate for whether a prefix
+                # attention call happens first, rather than a predicate that
+                # merely agrees with it on the usual path. SmolVLA gates that
+                # call on `len(inputs_embeds) == 2 and not past_key_values`
+                # (smolvlm_with_expert.py:309); testing only
+                # `inputs_embeds[0] is not None` diverges whenever a prefix
+                # arrives alongside a populated cache -- upstream then makes
+                # one interface call, this wrapper consumes it as the skip, and
+                # the object residual is silently dropped for every
+                # cross-attention layer of that step.
+                # Upstream passes `past_key_values` by keyword at both call
+                # sites (smolvlm_with_expert.py:453, :467); index 5 is its
+                # positional slot after `layer_idx`, kept as a fallback rather
+                # than guessed at, so a positional caller cannot silently read
+                # `position_ids` as a cache.
+                cache = kwargs.get("past_key_values", args[5] if len(args) > 5 else None)
+                prefix_call = cross and len(inputs_embeds) == 2 and not cache
+                skip = int(bool(prefix_call))
                 token = context.set((branch, steps, [skip]))
                 try:
                     return native(model_layers, inputs_embeds, layer_idx, *args, **kwargs)

@@ -159,12 +159,20 @@ class LayerwiseObjectAttention(nn.Module):
         *,
         output_weight: Tensor,
         scaling: float | None = None,
+        dropout: float = 0.0,
     ) -> Tensor:
         """Return ``W_out(softmax(QKz^T/sqrt(d))Vz)`` with no output bias.
 
         ``projected_query`` is `[B,H,T,D]`, specifically the host's Q after
         its native positional transform.  Empty scenes return an exact zero
         residual, rather than a finite but semantically invented dummy token.
+
+        ``dropout`` is the host's own attention dropout, applied to this
+        branch's probabilities so both terms of the sum are regularised alike.
+        A host that drops 10 % of its native attention while the object branch
+        drops none leaves the object path systematically less regularised --
+        which would bias an object-versus-RGB comparison toward conditioning,
+        in the experiment built to measure exactly that. ACT's default is 0.1.
         """
         batch, heads, steps, head_dim = projected_query.shape
         if heads != self.heads or head_dim != self.head_dim:
@@ -206,7 +214,10 @@ class LayerwiseObjectAttention(nn.Module):
         if empty.any():
             safe_padding[empty, 0] = False
         scores = scores.masked_fill(safe_padding[:, None, None, :], float("-inf"))
-        context = torch.softmax(scores, dim=-1).to(v.dtype) @ v
+        weights = torch.softmax(scores, dim=-1)
+        if dropout:
+            weights = F.dropout(weights, p=dropout, training=self.training)
+        context = weights.to(v.dtype) @ v
         context = context.transpose(1, 2).reshape(batch, steps, self.width)
         residual = F.linear(context.to(output_weight.dtype), output_weight, None).to(
             projected_query.dtype

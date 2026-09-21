@@ -33,7 +33,15 @@ class ControlACTPolicy(ObjectConditionedPolicyMixin, ACTPolicy):
                 return output
             query = kwargs.get("query", args[0] if args else None)
             residual = conditioning.layers[layer_name](
-                packed_mha_query(host, query), *inputs, output_weight=host.out_proj.weight
+                packed_mha_query(host, query),
+                *inputs,
+                output_weight=host.out_proj.weight,
+                # The host's own attention dropout, so the two terms of the sum
+                # are regularised alike. ACT defaults to 0.1, and leaving the
+                # object branch undropped would make it the less regularised of
+                # the two -- a thumb on the scale in the object-versus-RGB
+                # comparison this policy exists to run.
+                dropout=host.dropout,
             )
             if not host.batch_first:
                 residual = residual.transpose(0, 1)
