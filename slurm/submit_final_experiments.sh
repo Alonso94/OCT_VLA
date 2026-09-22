@@ -131,7 +131,11 @@ for arm in $ARMS; do
           $([ "$arm" = scratch ] || after "${STAGE1_JOB[$seed]}") \
           --output="$LOGS/$cell-%j.out" --export=ALL slurm/train_act_shelf_restock.sbatch)
       cells=$((cells + 1))
-      echo "    train  $train  (${ARM_FLAGS[$arm]:-stage 2}${STAGE1_JOB[$seed]:+ after ${STAGE1_JOB[$seed]}})"
+      if [ "$arm" = scratch ]; then
+        echo "    train  $train  (w/o pretrain, no dependency)"
+      else
+        echo "    train  $train  (${ARM_FLAGS[$arm]:-stage 2}${STAGE1_JOB[$seed]:+ after ${STAGE1_JOB[$seed]}})"
+      fi
     fi
     [ "${SKIP_EVAL:-0}" = 1 ] && continue
     for tier in seen heldout novel; do
