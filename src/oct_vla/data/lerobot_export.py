@@ -522,6 +522,7 @@ def export_episodes(
     entity_token_max_entities: int | None = None,
     entity_supports: tuple[EntitySupport, ...] | None = None,
     entity_normalizer: EntityTokenNormalizer | None = None,
+    fps: int | None = None,
 ) -> ExportReport:
     """Convert canonical episode directories into a new local LeRobot dataset.
 
@@ -566,9 +567,17 @@ def export_episodes(
     if not accepted:
         raise ValueError("No successful, validation-clean episodes to export")
 
-    fps = _fps(accepted[0][1])
-    if any(_fps(episode) != fps for _, episode in accepted):
-        raise ValueError("All exported episodes must use the same frame rate")
+    # An explicit rate is for recordings that carry none, such as RoboTwin's
+    # built-in tasks, captured every 17 control steps (250/17 = 14.7 Hz) and
+    # declared at the 15 Hz of every other dataset here. LeRobot's timestamps
+    # are frame_index / fps either way; only the declared rate changes.
+    if fps is not None:
+        if isinstance(fps, bool) or not isinstance(fps, int) or fps <= 0:
+            raise ValueError(f"fps must be a positive integer, got {fps!r}")
+    else:
+        fps = _fps(accepted[0][1])
+        if any(_fps(episode) != fps for _, episode in accepted):
+            raise ValueError("All exported episodes must use the same frame rate")
     np, LeRobotDataset = _require_export_dependencies()
     if append:
         dataset = LeRobotDataset.resume(repo_id=repo_id, root=destination)
