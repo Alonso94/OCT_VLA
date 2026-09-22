@@ -64,6 +64,11 @@ done
 [ -f "$READY" ] || { echo "server did not become ready in 600s" >&2; exit 1; }
 echo "server ready on port $EVAL_PORT"
 
+# Which mesh variants the simulator may spawn. The identity holdout means a
+# rollout is only interpretable when pinned: EVAL_MODEL_IDS=1,2,3,4 is the seen
+# set, 0,6 the held-out identities, 5 the mesh no collected run contains.
+if [ -n "${EVAL_MODEL_IDS:-}" ]; then export OCTVLA_MODEL_IDS="$EVAL_MODEL_IDS"; fi
+
 OBJECT_FLAG=()
 [ "$EVAL_VARIANT" = "object" ] && OBJECT_FLAG=(--object-tokens)
 # The shuffled control: same weights as the object arm, tokens permuted across

@@ -169,13 +169,31 @@ class ShelfRestockTask(Base_Task):
         # placement and compaction geometry per object -- so this stays a knob
         # until a probe says which way the oracle can actually plan.
         per_object_variant = os.environ.get("OCTVLA_VARIANT_PER_OBJECT", "1") != "0"
-        episode_variants = {m: rng.choice(available_model_ids(m)) for m in models}
+        # Which mesh variants a scene may draw from. Evaluation needs this:
+        # the training split holds out whole identities, so a rollout is only
+        # interpretable if it can be pinned to seen, held-out, or
+        # never-collected meshes rather than sampling across all three. Empty
+        # means every variant the asset ships, which is what collection wants.
+        wanted = os.environ.get("OCTVLA_MODEL_IDS", "").strip()
+        allowed = {int(v) for v in wanted.split(",") if v} if wanted else None
+
+        def variants_of(model: str) -> list[int]:
+            available = list(available_model_ids(model))
+            if allowed is None:
+                return available
+            chosen = [v for v in available if v in allowed]
+            if not chosen:
+                raise RuntimeError(
+                    f"OCTVLA_MODEL_IDS={wanted} selects no variant of {model}; "
+                    f"it ships {available}"
+                )
+            return chosen
+
+        episode_variants = {m: rng.choice(variants_of(m)) for m in models}
         for index, x in enumerate(self._spaced_x_positions(spec, rng)):
             model = rng.choice(models)
             model_id = (
-                rng.choice(available_model_ids(model))
-                if per_object_variant
-                else episode_variants[model]
+                rng.choice(variants_of(model)) if per_object_variant else episode_variants[model]
             )
             size = upright_size(model, model_id)
             offset = upright_center_offset(model, model_id)
