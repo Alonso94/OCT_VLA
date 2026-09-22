@@ -16,19 +16,28 @@ from oct_vla.core.state import EEFState
 
 ENTITY_TOKEN_SCHEMA = "oct-vla-entity-tokens-v2"
 ENTITY_TOKEN_DIM = 17
+
+#: The balanced schema: sixteen geometric columns against sixteen semantic ones.
+#: See oct_vla.data.entity_semantics for what each block holds and why identity
+#: is a vector in the dataset rather than an id looked up inside the policy.
+ENTITY_TOKEN_SCHEMA_V3 = "oct-vla-entity-tokens-v3"
+ENTITY_TOKEN_DIM_V3 = 32
 ENTITY_TYPES = ("movable", "left_gripper", "right_gripper", "support")
 
 #: Where the type one-hot starts, and which of its slots describe an entity that
 #: occupies space. Grippers do not: their `size_xyz` is a structural (0, 0, 0),
 #: not a measurement, so they must not enter the size statistics.
-_TYPE_OFFSET = ENTITY_TOKEN_DIM - len(ENTITY_TYPES)
 _SIZED_TYPES = ("movable", "support")
+#: Where the type one-hot starts, per schema. v2 ends with it; v3 places it at
+#: the head of the semantic block, followed by the variant code.
+_TYPE_OFFSETS = {ENTITY_TOKEN_DIM: ENTITY_TOKEN_DIM - len(ENTITY_TYPES), ENTITY_TOKEN_DIM_V3: 16}
 
 
 def _has_size(token: Sequence[float]) -> bool:
-    return any(
-        float(token[_TYPE_OFFSET + ENTITY_TYPES.index(name)]) > 0.5 for name in _SIZED_TYPES
-    )
+    offset = _TYPE_OFFSETS.get(len(token))
+    if offset is None:
+        raise ValueError(f"entity token of width {len(token)} matches no known schema")
+    return any(float(token[offset + ENTITY_TYPES.index(n)]) > 0.5 for n in _SIZED_TYPES)
 
 
 @dataclass(frozen=True)
@@ -79,7 +88,13 @@ def _rotation6(pose: Pose) -> tuple[float, float, float, float, float, float]:
     )
 
 
-def _token(pose: Pose, size_xyz: Sequence[float], aperture: float, kind: str) -> tuple[float, ...]:
+def _token(
+    pose: Pose,
+    size_xyz: Sequence[float],
+    aperture: float,
+    kind: str,
+    schema: str = ENTITY_TOKEN_SCHEMA,
+) -> tuple[float, ...]:
     try:
         type_index = ENTITY_TYPES.index(kind)
     except ValueError as error:
@@ -90,12 +105,26 @@ def _token(pose: Pose, size_xyz: Sequence[float], aperture: float, kind: str) ->
         raise ValueError("entity size_xyz must contain three finite values")
     if not isfinite(aperture):
         raise ValueError("entity aperture must be finite")
+    one_hot = tuple(1.0 if index == type_index else 0.0 for index in range(len(ENTITY_TYPES)))
+    if schema == ENTITY_TOKEN_SCHEMA:
+        return (*pose.position, *_rotation6(pose), *size, aperture, *one_hot)
+    if schema != ENTITY_TOKEN_SCHEMA_V3:
+        raise ValueError(f"unknown entity token schema {schema!r}")
+    from oct_vla.data.entity_semantics import geometric_extras, variant_code
+
+    # A gripper's size is a structural zero rather than a measurement, so it has
+    # no shape to describe and no mesh identity to name. Zeros keep both blocks
+    # present and the same width for every entity, which is what lets one
+    # encoder read the set.
+    sized = any(value > 0.0 for value in size)
     return (
         *pose.position,
         *_rotation6(pose),
         *size,
         aperture,
-        *(1.0 if index == type_index else 0.0 for index in range(len(ENTITY_TYPES))),
+        *(geometric_extras(size) if sized else (0.0, 0.0, 0.0)),
+        *one_hot,
+        *(variant_code(size) if sized else (0.0,) * 12),
     )
 
 
@@ -104,38 +133,53 @@ def _geometry_key(token: tuple[float, ...]) -> tuple[float, ...]:
     return token[:13]
 
 
+def token_dim_for_schema(schema: str) -> int:
+    if schema == ENTITY_TOKEN_SCHEMA:
+        return ENTITY_TOKEN_DIM
+    if schema == ENTITY_TOKEN_SCHEMA_V3:
+        return ENTITY_TOKEN_DIM_V3
+    raise ValueError(f"unknown entity token schema {schema!r}")
+
+
 def build_entity_tokens(
     scene: ObjectScene,
     eef: EEFState,
     supports: Sequence[EntitySupport] = (),
     max_entities: int = 16,
+    schema: str = ENTITY_TOKEN_SCHEMA,
 ) -> tuple[tuple[tuple[float, ...], ...], tuple[bool, ...]]:
-    """Build fixed-capacity schema-v2 tokens and a separate validity mask.
+    """Build fixed-capacity entity tokens and a separate validity mask.
 
     Movable objects and supports are canonically ordered only by their current
-    geometry.  No object identity, task role, or input-array position enters a
-    token.  Left/right grippers have distinct fixed *type* labels because the
-    embodiment makes that distinction observable and actionable.
+    geometry.  No task role and no input-array position enters a token.
+    Left/right grippers have distinct fixed *type* labels because the embodiment
+    makes that distinction observable and actionable.
+
+    Under schema v3 a token also carries a variant code -- mesh identity as a
+    direction in a 12-d space rather than an id resolved inside the policy, so
+    the dataset stays self-describing and an unseen mesh still has a vector.
     """
     if max_entities <= 0:
         raise ValueError("max_entities must be positive")
+    width = token_dim_for_schema(schema)
     movable = sorted(
-        (_token(item.pose, item.size_xyz, 0.0, "movable") for item in scene.objects),
+        (_token(item.pose, item.size_xyz, 0.0, "movable", schema) for item in scene.objects),
         key=_geometry_key,
     )
     grippers = (
-        _token(eef.left.pose, (0.0, 0.0, 0.0), eef.left.gripper, "left_gripper"),
-        _token(eef.right.pose, (0.0, 0.0, 0.0), eef.right.gripper, "right_gripper"),
+        _token(eef.left.pose, (0.0, 0.0, 0.0), eef.left.gripper, "left_gripper", schema),
+        _token(eef.right.pose, (0.0, 0.0, 0.0), eef.right.gripper, "right_gripper", schema),
     )
     support_tokens = sorted(
-        (_token(item.pose, item.size_xyz, 0.0, "support") for item in supports), key=_geometry_key
+        (_token(item.pose, item.size_xyz, 0.0, "support", schema) for item in supports),
+        key=_geometry_key,
     )
     tokens = tuple((*movable, *grippers, *support_tokens))
     if len(tokens) > max_entities:
         raise ValueError(
             f"scene has {len(tokens)} entities but entity token capacity is {max_entities}"
         )
-    padding = ((0.0,) * ENTITY_TOKEN_DIM,) * (max_entities - len(tokens))
+    padding = ((0.0,) * width,) * (max_entities - len(tokens))
     return tokens + padding, (True,) * len(tokens) + (False,) * len(padding)
 
 
@@ -168,8 +212,10 @@ class EntityTokenNormalizer:
                 raise ValueError("tokens and entity mask must have the same length")
             for token, valid in zip(tokens, mask, strict=True):
                 if valid:
-                    if len(token) != ENTITY_TOKEN_DIM:
-                        raise ValueError(f"expected {ENTITY_TOKEN_DIM}-d entity token")
+                    if len(token) not in _TYPE_OFFSETS:
+                        raise ValueError(
+                            f"entity token of width {len(token)} matches no known schema"
+                        )
                     if not all(isfinite(float(value)) for value in token):
                         raise ValueError("valid entity tokens must contain only finite values")
                     for index, field in enumerate((0, 1, 2)):
