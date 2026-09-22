@@ -132,6 +132,11 @@ class RoboTwinNativePort:
         #: `reset`, after `_prepare_import_path` and the chdir. Handing over a
         #: class built earlier fails with "Could not load RoboTwin task".
         self._task_factory: Callable[[], type] | None = None
+        #: Let RoboTwin plan. Our oracle plans every motion itself and replays
+        #: the result, so it wants this off; a built-in task's `play_once`
+        #: expects RoboTwin to plan and otherwise indexes an unpopulated
+        #: `left_joint_path`, failing with a bare IndexError.
+        self.need_plan = need_plan
         self.plan_attempts = plan_attempts
         self._task: Any | None = None
         self._episode = 0
