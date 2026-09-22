@@ -118,6 +118,7 @@ class RoboTwinNativePort:
         task_name: str,
         task_config: str = "demo_clean",
         plan_attempts: int = 4,
+        need_plan: bool = False,
     ) -> None:
         if plan_attempts < 1:
             raise ValueError(f"plan_attempts must be at least 1; got {plan_attempts}")
@@ -152,7 +153,10 @@ class RoboTwinNativePort:
     def reset(self, seed: int) -> None:
         _prepare_import_path(self.root)
         setup = build_dual_franka_setup(
-            self.root, task_name=self.task_name, task_config=self.task_config
+            self.root,
+            task_name=self.task_name,
+            task_config=self.task_config,
+            need_plan=self.need_plan,
         )
         with _chdir(self.root):
             if self._task is not None:

@@ -46,6 +46,7 @@ def build_dual_franka_setup(
     task_name: str,
     task_config: str = "demo_clean",
     eval_mode: bool = False,
+    need_plan: bool = False,
 ) -> dict[str, Any]:
     """Build the keyword arguments RoboTwin's ``setup_demo`` expects.
 
@@ -62,7 +63,12 @@ def build_dual_franka_setup(
     setup["task_name"] = task_name
     setup["task_config"] = task_config
     setup["eval_mode"] = eval_mode
-    setup["need_plan"] = False
+    # False for our own oracle, which plans every motion itself and replays the
+    # result. A RoboTwin built-in's `play_once` instead expects RoboTwin to
+    # plan: `left_move_to_pose` indexes `self.left_joint_path`, which is only
+    # populated when planning ran, so `need_plan=False` fails there with a bare
+    # `IndexError: list index out of range`.
+    setup["need_plan"] = need_plan
     setup["save_data"] = False
     setup["render_freq"] = 0
 

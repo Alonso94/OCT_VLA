@@ -44,10 +44,33 @@ case "$ACT_POLICY_TYPE" in
     mapfile -t ENTITY_ARGS <<< "$ENTITY_ARGS_TEXT"
     POLICY_ARGS+=(--policy.discover_packages_path=oct_vla.policies "${ENTITY_ARGS[@]}")
     ACT_CONDITIONING=object
+    # Stage two of ControlVLA's recipe. The paper pre-trains a general policy
+    # on DROID and only then adds object-centric conditioning; its "w/o
+    # pretrain" ablation -- conditioning a from-scratch policy -- reports
+    # severe jitter and large drops, hypothesised to be object features
+    # offering a low-loss shortcut before stable visual features are learned.
+    #
+    # Training control_act from scratch *is* that ablation. Pointing this at a
+    # trained rgb checkpoint makes it the method instead: zero-initialised K/V
+    # means stage two begins as numerically exactly the stage-one policy.
+    # Verified: all 160 ACT tensors carry over and the object branch stays zero.
+    #
+    # Left unset deliberately reproduces the ablation, which is worth one cell.
+    if [ -n "${ACT_PRETRAINED:-}" ]; then
+      [ -d "$ACT_PRETRAINED" ] || { echo "No checkpoint at $ACT_PRETRAINED" >&2; exit 2; }
+      POLICY_ARGS+=(--policy.pretrained_path="$ACT_PRETRAINED")
+      ACT_STAGE=finetune
+    else
+      ACT_STAGE=scratch
+    fi
     ;;
   *) echo "Invalid ACT_POLICY_TYPE" >&2; exit 2 ;;
 esac
 RUN_NAME="${ACT_POLICY_TYPE}_${ACT_DATASET}_s${TRAIN_SEED:-1000}"
+# A conditioned arm trained from scratch and one fine-tuned from an rgb
+# checkpoint are different experiments and must not share an output directory.
+[ "${ACT_STAGE:-}" = scratch ] && RUN_NAME="${RUN_NAME}_scratch"
+[ -n "${RUN_SUFFIX:-}" ] && RUN_NAME="${RUN_NAME}_${RUN_SUFFIX}"
 OUTPUT="$OCTVLA_OUTPUT_ROOT/$RUN_NAME"
 if [ -e "$OUTPUT" ]; then
   echo "Run directory already exists: $OUTPUT" >&2
@@ -75,6 +98,8 @@ cat > "$OCTVLA_OUTPUT_ROOT/run_metadata/${RUN_NAME}.json" <<JSON
   "run_name": "$RUN_NAME",
   "backbone": "act",
   "conditioning": "${ACT_CONDITIONING:-rgb}",
+  "stage": "${ACT_STAGE:-pretrain}",
+  "pretrained_from": "${ACT_PRETRAINED:-}",
   "token_mode": "full",
   "seed": ${TRAIN_SEED:-1000},
   "steps": ${TRAIN_STEPS:-40000},

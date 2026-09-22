@@ -16,9 +16,20 @@ import statistics
 from collections import defaultdict
 from pathlib import Path
 
-CELL = re.compile(r"F-(?P<arm>rgb|entity|semantic)-s(?P<seed>\d+)-(?P<tier>seen|heldout|novel)")
-ARMS = ("rgb", "entity", "semantic")
+CELL = re.compile(
+    r"F-(?P<arm>rgb|entity|semantic|scratch)-s(?P<seed>\d+)-(?P<tier>seen|heldout|novel)"
+)
+#: Ordered so the table reads as the ControlVLA recipe does: the stage-one
+#: policy, then what conditioning adds to it, then the ablation that omits
+#: stage one entirely.
+ARMS = ("rgb", "entity", "semantic", "scratch")
 TIERS = ("seen", "heldout", "novel")
+ARM_NOTE = {
+    "rgb": "stage 1: images and proprioception, no conditioning",
+    "entity": "stage 2: layerwise conditioning on geometry, from the rgb checkpoint",
+    "semantic": "stage 2: geometry plus the variant code",
+    "scratch": "w/o pretrain: conditioning with no stage 1 -- ControlVLA's failing ablation",
+}
 TIER_NOTE = {
     "seen": "identities the policy trained on",
     "heldout": "identities excluded from the dataset",
@@ -87,6 +98,7 @@ def main() -> int:
                 "transfer": tr,
                 "mean_transfers": mt,
                 "note": TIER_NOTE[tier],
+                "arm": ARM_NOTE[arm],
             }
         print()
 

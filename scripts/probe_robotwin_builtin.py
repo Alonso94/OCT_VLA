@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import traceback
 from collections import Counter
 from pathlib import Path
 
@@ -34,7 +35,8 @@ def main() -> int:
     lo, _, hi = args.seeds.partition("-")
     seeds = range(int(lo), int(hi or lo) + 1)
     spec = spec_for(args.task)
-    port = RoboTwinNativePort(args.robotwin_root, task_name=args.task)
+    # need_plan: the built-in's own oracle relies on RoboTwin's planner.
+    port = RoboTwinNativePort(args.robotwin_root, task_name=args.task, need_plan=True)
     assets = args.robotwin_root / "assets"
 
     ok, reasons, rows = 0, Counter(), []
@@ -45,7 +47,13 @@ def main() -> int:
             reasons[str(error).split(":", 1)[-1].strip()[:60]] += 1
             continue
         except Exception as error:  # noqa: BLE001 - reported, the probe continues
-            reasons[f"{type(error).__name__}: {error}"[:60]] += 1
+            # The full traceback for the first unexpected failure. A truncated
+            # one-line summary is enough for a known discard reason and useless
+            # for a bug: "IndexError: list index out of range" names neither the
+            # file nor the list, and each guess costs a cluster round trip.
+            if not reasons:
+                traceback.print_exc()
+            reasons[f"{type(error).__name__}: {error}"[:70]] += 1
             continue
         ok += 1
         objects = episode.samples[0].scene.objects
