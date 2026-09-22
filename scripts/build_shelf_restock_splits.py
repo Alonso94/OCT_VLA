@@ -157,8 +157,16 @@ def variant_of(clip: Path) -> tuple[float, ...]:
     """
     from oct_vla.data.entity_identity import size_key
 
-    sample = json.loads((clip / "episode.json").read_text())["samples"][0]
-    return size_key(sample["scene"]["objects"][0]["size_xyz"])
+    # `.get`, and an empty key when the geometry is not readable: the manifest
+    # records identities for every export, including ones whose clips carry no
+    # scene at all, and a missing geometry must not fail an export that does not
+    # use the identity holdout.
+    data = json.loads((clip / "episode.json").read_text())
+    samples = data.get("samples") or []
+    if not samples:
+        return ()
+    objects = (samples[0].get("scene") or {}).get("objects") or []
+    return size_key(objects[0]["size_xyz"]) if objects else ()
 
 
 def partition_by_identity(train, val, holdout):
@@ -387,13 +395,12 @@ def main() -> int:
         # evaluation can name which identities were unseen.
         "identity_holdout": {
             "count": len(identity_holdout),
-            "geometries": sorted({list(variant_of(c)) and tuple(variant_of(c))
-                                  for c in identity_holdout}),
+            "geometries": sorted({variant_of(c) for c in identity_holdout}),
             "seeds": sorted({seed_of(p) for p in identity_holdout}),
         }
         if identity_holdout
         else None,
-        "train_identities": sorted({tuple(variant_of(c)) for c in train}),
+        "train_identities": sorted({v for v in (variant_of(c) for c in train) if v}),
     }
     (args.output / "split_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
