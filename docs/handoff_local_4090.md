@@ -2,8 +2,25 @@
 
 Written for whoever (or whatever) picks this up on the workstation. The cluster
 is under a maintenance reservation covering every partition and nothing will
-schedule, so the work moves local. `CLAUDE.md` holds the rules that must not be
-rediscovered; this file holds the state and the next actions.
+schedule. `CLAUDE.md` holds the rules that must not be rediscovered; this file
+holds the state and the next actions.
+
+## The goal here is the new environment, not the final matrix
+
+**Build and debug the RoboTwin `place_container_plate` adapter, step by step,
+fixing what breaks.** That is interactive work — collect a few seeds, look at
+what came out, fix, repeat — which is exactly what a batch queue is bad at and a
+local GPU is good at. The final ACT matrix can wait for the cluster; it is
+queued and needs no supervision.
+
+Expect to iterate. The equivalent work on our own task surfaced a planner that
+silently no-ops, an oracle that discards 42 % of seeds, and five of six assets
+that could not be planned at all. None of that was visible before running it.
+
+So: short runs, inspect the output, and treat every "it produced nothing"
+as a measurement question before a code question — that specific mistake has
+already been made once here (grepping for a status string of `"collected"` when
+the value is `"ok"`).
 
 ## What fits on a 4090, and what does not
 
@@ -95,17 +112,34 @@ local paths. Everything downstream reads them.
    plus a collection loop that calls `play_once` and **checks
    `task.plan_success`**. See `.claude/plans/starry-dancing-thimble.md`.
 
-## Order of work
+## Order of work — the new environment first
+
+1. **Write the adapter.** Subclass `place_container_plate` to expose
+   `tracked_objects` (container + plate) and override `_take_picture` to push a
+   `CapturedFrame` into our recorder. `save_freq=17` at `dt=1/250` gives ~15 Hz,
+   matching `DEFAULT_HZ`. Sizes come from
+   `robots/robotwin/assets.py:upright_size`, and the task already stores
+   `self.actor_name`, `self.container_id`, `self.plate_id`.
+2. **Collect one seed.** Then *look at it*: does the episode have frames, two
+   objects, the right categories (`002_bowl` / `021_cup`), plausible sizes?
+   `single_span` is what makes a motion-record-free demonstration labellable.
+3. **Check `task.plan_success` after `play_once`.** RoboTwin's `move()` returns
+   early and silently once planning has failed, so without this the loop records
+   no-op episodes as successes.
+4. **Collect 10 seeds** and compare the success rate against our own ~58 %. An
+   easy task should beat it comfortably; if it does not, the adapter is wrong,
+   not the task.
+5. Scale to ~150 seeds, export, and only then train.
+
+## The final ACT matrix — when the cluster returns
 
 1. Rebuild the identity dataset, verify with `entity_training_args.py`.
-2. Smoke-test `control_act` on it with `use_vae=True`.
+2. Smoke-test `control_act` with `use_vae=True`.
 3. **Run the `rgb` arm on 3 seeds first.** If ACT cannot learn this, that is the
    finding and the remaining six cells should not be spent.
 4. If it learns, run `entity` and `semantic`, 3 seeds each.
 5. Collect with `scripts/collect_final_results.py` and read the *ranges*, not
    the means.
-
-The easy RoboTwin task (§3 above) is parallel work and does not block any of it.
 
 ## What not to do
 
