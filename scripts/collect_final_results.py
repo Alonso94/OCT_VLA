@@ -17,17 +17,20 @@ from collections import defaultdict
 from pathlib import Path
 
 CELL = re.compile(
-    r"F-(?P<arm>rgb|entity|semantic|scratch)-s(?P<seed>\d+)-(?P<tier>seen|heldout|novel)"
+    r"F-(?P<arm>rgb|entity|adaln|incontext|scratch)-s(?P<seed>\d+)-(?P<tier>seen|heldout|novel)"
 )
 #: Ordered so the table reads as the ControlVLA recipe does: the stage-one
 #: policy, then what conditioning adds to it, then the ablation that omits
-#: stage one entirely.
-ARMS = ("rgb", "entity", "semantic", "scratch")
+#: stage one entirely. No `semantic`: its cells trained the entity model under
+#: another name (the flag selecting it was never read), so they are excluded
+#: rather than reported as a representation that was tested.
+ARMS = ("rgb", "entity", "adaln", "incontext", "scratch")
 TIERS = ("seen", "heldout", "novel")
 ARM_NOTE = {
     "rgb": "stage 1: images and proprioception, no conditioning",
     "entity": "stage 2: layerwise conditioning on geometry, from the rgb checkpoint",
-    "semantic": "stage 2: geometry plus the variant code",
+    "adaln": "stage 2: entity + AdaLN-Zero on every encoder/decoder block (LPWM)",
+    "incontext": "stage 2: entity + entity tokens in the encoder sequence (LPWM)",
     "scratch": "w/o pretrain: conditioning with no stage 1 -- ControlVLA's failing ablation",
 }
 TIER_NOTE = {

@@ -479,7 +479,12 @@ class ObjectConditioning(nn.Module):
         if self.mode == "controlvla":
             return self.attention.is_live
         if self.mode == "layerwise":
-            return any(layer.is_live for layer in self.layers.values())
+            # Encoder-side branches a host may mount beside the layers
+            # (ControlACT's AdaLN and in-context tokens) count too.
+            extras = (getattr(self, name, None) for name in ("adaln", "incontext"))
+            return any(layer.is_live for layer in self.layers.values()) or any(
+                extra.is_live for extra in extras if extra is not None
+            )
         return bool(self.injection.weight.any().item())
 
     def residual(self, action_emb: Tensor) -> Tensor:

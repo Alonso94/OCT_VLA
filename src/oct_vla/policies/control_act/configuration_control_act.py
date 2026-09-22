@@ -24,6 +24,13 @@ class ControlACTConfig(ObjectTokenConfigMixin, ACTConfig):
     object_max_entities: int = 16
     object_queries: int = 4
     object_attention_heads: int = 8
+    # Encoder-side additions (LPWM, arXiv:2603.04553), each on top of the
+    # layerwise decoder branch so that an arm isolates exactly one of them.
+    # AdaLN-Zero modulation of every encoder and decoder block; exact identity at init.
+    object_adaln: bool = False
+    # Entity tokens appended to the encoder sequence behind a learned logit gate.
+    object_incontext: bool = False
+    object_incontext_gate_init: float = -4.0
 
     def __post_init__(self):
         super().__post_init__()

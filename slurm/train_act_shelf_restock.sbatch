@@ -35,6 +35,14 @@ SPLIT_MANIFEST="$DATASET/split_manifest.json"
 [ -f "$SPLIT_MANIFEST" ] || { echo "No split_manifest.json in $DATASET" >&2; exit 2; }
 EVAL_SPLIT=$("$OCTVLA_POLICY_PYTHON" -c "import json,sys; print(json.load(open(sys.argv[1]))['eval_split'])" "$SPLIT_MANIFEST")
 
+# Refused rather than ignored: this variable once selected a "semantic" arm that
+# nothing read, so that arm trained the entity model under another name. The
+# datasets are v2 (17 columns) with no variant code, and control_act embeds v2
+# only, so there is no semantic path to select until a v3 export exists.
+if [ "${OBJECT_SEMANTICS:-0}" != 0 ]; then
+  echo "OBJECT_SEMANTICS is not wired: no v3 dataset or embedding exists" >&2
+  exit 2
+fi
 ACT_POLICY_TYPE="${ACT_POLICY_TYPE:-act}"
 POLICY_ARGS=(--policy.type="$ACT_POLICY_TYPE")
 case "$ACT_POLICY_TYPE" in
@@ -44,6 +52,15 @@ case "$ACT_POLICY_TYPE" in
     mapfile -t ENTITY_ARGS <<< "$ENTITY_ARGS_TEXT"
     POLICY_ARGS+=(--policy.discover_packages_path=oct_vla.policies "${ENTITY_ARGS[@]}")
     ACT_CONDITIONING=object
+    # Encoder-side branches beside the layerwise decoder one (LPWM,
+    # arXiv:2603.04553): AdaLN-Zero on every block, or entity tokens in the
+    # encoder sequence. Each is its own arm, so each isolates one addition.
+    case "${OBJECT_ADALN:-0}${OBJECT_INCONTEXT:-0}" in
+      00) ;;
+      10) POLICY_ARGS+=(--policy.object_adaln=true); ACT_CONDITIONING=object_adaln ;;
+      01) POLICY_ARGS+=(--policy.object_incontext=true); ACT_CONDITIONING=object_incontext ;;
+      *) echo "Set at most one of OBJECT_ADALN / OBJECT_INCONTEXT, to 1" >&2; exit 2 ;;
+    esac
     # Stage two of ControlVLA's recipe. The paper pre-trains a general policy
     # on DROID and only then adds object-centric conditioning; its "w/o
     # pretrain" ablation -- conditioning a from-scratch policy -- reports
@@ -90,6 +107,8 @@ export PYTHONPATH="$OCTVLA_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
 echo "dataset    : $DATASET"
 echo "run        : $RUN_NAME"
 echo "eval_split : $EVAL_SPLIT"
+# The resolved policy flags, so a log shows which arm actually trained.
+echo "policy args: ${POLICY_ARGS[*]}"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
 mkdir -p "$OCTVLA_OUTPUT_ROOT/run_metadata"

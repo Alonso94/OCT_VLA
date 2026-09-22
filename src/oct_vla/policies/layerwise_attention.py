@@ -276,3 +276,149 @@ class LayerwiseObjectAttention(nn.Module):
             mask,
             output_weight=attention.out_proj.weight,
         )
+
+
+def _entity_inputs(
+    embedding: EntityV2Embedding, tokens: Tensor, mask: Tensor | None, batch: int
+) -> tuple[Tensor, Tensor]:
+    """Embed an entity set as ``[B,N,D]`` and return it with its padding mask.
+
+    Shared by the encoder-side branches so that repeat, time-slicing and
+    masking cannot drift between them and the layerwise branch.
+    """
+    if tokens.ndim == 4:
+        tokens = tokens[:, -1]
+    if mask is not None and mask.ndim == 3:
+        mask = mask[:, -1]
+    if tokens.shape[0] != batch:
+        if not tokens.shape[0] or batch % tokens.shape[0]:
+            raise ValueError("model batch must be a whole repeat of the entity batch")
+        repeats = batch // tokens.shape[0]
+        tokens = tokens.repeat(repeats, 1, 1)
+        if mask is not None:
+            mask = mask.repeat(repeats, 1)
+    if mask is None:
+        padding = torch.zeros(tokens.shape[:2], dtype=torch.bool, device=tokens.device)
+    else:
+        if mask.shape != tokens.shape[:2]:
+            raise ValueError("entity mask must have shape [B,N]")
+        padding = ~mask.bool()
+    tokens = tokens.masked_fill(padding[..., None], 0)
+    return embedding(tokens.to(embedding.numeric_projection.weight.dtype)), padding
+
+
+class SceneAdaLN(nn.Module):
+    """AdaLN-Zero modulation of a host transformer from a pooled entity set.
+
+    After DiT, as used throughout LPWM (arXiv:2603.04553): one condition vector
+    ``c`` yields a gate, scale and shift per modulation site. The host here is
+    post-norm ACT, where DiT's ``alpha * f(x)`` with alpha at zero would delete
+    the pretrained sublayer and break the two-stage recipe. So every quantity is
+    a delta around identity::
+
+        x = LN(x + (1 + alpha) * f(x)) * (1 + gamma) + beta
+
+    and the final projection is zeroed: at step 0 the policy is numerically its
+    stage-1 RGB self, exactly as the zero K/V make the layerwise branch.
+
+    ``c`` is an attention pool over the entity set with one learned query
+    (LPWM §A.5, EIT), so it is permutation-invariant and ignores padding.
+    """
+
+    def __init__(self, config: Any, width: int, sites: int, *, heads: int | None = None) -> None:
+        super().__init__()
+        if sites < 1:
+            raise ValueError("SceneAdaLN needs at least one modulation site")
+        self.width = width
+        self.sites = int(sites)
+        self.embedding = EntityV2Embedding(
+            width,
+            getattr(config, "object_entity_normalizer", None),
+            identities=int(getattr(config, "object_identity_cardinality", 0) or 0),
+        )
+        self.query = nn.Parameter(torch.randn(1, 1, width) * 0.02)
+        # The host's dropout, for the same reason the layerwise branch takes it:
+        # an undropped object path is the less regularised one.
+        self.pool = nn.MultiheadAttention(
+            width,
+            heads or int(getattr(config, "object_attention_heads", 8)),
+            dropout=float(getattr(config, "dropout", 0.0)),
+            batch_first=True,
+        )
+        self.modulation = nn.Linear(width, self.sites * 3 * width)
+        nn.init.zeros_(self.modulation.weight)
+        nn.init.zeros_(self.modulation.bias)
+
+    @property
+    def is_live(self) -> bool:
+        return bool(self.modulation.weight.any().item() or self.modulation.bias.any().item())
+
+    def forward(self, tokens: Tensor | None, mask: Tensor | None, batch: int) -> Tensor | None:
+        """Return ``[B, sites, 3, D]`` as (alpha, gamma, beta), or None if no scene."""
+        if tokens is None or tokens.shape[-2] == 0:
+            return None
+        memory, padding = _entity_inputs(self.embedding, tokens, mask, batch)
+        empty = padding.all(dim=1)
+        safe = padding.clone()
+        if empty.any():
+            safe[empty, 0] = False
+        query = self.query.to(memory.dtype).expand(memory.shape[0], -1, -1)
+        pooled = self.pool(query, memory, memory, key_padding_mask=safe, need_weights=False)[0]
+        out = self.modulation(F.silu(pooled[:, 0]))
+        # Zeroed after the projection, not before: once the bias has trained,
+        # a zero `c` would still modulate, and an empty scene must not.
+        if empty.any():
+            out = out.masked_fill(empty[:, None], 0)
+        return out.view(memory.shape[0], self.sites, 3, self.width)
+
+
+class InContextEntities(nn.Module):
+    """Entity tokens appended to a host encoder's sequence, then discarded.
+
+    LPWM found in-context conditioning (append, self-attend, drop) stronger
+    than cross-attention. Unlike the other branches this cannot be exact
+    identity at init: the extra keys enter every softmax. A learned logit gate,
+    added to each real entity's attention score through a float key padding
+    mask, starts them at ~e^gate of a native token's mass -- small, but with a
+    live gradient, which a gate near -20 would not have.
+    """
+
+    def __init__(self, config: Any, width: int) -> None:
+        super().__init__()
+        self.width = width
+        self.embedding = EntityV2Embedding(
+            width,
+            getattr(config, "object_entity_normalizer", None),
+            identities=int(getattr(config, "object_identity_cardinality", 0) or 0),
+        )
+        self.projection = nn.Linear(width, width)
+        self.position = nn.Parameter(torch.randn(1, 1, width) * 0.02)
+        self.gate_init = float(getattr(config, "object_incontext_gate_init", -4.0))
+        self.gate = nn.Parameter(torch.tensor(self.gate_init))
+
+    @property
+    def is_live(self) -> bool:
+        return bool(self.gate.item() != self.gate_init)
+
+    def extend(
+        self,
+        x: Tensor,
+        pos_embed: Tensor | None,
+        key_padding_mask: Tensor | None,
+        tokens: Tensor,
+        mask: Tensor | None,
+    ) -> tuple[Tensor, Tensor | None, Tensor]:
+        """Append entities to a seq-first ``x [S,B,D]``; return x, pos, float mask."""
+        steps, batch, _ = x.shape
+        memory, padding = _entity_inputs(self.embedding, tokens, mask, batch)
+        entities = self.projection(memory).to(x.dtype).transpose(0, 1)
+        count = entities.shape[0]
+        if pos_embed is not None:
+            extra = self.position.to(pos_embed.dtype).expand(count, pos_embed.shape[1], -1)
+            pos_embed = torch.cat([pos_embed, extra], dim=0)
+        native = torch.zeros(batch, steps, dtype=x.dtype, device=x.device)
+        if key_padding_mask is not None:
+            native = native.masked_fill(key_padding_mask.bool(), float("-inf"))
+        gate = self.gate.to(x.dtype).expand(batch, count)
+        gate = gate.masked_fill(padding, float("-inf"))
+        return torch.cat([x, entities], dim=0), pos_embed, torch.cat([native, gate], dim=1)
