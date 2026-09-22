@@ -30,11 +30,12 @@ mkdir -p "$LOGS"
 #   semantic  the same, plus the variant code                 (stage 2)
 #   scratch   entity conditioning with no stage 1             (w/o pretrain)
 declare -A ARM_POLICY=([rgb]=act [entity]=control_act [semantic]=control_act [scratch]=control_act)
+# The EE-absolute *view*, not the unified export it derives from: the unified
+# dataset's canonical pair is absolute joint, and absolute EE is the only
+# encoding that has produced a non-zero closed-loop result here.
+DATASET="${FINAL_DATASET:-three_object_identity_eeabs}"
 declare -A ARM_DATASET=(
-  [rgb]=three_object_identity_entity
-  [entity]=three_object_identity_entity
-  [semantic]=three_object_identity_entity
-  [scratch]=three_object_identity_entity
+  [rgb]="$DATASET" [entity]="$DATASET" [semantic]="$DATASET" [scratch]="$DATASET"
 )
 
 # The identity tiers a rollout is pinned to. Mixing them into one number is
