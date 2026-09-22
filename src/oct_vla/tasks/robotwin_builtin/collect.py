@@ -86,7 +86,9 @@ def collect_episode(
             )
         )
 
-    port.use_task_class(recording_task_class(spec.task_name, capture))
+    # A factory, not a class: defining the subclass imports from `envs`, which
+    # is only importable inside reset's prepared path.
+    port.use_task_factory(lambda: recording_task_class(spec.task_name, capture))
     port.reset(seed)
     task = port.task
 

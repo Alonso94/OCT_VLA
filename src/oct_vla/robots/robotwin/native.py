@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib
 import os
 import sys
+from collections.abc import Callable
 from contextlib import contextmanager
 from math import isfinite
 from pathlib import Path
@@ -123,11 +124,13 @@ class RoboTwinNativePort:
         self.root = Path(robotwin_root).expanduser().resolve()
         self.task_name = task_name
         self.task_config = task_config
-        #: Overrides the class `task_name` would resolve to, for a subclass
-        #: built at runtime -- recording a RoboTwin built-in works by
-        #: subclassing it to intercept `_take_picture`, and such a class has no
-        #: importable path for the `module:Class` form to name.
-        self._task_class: type | None = None
+        #: Builds the class to instantiate, overriding what `task_name` would
+        #: resolve to. A factory rather than a class: recording a RoboTwin
+        #: built-in subclasses it to intercept `_take_picture`, and defining
+        #: that subclass needs `envs` importable -- which only happens inside
+        #: `reset`, after `_prepare_import_path` and the chdir. Handing over a
+        #: class built earlier fails with "Could not load RoboTwin task".
+        self._task_factory: Callable[[], type] | None = None
         self.plan_attempts = plan_attempts
         self._task: Any | None = None
         self._episode = 0
@@ -136,14 +139,15 @@ class RoboTwinNativePort:
         #: `move_to`; see NativePort.ignored_object.
         self.ignored_object: str | None = None
 
-    def use_task_class(self, task_class: type | None) -> None:
-        """Instantiate `task_class` on the next reset instead of resolving the name.
+    def use_task_factory(self, factory: Callable[[], type] | None) -> None:
+        """Build the task class with `factory` on each reset, not by name.
 
-        `task_name` is still what configures the setup, so the RoboTwin task
-        config, its embodiment override and its step limit are unchanged; only
-        the class that gets built differs.
+        Called inside the prepared import path, so the factory may import from
+        `envs` and subclass a built-in. `task_name` still configures the setup,
+        so the task config, the embodiment override and the step limit are
+        unchanged; only the class that gets instantiated differs.
         """
-        self._task_class = task_class
+        self._task_factory = factory
 
     def reset(self, seed: int) -> None:
         _prepare_import_path(self.root)
@@ -153,7 +157,15 @@ class RoboTwinNativePort:
         with _chdir(self.root):
             if self._task is not None:
                 self._safe_close()
-            self._task = (self._task_class or _load_task_class(self.task_name))()
+            # The factory yields the *class*; instantiating it is this line's
+            # job. Conflating the two put a class in `self._task`, and every
+            # later call fired unbound -- "close_env() missing 1 required
+            # positional argument: 'self'", which names neither the factory nor
+            # the cause.
+            task_class = (
+                self._task_factory() if self._task_factory else _load_task_class(self.task_name)
+            )
+            self._task = task_class()
             self._task.setup_demo(now_ep_num=self._episode, seed=seed, is_test=True, **setup)
             self.ignored_object = None
         actual_dt = float(self._task.scene.get_timestep())
