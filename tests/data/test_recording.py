@@ -269,3 +269,42 @@ def test_build_episode_raises_when_too_few_frames_are_labelled():
         build_episode(
             frames, spans, seed=1, instruction="stock the shelf", success=True, metadata={}
         )
+
+
+def test_the_recorder_does_not_import_a_task_oracle():
+    """This module calls itself simulator-agnostic and then imported
+    `TransferRecord` from the shelf oracle, so the generic recorder could not
+    be used -- or imported -- without one specific task's expert. A second task
+    is blocked on exactly that."""
+    import subprocess
+    import sys
+
+    probe = (
+        "import oct_vla.data.recording, sys; "
+        "print(any(m.startswith('oct_vla.tasks') for m in sys.modules))"
+    )
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "False", "recording.py pulled in a task package"
+
+
+def test_single_span_labels_a_demonstration_that_reports_no_motions():
+    """`label_spans` rebuilds phase boundaries from an oracle that reports how
+    many ticks each motion took. A scripted demonstrator that reports nothing
+    would have every frame fall outside every span and be dropped, and
+    `build_episode` would then raise for having fewer than two labelled frames
+    -- an empty dataset rather than a missing feature."""
+    from oct_vla.core.objects import TaskContext
+    from oct_vla.data.recording import label_at, single_span
+
+    context = TaskContext(instruction="place the container on the plate", target_track_id="obj_0")
+    spans = single_span(context, "demonstration", ticks=5)
+    assert len(spans) == 1
+    for tick in range(5):
+        found = label_at(spans, tick)
+        assert found is not None, tick
+        assert found.context is context and found.phase == "demonstration"
+    assert label_at(spans, 5) is None, "the span must not extend past the run"
+
+    with pytest.raises(ValueError, match="at least one tick"):
+        single_span(context, "demonstration", ticks=0)

@@ -9,12 +9,12 @@ same `tick()` call.
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any, Protocol
 
 from oct_vla.core.action import action_between
 from oct_vla.core.objects import ObjectScene, TaskContext
 from oct_vla.core.observation import RobotObservation
 from oct_vla.robots.robotwin.backend import Contact, NativePort, Reading, Trajectory
-from oct_vla.tasks.shelf_restock.oracle.expert import TransferRecord
 
 from .episode import Episode, Sample
 
@@ -159,7 +159,21 @@ class LabelSpan:
     phase: str
 
 
-def label_spans(records: Iterable[TransferRecord]) -> tuple[LabelSpan, ...]:
+class MotionRecord(Protocol):
+    """What `label_spans` needs from an oracle's execution record.
+
+    Structural rather than imported: this module advertises itself as
+    simulator-agnostic and then imported `TransferRecord` from the shelf
+    oracle, so the generic recorder could not be used -- or even imported --
+    without one specific task's expert. Nothing here needs that class, only
+    the two attributes below.
+    """
+
+    context: TaskContext
+    motions: tuple[tuple[str, Any], ...]
+
+
+def label_spans(records: Iterable[MotionRecord]) -> tuple[LabelSpan, ...]:
     """Turn the oracle's own execution record into exact tick-range labels.
 
     The oracle already reports exactly how many ticks each named motion
@@ -185,6 +199,25 @@ def label_at(spans: Sequence[LabelSpan], tick: int) -> LabelSpan | None:
         if span.start_tick <= tick < span.end_tick:
             return span
     return None
+
+
+def single_span(context: TaskContext, phase: str, ticks: int) -> tuple[LabelSpan, ...]:
+    """One span covering a whole demonstration.
+
+    `label_spans` reconstructs exact phase boundaries from an oracle that
+    reports how many ticks each motion commanded. A scripted demonstrator that
+    reports nothing -- a RoboTwin built-in's `play_once`, say -- has no such
+    record, and every captured frame would then fall outside every span and be
+    dropped by `build_episode`, which would raise for having fewer than two
+    labelled frames. The failure looks like an empty dataset rather than a
+    missing feature.
+
+    So: label the whole run as one phase. The dataset loses phase structure,
+    which only the oracle knew anyway, and keeps every frame.
+    """
+    if ticks < 1:
+        raise ValueError(f"a demonstration needs at least one tick; got {ticks}")
+    return (LabelSpan(0, ticks, context, phase),)
 
 
 def build_episode(
