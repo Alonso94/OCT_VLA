@@ -51,6 +51,9 @@ if [ "${PRIVILEGED:-0}" = "1" ]; then ARGS+=(--privileged); fi
 # --entity-training-sources is named by hand and unchecked.
 if [ "${ENTITY_TOKENS:-0}" = "1" ]; then ARGS+=(--entity-tokens); fi
 if [ -n "${MAX_ENTITIES:-}" ]; then ARGS+=(--max-entities "$MAX_ENTITIES"); fi
+# Whole object identities withheld from training, so an evaluation can separate
+# "learned the task" from "learned the object".
+if [ -n "${IDENTITY_HOLDOUT:-}" ]; then ARGS+=(--identity-holdout "$IDENTITY_HOLDOUT"); fi
 if [ -n "${EPISODE_KIND:-}" ]; then ARGS+=(--episode-kind "$EPISODE_KIND"); fi
 if [ -n "${MAX_RUNS:-}" ]; then ARGS+=(--max-runs "$MAX_RUNS"); fi
 

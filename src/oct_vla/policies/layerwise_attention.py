@@ -59,8 +59,24 @@ class EntityV2Embedding(nn.Module):
     numeric_dim = 13
     type_dim = 4
 
-    def __init__(self, width: int, normalizer: dict | None = None) -> None:
+    def __init__(
+        self, width: int, normalizer: dict | None = None, identities: int = 0
+    ) -> None:
         super().__init__()
+        # Semantic identity, beside the geometry rather than inside it. The
+        # corpus holds six distinct meshes and an asset variant's size names it
+        # exactly, so the id is recovered from what was recorded; row 0 is
+        # reserved for a mesh never seen in training, which is what an unseen
+        # identity at evaluation must fall back to.
+        #
+        # An embedding rather than another continuous column: identity is
+        # categorical, and feeding an integer through the numeric projection
+        # would make "id 5" sit five times further from the origin than "id 1"
+        # and invent an ordering between meshes that does not exist.
+        self.identities = int(identities)
+        if self.identities:
+            self.identity_embedding = nn.Embedding(self.identities, width)
+            nn.init.normal_(self.identity_embedding.weight, std=0.02)
         mean, scale = torch.zeros(13), torch.ones(13)
         if normalizer is not None:
             from oct_vla.data.entity_tokens import EntityTokenNormalizer
@@ -78,7 +94,7 @@ class EntityV2Embedding(nn.Module):
         self.type_projection = nn.Linear(self.type_dim, width, bias=False)
         self.activation = nn.GELU()
 
-    def forward(self, tokens: Tensor) -> Tensor:
+    def forward(self, tokens: Tensor, identity: Tensor | None = None) -> Tensor:
         if tokens.ndim == 4:
             tokens = tokens[:, -1]
         if tokens.ndim != 3 or tokens.shape[-1] != 17:
@@ -86,9 +102,20 @@ class EntityV2Embedding(nn.Module):
         tokens = tokens.to(self.numeric_projection.weight.dtype)
         numeric = (tokens[..., :13] - self.numeric_mean) / self.numeric_scale
         entity_type = tokens[..., 13:]
-        return self.output_norm(
-            self.activation(self.numeric_projection(numeric) + self.type_projection(entity_type))
-        )
+        embedded = self.numeric_projection(numeric) + self.type_projection(entity_type)
+        if self.identities:
+            if identity is None:
+                # Not an error: a legacy dataset carries no identity column, and
+                # the unseen row is the honest encoding of "this corpus does not
+                # say". Silently skipping the embedding instead would make the
+                # conditioned arm quietly identity-free.
+                identity = torch.zeros(tokens.shape[:2], dtype=torch.long, device=tokens.device)
+            if identity.ndim == 3:
+                identity = identity[:, -1]
+            embedded = embedded + self.identity_embedding(
+                identity.long().clamp_(0, self.identities - 1)
+            )
+        return self.output_norm(self.activation(embedded))
 
 
 class LayerwiseObjectAttention(nn.Module):
@@ -113,7 +140,9 @@ class LayerwiseObjectAttention(nn.Module):
         self.object_representation = rep
         if rep == "entity_v2":
             self.embedding = EntityV2Embedding(
-                width, getattr(config, "object_entity_normalizer", None)
+                width,
+                getattr(config, "object_entity_normalizer", None),
+                identities=int(getattr(config, "object_identity_cardinality", 0) or 0),
             )
         else:
             token_dim = int(
@@ -135,9 +164,11 @@ class LayerwiseObjectAttention(nn.Module):
     def is_live(self) -> bool:
         return bool(self.to_v.weight.any().item() or self.to_v.bias.any().item())
 
-    def encode(self, tokens: Tensor) -> Tensor:
+    def encode(self, tokens: Tensor, identity: Tensor | None = None) -> Tensor:
         if tokens.ndim == 4:
             tokens = tokens[:, -1]
+        if isinstance(self.embedding, EntityV2Embedding):
+            return self.embedding(tokens, identity)
         return self.embedding(tokens)
 
     def _padding(self, tokens: Tensor, mask: Tensor | None) -> Tensor:

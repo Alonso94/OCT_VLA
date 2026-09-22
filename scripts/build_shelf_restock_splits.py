@@ -148,6 +148,52 @@ def check_boundary(
             )
 
 
+def variant_of(clip: Path) -> tuple[float, ...]:
+    """The object geometry this clip was recorded with.
+
+    An asset variant's size is a property of its mesh, so it identifies the
+    variant exactly. Read from the first frame's first object: no scene in this
+    corpus mixes two, which is what makes an identity holdout well defined.
+    """
+    from oct_vla.data.entity_identity import size_key
+
+    sample = json.loads((clip / "episode.json").read_text())["samples"][0]
+    return size_key(sample["scene"]["objects"][0]["size_xyz"])
+
+
+def partition_by_identity(train, val, holdout):
+    """Move whole object identities out of training, rarest first.
+
+    The seed split holds out *scenes*; this holds out *objects*. With semantic
+    identity fed to the policy as a learned embedding, an unseen identity has an
+    untrained embedding row, so the arm must fall back on geometry -- which is
+    the only way to ask whether it learned the task or the object.
+
+    Kept beside the seed split rather than replacing it: the two answer
+    different questions, and losing the IID signal would make a drop on unseen
+    identities impossible to attribute.
+    """
+    counts = {}
+    for clip in train + val:
+        counts[variant_of(clip)] = counts.get(variant_of(clip), 0) + 1
+    if holdout >= len(counts):
+        raise SystemExit(
+            f"--identity-holdout {holdout} leaves no training identities; "
+            f"the corpus has {len(counts)}"
+        )
+    ranked = sorted(counts, key=lambda key: (-counts[key], key))
+    seen = set(ranked[: len(ranked) - holdout])
+    unseen = set(ranked[len(ranked) - holdout :])
+    print("identity split:")
+    for key in ranked:
+        print(f"  {list(key)}  {counts[key]:>4} clips  {'train' if key in seen else 'HELD OUT'}")
+    return (
+        [c for c in train if variant_of(c) in seen],
+        [c for c in val if variant_of(c) in seen],
+        [c for c in train + val if variant_of(c) in unseen],
+    )
+
+
 def main() -> int:
     from oct_vla.data.lerobot_export import export_episodes
     from oct_vla.data.object_tokens import ObjectTokenSpec
@@ -159,6 +205,15 @@ def main() -> int:
     parser.add_argument("--profile", default="three_object", choices=sorted(SPLIT_BLOCKS))
     parser.add_argument("--object-tokens", action="store_true")
     parser.add_argument("--entity-tokens", action="store_true")
+    parser.add_argument(
+        "--identity-holdout",
+        type=int,
+        default=0,
+        help="Hold out this many whole object identities from training, rarest "
+        "first, so an evaluation can separate 'learned the task' from 'learned "
+        "the object'. The seed-based scene split is unaffected and still "
+        "provides the IID signal.",
+    )
     parser.add_argument("--max-entities", type=int, default=16)
     parser.add_argument("--episode-kind", choices=["any", "atomic", "full_run"], default="any")
     parser.add_argument(
@@ -229,6 +284,11 @@ def main() -> int:
     train, val = grouped.get("train", []), grouped.get("val", [])
     if not train:
         raise SystemExit(f"No train clips found under {args.canonical_root}")
+    identity_holdout = []
+    if args.identity_holdout:
+        train, val, identity_holdout = partition_by_identity(train, val, args.identity_holdout)
+        if not train:
+            raise SystemExit("identity holdout removed every training clip")
     # Budget the TRAIN split only. Validation keeps every reserved run it has,
     # so a data-scaling curve varies one thing -- how much the policy saw --
     # and every point is scored against the same held-out scenes.
@@ -321,6 +381,19 @@ def main() -> int:
             "count": n_val,
             "seeds": sorted({seed_of(p) for p in val}),
         },
+        # Recorded, not exported. These clips are excluded from the dataset
+        # entirely so no identity the policy will be tested on can reach it
+        # through either split -- the manifest keeps their geometry so an
+        # evaluation can name which identities were unseen.
+        "identity_holdout": {
+            "count": len(identity_holdout),
+            "geometries": sorted({list(variant_of(c)) and tuple(variant_of(c))
+                                  for c in identity_holdout}),
+            "seeds": sorted({seed_of(p) for p in identity_holdout}),
+        }
+        if identity_holdout
+        else None,
+        "train_identities": sorted({tuple(variant_of(c)) for c in train}),
     }
     (args.output / "split_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
