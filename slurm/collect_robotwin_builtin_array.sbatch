@@ -14,9 +14,13 @@ TASK="${BUILTIN_TASK:-place_container_plate}"
 SEED="${SLURM_ARRAY_TASK_ID:?Slurm array index is required}"
 
 export PYTHONUNBUFFERED=1
-if [ -n "${OCTVLA_TORCHCODEC_LIBS:-}" ]; then
-  export LD_LIBRARY_PATH="$OCTVLA_TORCHCODEC_LIBS${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-fi
+# No OCTVLA_TORCHCODEC_LIBS here, unlike the training and export jobs.
+# Torchcodec belongs to the *policy* environment; prepending its libraries to
+# LD_LIBRARY_PATH shadows the copies SAPIEN bundles, and every seed then dies on
+# `ImportError: libXau-...so: cannot open shared object file` while importing
+# sapien.core -- which surfaces as "Could not load RoboTwin task", naming
+# neither the library nor the cause. The shelf-restock collector sets neither
+# variable for the same reason.
 
 srun "$OCTVLA_ROBOTWIN_PYTHON" -u -B "$OCTVLA_REPO/scripts/collect_robotwin_builtin.py" \
   --robotwin-root "$OCTVLA_ROBOTWIN_ROOT" --task "$TASK" --seed "$SEED" \
