@@ -13,6 +13,7 @@ Loaded as an external task entrypoint (module:ClassName), not copied into
 the RoboTwin checkout -- see RoboTwinNativePort._load_task_class.
 """
 
+import os
 import random
 from typing import Any
 
@@ -77,21 +78,18 @@ HEAD_CAMERA_OVERRIDE = {
 #: compositional claim to be about except object count. These six share a grasp
 #: affordance, so the oracle's planner should discard at roughly the same rate,
 #: while differing in mesh, size and appearance.
-#: Chosen by measurement, not by name. `MIN_OBJECT_SEPARATION` is 0.15 m
-#: centre-to-centre in x, so what matters is the upright *footprint*, not the
-#: largest extent -- several plausible-sounding boxes are 0.19-0.29 m wide and
-#: would overlap their neighbours, and `037_box` and `042_wooden_box` carry no
-#: `scale` field at all, so `upright_size` raises on them. These six sit inside
-#: the coffee box's envelope (footprint <= 0.115 m, height <= 0.156 m), share
-#: an upright side-grasp affordance, and between them offer 32 mesh variants.
-OBJECT_MODELS = (
-    "113_coffee-box",
-    "112_tea-box",
-    "071_can",
-    "105_sauce-can",
-    "080_pillbottle",
-    "073_rubikscube",
-)
+#: One asset, whose *variants* are the diversity. `113_coffee-box` ships seven
+#: meshes and the collected corpus contains six of them, 18-81 episodes each --
+#: visually distinct objects a policy must handle, already recorded.
+#:
+#: A multi-category set was attempted and abandoned. Probing candidates one at a
+#: time showed the reason: of six assets that passed a geometric screen
+#: (gripper width, shelf separation, deck clearance), five collected **0 of 8
+#: seeds** on their own, almost all `global plan failed` -- the oracle's planner
+#: cannot solve a top-down grasp around those meshes. Geometry does not predict
+#: plannability, and a candidate must be probed before it is trusted. The coffee
+#: box, unchanged, collects at the corpus rate.
+OBJECT_MODELS = ("113_coffee-box",)
 
 #: Kept as the single-asset default so a corpus can still be collected the old
 #: way, and so every reference to "the" object model resolves to what the
@@ -153,10 +151,32 @@ class ShelfRestockTask(Base_Task):
         # while the policy saw only pixels and a pose. An object-centric
         # representation carries each object's size and category, so the
         # variation is now observable, and making it observable is the point.
-        models = getattr(self, "object_models", None) or OBJECT_MODELS
+        # An environment override so a single category can be probed in
+        # isolation. Which assets the oracle's planner can actually solve is an
+        # empirical question -- the first mixed set collected 0 of 20 seeds --
+        # and a per-category measurement is the only way to tell a bad asset
+        # from a bad set.
+        override = os.environ.get("OCTVLA_OBJECT_MODELS", "").strip()
+        models = (
+            tuple(m for m in override.split(",") if m)
+            or getattr(self, "object_models", None)
+            or OBJECT_MODELS
+        )
+        # Whether a scene may mix *sizes*. Category and size are separable: a
+        # scene can hold a coffee box and a stapler while every instance of an
+        # asset uses one variant. The original code drew a single variant per
+        # episode and its comment said why -- a mixed-size row changes the
+        # placement and compaction geometry per object -- so this stays a knob
+        # until a probe says which way the oracle can actually plan.
+        per_object_variant = os.environ.get("OCTVLA_VARIANT_PER_OBJECT", "1") != "0"
+        episode_variants = {m: rng.choice(available_model_ids(m)) for m in models}
         for index, x in enumerate(self._spaced_x_positions(spec, rng)):
             model = rng.choice(models)
-            model_id = rng.choice(available_model_ids(model))
+            model_id = (
+                rng.choice(available_model_ids(model))
+                if per_object_variant
+                else episode_variants[model]
+            )
             size = upright_size(model, model_id)
             offset = upright_center_offset(model, model_id)
             sampled = spec.object_variation.sample_pose(0.0, rng)
