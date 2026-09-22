@@ -123,6 +123,11 @@ class RoboTwinNativePort:
         self.root = Path(robotwin_root).expanduser().resolve()
         self.task_name = task_name
         self.task_config = task_config
+        #: Overrides the class `task_name` would resolve to, for a subclass
+        #: built at runtime -- recording a RoboTwin built-in works by
+        #: subclassing it to intercept `_take_picture`, and such a class has no
+        #: importable path for the `module:Class` form to name.
+        self._task_class: type | None = None
         self.plan_attempts = plan_attempts
         self._task: Any | None = None
         self._episode = 0
@@ -130,6 +135,15 @@ class RoboTwinNativePort:
         #: the planning world for the duration. Set by the oracle via
         #: `move_to`; see NativePort.ignored_object.
         self.ignored_object: str | None = None
+
+    def use_task_class(self, task_class: type | None) -> None:
+        """Instantiate `task_class` on the next reset instead of resolving the name.
+
+        `task_name` is still what configures the setup, so the RoboTwin task
+        config, its embodiment override and its step limit are unchanged; only
+        the class that gets built differs.
+        """
+        self._task_class = task_class
 
     def reset(self, seed: int) -> None:
         _prepare_import_path(self.root)
@@ -139,7 +153,7 @@ class RoboTwinNativePort:
         with _chdir(self.root):
             if self._task is not None:
                 self._safe_close()
-            self._task = _load_task_class(self.task_name)()
+            self._task = (self._task_class or _load_task_class(self.task_name))()
             self._task.setup_demo(now_ep_num=self._episode, seed=seed, is_test=True, **setup)
             self.ignored_object = None
         actual_dt = float(self._task.scene.get_timestep())
