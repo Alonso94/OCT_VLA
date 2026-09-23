@@ -12,10 +12,10 @@ report. This file supersedes the results sections of `report_2026_09.md` and
 
 | # | question | ACT | VLAs (pi0.5, SmolVLA, GR00T) |
 | --- | --- | --- | --- |
-| Q1 | Is object conditioning useful? | **preliminary yes**, see §4.1 | not answerable yet |
-| Q2 | Which conditioning mechanism is best: layerwise, AdaLN, or in-context? | **preliminary**, see §4.2 | not answerable yet |
-| Q3 | Does conditioning help compositional generalisation (train on 3 objects, test on 2, 3, 4)? | rollouts queued | not answerable yet |
-| Q4 | Which control regime is best: absolute joint, joint delta, absolute EE, EE delta? | single-seed only, old corpus | single-seed and all zero |
+| Q1 | Is object conditioning useful? | **preliminary yes**, most of all on held-out objects (§4.1). Waits on the `rgb_cont` budget control | pipeline ready, not run |
+| Q2 | Which conditioning mechanism is best: layerwise, AdaLN, or in-context? | **preliminary: depends on the object.** In-context on seen objects, AdaLN on held-out ones (§4.2) | pipeline ready, not run |
+| Q3 | Does conditioning help compositional generalisation (train on 3 objects, test on 2, 3, 4)? | **preliminary no.** Every arm collapses at 2 and 4 objects, and the encoder-side arms are worse at 4 (§4.3) | pipeline ready, not run |
+| Q4 | Which control regime is best: absolute joint, joint delta, absolute EE, EE delta? | three-seed runs on the identity corpus submitted | stage 1 ready to submit |
 
 Status meanings:
 - **preliminary**: three training seeds, but with a known confound or an
@@ -86,9 +86,10 @@ Infeasible IK steps are recorded separately.
   they are pooled into one row, and the table says so.
 - Object count is always shown.
 
-**Videos.** There is one representative episode per reported row in
-`rollouts/final/`, chosen by rule: the median training seed, then that seed's
-most typical episode. See `rollouts/README.md`.
+**Videos.** There is one representative episode per reported row, chosen by
+rule: the median training seed, then that seed's most typical episode. The
+table is `rollouts/final/table.md`; the videos are on the vault
+(`rollouts/README.md` says why).
 
 ---
 
@@ -170,12 +171,35 @@ positional embedding are exactly the host's.
   weaker, and it is what "ControlVLA" meant here before the published method
   was implemented.
 
-**On the VLAs:**
+**On the VLAs** (`policies/vla_branches.py`, `control_*/modeling_*.py`):
 - `layerwise`, `controlvla` and `pooled` are implemented for all three
   (`policies/layerwise_backbones.py`).
-- `adaln` and `incontext` exist **only for ACT** so far.
-- No VLA can yet run stage 2 from its own stage-1 checkpoint. pi0.5 and SmolVLA
-  save LoRA adapters, and nothing loads an adapter into the conditioned policy.
+- **AdaLN.** pi0.5's action expert and GR00T's DiT already modulate every
+  block's adaptive norm from a condition vector, the flow-matching timestep. The
+  pooled scene is added to that vector through a zero-initialised projection
+  (`SceneVector`), so the scene conditions every block through the pretrained
+  modulation layers, as DiT conditions on a class label. It is exact identity
+  at init. SmolVLA's expert has no adaptive norm, so it gets a zero-initialised
+  FiLM, `out·(1+γ)+β`, on every expert RMSNorm.
+- **In-context.** Entity tokens are prepended to the action-model sequence and
+  read back out by position.
+  - pi0.5 and SmolVLA: in the suffix, as their own attention block. Actions see
+    them; they never see the noisy actions; padded slots are masked out.
+  - GR00T's DiT takes no attention mask, so only real entities are inserted.
+    That requires an equal count per row of a batch, which is checked and holds
+    for each object-count profile.
+  - As for ACT, this is not identity at init.
+- **Stage 2 from stage 1.**
+  - pi0.5 and SmolVLA stage 1 is a LoRA adapter. `scripts/merge_stage1_adapter.py`
+    merges it into its base. It refuses a zero adapter, a merge that changes the
+    predicted chunk, or a checkpoint that reloads differently.
+  - GR00T stage 1 is full weights and loads directly.
+  - Every such load is checked tensor by tensor against its file
+    (`policies/stage_loading.py`). pi0.5's own loader returns an unloaded model
+    on failure, with only a warning.
+  - `INIT_CHECK=1` builds a stage-2 run exactly as training does and proves it
+    starts at stage 1 and that gradient reaches its branch. Every stage-2
+    training is queued behind that check.
 
 ### 2.4 Control regimes
 
@@ -221,73 +245,104 @@ an early sweep scored exactly zero transfers.
 
 ### 4.1 Q1: is object conditioning useful? (ACT, absolute EE)
 
-**Source.** The first run of the matrix, 3 seeds × 20 scenes, three objects.
-These rollouts were *unpinned*, so each scene drew from all seven meshes. They
-are valid as three-object rollouts on mixed identities, and **void as tier
-results**. The files are in `eval/void_unpinned_2026_09_22/`. Pinned replacements
-are queued.
+**Source.**
+- 5 arms × 3 training seeds × 20 scenes, with every tier pinned and verified
+  (`diagnostics/final_matrix_F.json`).
+- The tiers are **informative**: every arm drops from seen to held-out on every
+  seed, and `rgb`, `adaln` and `incontext` from seen to novel too. So the tiers
+  are reported separately.
+- **Caveat that still applies:** the budget control `rgb_cont` is still
+  training (§3.1), so every "conditioned beats `rgb`" below may partly be
+  extra training.
 
-Each cell shows successes / episodes with ≥1 transfer / mean transfers.
+Mean transfers per episode, with the min–max across the 3 seeds:
 
-| arm | s1000 | s1001 | s1002 | success, 60 episodes | ≥1 transfer, 60 episodes |
-| --- | --- | --- | --- | ---: | ---: |
-| rgb | 0 / 10 / 0.60 | 0 / 3 / 0.15 | 0 / 1 / 0.05 | 0 | 14 |
-| scratch | 0 / 5 / 0.25 | 0 / 5 / 0.25 | 0 / 5 / 0.25 | 0 | 15 |
-| entity | 1 / 9 / 0.65 | 0 / 4 / 0.20 | 1 / 7 / 0.50 | 2 | 20 |
-| adaln | 5 / 11 / 1.05 | 1 / 7 / 0.50 | 2 / 4 / 0.40 | **8** | 22 |
-| incontext | 3 / 12 / 0.95 | 0 / 7 / 0.40 | 2 / 6 / 0.50 | 5 | **25** |
+| arm | seen | held-out | novel |
+| --- | --- | --- | --- |
+| rgb | 0.62 [0.45–0.90] | 0.03 [0.00–0.10] | 0.28 [0.15–0.55] |
+| scratch | 0.45 [0.30–0.55] | 0.05 [0.00–0.10] | 0.30 [0.05–0.60] |
+| entity | 0.83 [0.55–1.35] | 0.22 [0.00–0.35] | 0.25 [0.00–0.75] |
+| adaln | 0.93 [0.75–1.10] | **0.55 [0.35–0.80]** | 0.23 [0.10–0.35] |
+| incontext | **1.25 [1.05–1.40]** | 0.13 [0.05–0.20] | 0.25 [0.00–0.75] |
 
-Paired against `rgb` over 60 matched episodes. b = episodes only `rgb` won;
-c = episodes only the arm won.
+Task success per 20 episodes (mean [min–max]):
 
-| arm | success rgb → arm | p | ≥1 transfer rgb → arm | p |
-| --- | --- | ---: | --- | ---: |
-| entity | 0 → 2 (b 0, c 2) | 0.50 | 14 → 20 (b 7, c 13) | 0.26 |
-| adaln | 0 → 8 (b 0, c 8) | **0.008** | 14 → 22 (b 8, c 16) | 0.15 |
-| incontext | 0 → 5 (b 0, c 5) | 0.063 | 14 → 25 (b 4, c 15) | **0.019** |
-| scratch | 0 → 0 | 1.00 | 14 → 15 (b 8, c 9) | 1.00 |
+| arm | seen | held-out | novel |
+| --- | --- | --- | --- |
+| rgb | 0.7 [0–1] | 0 | 0 |
+| entity | 2.0 [0–5] | 0.3 [0–1] | 0.3 [0–1] |
+| adaln | 3.3 [2–5] | **2.0 [1–3]** | 0 |
+| incontext | **4.7 [2–8]** | 0 | 0.7 [0–2] |
+| scratch | 0.3 [0–1] | 0 | 0 |
+
+Paired against `rgb` over 60 matched episodes per tier (exact McNemar; b/c =
+episodes only the baseline / only the arm won):
+
+| tier | arm | success | p | ≥1 transfer | p |
+| --- | --- | --- | ---: | --- | ---: |
+| seen | adaln | 0.03 → 0.17 (2/10) | 0.039 | 0.45 → 0.48 (15/17) | 0.86 |
+| seen | incontext | 0.03 → 0.23 (1/13) | **0.002** | 0.45 → 0.65 (6/18) | 0.023 |
+| held-out | entity | 0.00 → 0.02 (0/1) | 1.00 | 0.03 → 0.18 (1/10) | 0.012 |
+| held-out | adaln | 0.00 → 0.10 (0/6) | 0.031 | 0.03 → 0.33 (1/19) | **<0.001** |
+| held-out | incontext | 0.00 → 0.00 | 1.00 | 0.03 → 0.13 (1/7) | 0.070 |
+| novel | any | no contrast below p = 0.2 | | | |
 
 **Reading.**
-- For the first time in this project, conditioned arms beat `rgb` on every seed
-  by mean transfers. The two encoder-side arms also clear p < 0.05 on one
-  measure each.
-- **Conditioning without stage 1 does nothing.** `scratch` equals `rgb`,
-  matching ControlVLA's ablation.
-- **Not yet an answer.** The training-budget confound (§3.1) is uncontrolled.
-- The earlier single-seed results pointed the same way but proved nothing: C2
-  (old corpus, pooled objects) scored 2/20 success against A5's 6/20.
+- **Held-out objects are where conditioning matters most.** `rgb` all but
+  stops transferring an object whose size it never saw: 0.03 mean transfers,
+  down from 0.62. AdaLN keeps 0.55, with success on every seed. It is the
+  largest effect in the project so far.
+- On seen objects the conditioned arms help too, mostly in-context.
+- **Conditioning without stage 1 does nothing** (`scratch` ≈ `rgb` in every
+  tier), matching ControlVLA's ablation.
+- **Novel** (mesh 5, the one the oracle could never plan) is not helped by any
+  arm.
 
 ### 4.2 Q2: which mechanism? (ACT)
 
-| contrast | success | p | ≥1 transfer | p |
-| --- | --- | ---: | --- | ---: |
-| adaln vs entity | 2 → 8 (b 1, c 7) | 0.070 | 20 → 22 | 0.83 |
-| incontext vs entity | 2 → 5 (b 2, c 5) | 0.45 | 20 → 25 | 0.38 |
+| tier | contrast | success | p | ≥1 transfer | p |
+| --- | --- | --- | ---: | --- | ---: |
+| seen | entity → incontext | 0.10 → 0.23 (3/11) | 0.057 | 0.52 → 0.65 | 0.19 |
+| seen | adaln → incontext | 0.17 → 0.23 (6/10) | 0.45 | 0.48 → 0.65 (8/18) | 0.076 |
+| held-out | entity → adaln | 0.02 → 0.10 (1/6) | 0.13 | 0.18 → 0.33 (6/15) | 0.078 |
+| held-out | adaln → incontext | 0.10 → 0.00 (6/0) | **0.031** | 0.33 → 0.13 (17/5) | **0.017** |
 
-**Reading.**
-- Both encoder-side arms beat layerwise alone numerically. Neither separates
-  from it at n = 60.
-- `adaln` leads on success; `incontext` leads on reaching a transfer.
-- A ranking between them is not supported.
-- **VLAs:** there is no valid comparison. The one VLA mechanism comparison
-  (GR00T F0/F1/F2: none / `controlvla` / `pooled`) scored 0/20 success in every
-  cell, because its own baseline was at zero.
+**Reading.** The two encoder-side arms trade places by tier:
+- **In-context is best on seen objects.**
+- **AdaLN is best on held-out ones**, and beats in-context there on both
+  measures.
+
+One reading, not yet tested: in-context gives the encoder per-object tokens,
+which is enough to memorise the four trained sizes. AdaLN gives a pooled scene
+summary that modulates every block, and that transfers to sizes it never saw.
+
+**For the VLAs:** no valid comparison exists yet. The one earlier VLA mechanism
+comparison (GR00T F0/F1/F2) scored 0/20 success in every cell, because its own
+baseline was at zero.
 
 ### 4.3 Q3: compositional generalisation (2 / 3 / 4 objects)
 
-**Pinned, three-seed rollouts are queued.** The only existing data is
-single-seed, on the old corpus, at a fixed 600 steps whatever the object count:
+Trained on three objects; seen identities; 200 steps per object. Mean
+transfers per episode [min–max across seeds]:
 
-| cell (seed 1000) | 2 objects | 3 objects | 4 objects |
+| arm | 2 objects | 3 objects | 4 objects |
 | --- | --- | --- | --- |
-| A5: rgb, absolute EE | 0 success, 2 transfer, 0.10 | 6, 7, 1.00 | 0, 4, 0.20 |
-| C2: rgb + objects (pooled) | 1, 2, 0.15 | 2, 10, 0.85 | 0, 9, 0.45 |
-| C3: objects only, no cameras | 0, 0, 0.00 | 0, 1, 0.05 | 0, 0, 0.00 |
+| rgb | 0.20 [0.15–0.25] | 0.62 [0.45–0.90] | 0.40 [0.30–0.50] |
+| entity | 0.13 [0.10–0.20] | 0.83 [0.55–1.35] | **0.42 [0.35–0.45]** |
+| adaln | 0.13 [0.05–0.25] | 0.93 [0.75–1.10] | 0.20 [0.15–0.25] |
+| incontext | 0.18 [0.10–0.25] | **1.25 [1.05–1.40]** | 0.28 [0.25–0.35] |
+| scratch | 0.12 [0.05–0.20] | 0.45 [0.30–0.55] | 0.32 [0.05–0.85] |
 
-Each cell shows success / ≥1 transfer / mean transfers, out of 20.
+Success is 0 at four objects for every arm and seed. At two objects it is at
+most 0.3/20.
 
-Success collapses off the trained count for every cell. The one hint is C2's 9/20
-transfers at four objects against A5's 4/20, and it is single-seed.
+**Reading.**
+- **No arm generalises off the trained count,** and conditioning does not change
+  that.
+- At four objects the encoder-side arms are *worse* than `entity`: ≥1 transfer
+  0.40 → 0.18 for both, p = 0.019 (AdaLN) and p = 0.015 (in-context).
+- **Two objects is harder than three for every arm.** The trained count is the
+  best case, both above and below it.
 
 ### 4.4 Q4: control regime
 
@@ -327,28 +382,38 @@ is possible from rates at zero.
 ## 5. What answers each question, and what is running
 
 Matrix prefixes: `F` absolute EE, `J` absolute joint, `D` joint delta, `X` EE
-delta. Each cell is 3 seeds × 4 pinned rollouts: three-object seen, held-out and
-novel, plus a `count` job at 2 and 4 objects.
+delta. VLA matrices put the backbone first: `P` pi0.5, `S` SmolVLA, `G` GR00T
+(so `PF` is pi0.5 on absolute EE).
 
 | # | runs | status |
 | --- | --- | --- |
-| Q1, Q2, Q3 (ACT) | `F`: rgb, rgb_cont, entity, adaln, incontext, scratch | **submitted.** rgb_cont trains first; the other five reuse existing checkpoints |
-| Q4 (ACT) | `J`, `D`, `X`: rgb × 3 seeds, on views projected from the same unified identity export | **submitted**, after the projection job |
-| Q1 × Q4 (ACT) | the best Stage A conditioned arm, plus rgb_cont, on `J`, `D`, `X` | waits for the Stage A winner |
-| Q4 (VLAs) | SmolVLA, pi0.5, GR00T × {absolute joint, absolute EE} × 3 seeds, RGB. The delta regimes are dropped: they have been the weakest for every backbone | code first (below), then after Stage A |
-| Q1, Q2 (VLAs) | on each VLA's better regime: layerwise, plus ACT's best encoder-side arm, × 3 seeds | code first (below) |
+| Q1, Q2, Q3 (ACT) | `F`: rgb, entity, adaln, incontext, scratch | **done**: 60 pinned rollouts (§4.1–4.3) |
+| confound | `F`: rgb_cont × 3 seeds, 4 rollouts each | submitted |
+| Q4 (ACT) | `J`, `D`, `X`: rgb × 3 seeds, 4 rollouts each | submitted |
+| Q1 × Q4 (ACT) | the best conditioned arm(s) on `J`, `D`, `X` | waits for Q4 |
+| Q4 (VLAs) | `slurm/submit_vla_experiments.sh PHASE=stage1`: 3 backbones × {F, J} × 3 seeds, seen rollout only | ready; end-to-end smoke tests running |
+| Q1–Q3 (VLAs) | `PHASE=stage2`: rgb_cont + entity + the encoder arm(s) on each VLA's better regime | ready after stage 1 |
 
-VLA prerequisites, none written yet:
-- an adapter-aware stage-2 loader: merge the stage-1 LoRA, load it into
-  `control_*`, and add a fresh adapter, tested to be exactly stage 1 at step 0;
-- GR00T's action padding (16 → 132 columns) and missing `action_is_pad` mask;
-- GR00T's broken `checkpoints/last` link;
-- a port of ACT's best encoder-side arm;
-- a VLA path in `submit_final_experiments.sh`.
-
-The trimmed VLA plan is about 250 GPU-h.
+**Storage rules**, since the vault has 1 TB for everything:
+- Every run keeps only its final checkpoint.
+- Every run drops its optimiser state on success.
+- GR00T saves only its trained head (`slim_groot`). Its frozen backbone was
+  measured bit-identical to the base model. A full save was about 49 GB on disk
+  per checkpoint.
+- Merged pi0.5/SmolVLA checkpoints are made only for the regime that goes to
+  stage 2.
+- Rollout videos stay on the vault: home allocates 32 MB per file.
 
 ## Update log
+
+- **2026-09-23 (afternoon).** Pinned Stage A results for Q1–Q3.
+  - Tiers are informative. In-context is best on seen objects, AdaLN on
+    held-out ones. No arm generalises across object count.
+  - The VLA two-stage pipeline is written and tested: verified loads, the
+    merge, init checks, AdaLN/in-context ports, slim GR00T checkpoints, and
+    storage rules. It is being smoke-tested end to end.
+  - Freed ~380 GB of intermediate checkpoints and optimiser state. Every
+    checkpoint a result names was kept.
 
 - **2026-09-23.** Submitted `rgb_cont` (the budget control) and `rgb` on the
   three other control regimes, 12 training cells and 48 rollouts. The VLA

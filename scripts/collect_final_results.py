@@ -286,10 +286,16 @@ def main() -> int:
     if contrasts:
         print("PAIRED over matched (training seed, tier, scene seed) episodes; "
               "b = only baseline won, c = only arm won")
-        print(f"{'baseline -> arm':22} {'scope':8} {'pairs':>5} {'success':>13} {'b/c':>6} "
+        print(f"{'baseline -> arm':22} {'scope':13} {'pairs':>5} {'success':>13} {'b/c':>6} "
               f"{'p':>6} {'>=1 transfer':>13} {'b/c':>6} {'p':>6}")
         print("-" * 92)
-        scopes = {"three_object": dict(profile="three_object")}
+        # Per tier when the tiers are reported separately: pooling them in the
+        # test would average an arm that wins on held-out identities with one
+        # that wins on seen ones into two arms that look alike.
+        if split:
+            scopes = {f"three_{t}": dict(profile="three_object", tier=t) for t in TIERS}
+        else:
+            scopes = {"three_object": dict(profile="three_object")}
         scopes |= {p: dict(profile=p, tier="seen") for p in ("two_object", "four_object")}
 
         def keyed(arm, where):
@@ -316,7 +322,7 @@ def main() -> int:
                         f"{r['baseline_only_wins']:>2}/{r['treatment_only_wins']:<3} "
                         f"{r['mcnemar_p']:>6.3f}"
                     )
-                print(f"{baseline + ' -> ' + arm:22} {scope.replace('_object', ''):8} "
+                print(f"{baseline + ' -> ' + arm:22} {scope.replace('_object', ''):13} "
                       f"{len(shared):>5}  {cells[0]}  {cells[1]}")
                 table["paired"][f"{baseline}->{arm}/{scope}"] = result
         print()

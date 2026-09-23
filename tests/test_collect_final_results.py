@@ -76,9 +76,15 @@ def test_tiers_are_split_when_one_arm_drops_on_every_seed(tmp_path, capsys, monk
     for seed in (1000, 1001, 1002):
         write(tmp_path, f"F-rgb-s{seed}-seen", [2, 1])
         write(tmp_path, f"F-rgb-s{seed}-heldout", [0, 1], tier="heldout")
+    for seed in (1000, 1001, 1002):
+        write(tmp_path, f"F-adaln-s{seed}-seen", [2, 1])
+        write(tmp_path, f"F-adaln-s{seed}-heldout", [2, 1], tier="heldout")
     table, _ = run(tmp_path, capsys, monkeypatch)
     assert table["identity_split"] is True
-    assert set(table["identity"]) == {"rgb/seen", "rgb/heldout"}
+    assert {"rgb/seen", "rgb/heldout"} <= set(table["identity"])
+    # Tested per tier once split, never pooled across them.
+    assert "rgb->adaln/three_heldout" in table["paired"]
+    assert "rgb->adaln/three_object" not in table["paired"]
 
 
 def test_object_count_and_pairing(tmp_path, capsys, monkeypatch):

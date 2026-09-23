@@ -5,8 +5,8 @@ Every final-matrix rollout records all of its episodes to a staging area
 (`slurm/submit_final_experiments.sh`). This picks, for each row the results
 table reports -- an arm on three objects (per tier, or pooled if the tiers are
 indistinguishable, by the same rule the table uses), and on two and four
-objects -- the one episode that best stands for that row, and copies it into
-the repository beside a table saying exactly what it shows.
+objects -- the one episode that best stands for that row, copies it to a
+report directory, and writes a table saying exactly what each one shows.
 
 "Representative" is defined, not chosen by eye, because the tempting choice is
 the best episode and that is the one this project has already been misled by:
@@ -19,7 +19,12 @@ the best episode and that is the one this project has already been misled by:
 So a row averaging 0.4 transfers shows an episode with no transfer, and one
 averaging 1.05 shows a single transfer -- what a viewer should expect to see.
 
-    scripts/select_rollout_videos.py $OCTVLA_OUTPUT_ROOT/eval --dest docs/rollouts/final
+    scripts/select_rollout_videos.py $OCTVLA_OUTPUT_ROOT/eval \
+        --dest $HPCVAULT/octvla-rollout-videos/report --table docs/rollouts/final/table.md
+
+The videos go to the vault, not the repository: the home filesystem allocates
+32 MB per file, so 25 half-megabyte videos cost ~800 MB of a nearly full home
+quota. The table, which is what the report cites, stays in the repository.
 """
 
 from __future__ import annotations
@@ -78,7 +83,8 @@ def main() -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("eval_dir", type=Path)
     parser.add_argument("--prefix", default="F")
-    parser.add_argument("--dest", type=Path, required=True)
+    parser.add_argument("--dest", type=Path, required=True, help="Where the videos go")
+    parser.add_argument("--table", type=Path, help="Markdown table path (default: DEST/table.md)")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
@@ -110,7 +116,7 @@ def main() -> int:
         else:
             if not args.dry_run:
                 shutil.copyfile(source, args.dest / name)
-            link = f"[video]({name})"
+            link = f"`{args.dest.resolve() / name}`"
         per_seed = ", ".join(f"{v:.2f}" for _, v in sorted(summary["per_seed"].items()))
         lines.append(
             f"| {arm} | {label} | {chosen['train_seed']} | {chosen['eval_seed']} "
@@ -122,7 +128,9 @@ def main() -> int:
     if missing:
         print("\nno video for:\n  " + "\n  ".join(missing))
     if not args.dry_run:
-        (args.dest / "table.md").write_text(table + "\n")
+        target = args.table or args.dest / "table.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(table + "\n")
         size = sum(p.stat().st_size for p in args.dest.glob("*.mp4")) / 1e6
         print(f"\nwrote {args.dest} ({size:.1f} MB of video)")
     return 1 if missing else 0

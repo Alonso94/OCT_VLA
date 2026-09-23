@@ -2,9 +2,12 @@
 
 ## Final matrix: one representative episode per reported row
 
-The report's videos are in [`final/`](final/), with the table that says what each
-one shows in [`final/table.md`](final/table.md). There is one per row of the
-results table (`scripts/collect_final_results.py`), for each arm (`rgb`,
+The table that says what each report video shows is
+[`final/table.md`](final/table.md). The videos themselves are on the vault, in
+`$HPCVAULT/octvla-rollout-videos/report/`, not in the repository: the home
+filesystem allocates 32 MB per file, so 25 half-megabyte videos would cost
+about 800 MB of a nearly full home quota. There is one per row of the results
+table (`scripts/collect_final_results.py`), for each arm (`rgb`,
 `entity`, `adaln`, `incontext`, `scratch`):
 
 - **3 objects**: one video per identity tier (seen / held-out / novel) if the
@@ -32,7 +35,8 @@ is what a viewer should expect from that arm.
 
 ```bash
 PYTHONPATH=src "$OCTVLA_POLICY_PYTHON" scripts/select_rollout_videos.py \
-  "$OCTVLA_OUTPUT_ROOT/eval" --dest docs/rollouts/final
+  "$OCTVLA_OUTPUT_ROOT/eval" --dest "$HPCVAULT/octvla-rollout-videos/report" \
+  --table docs/rollouts/final/table.md
 ```
 
 It exits non-zero if any reported row has no video. It uses the same
