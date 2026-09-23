@@ -81,6 +81,16 @@ case "$ACT_POLICY_TYPE" in
     ;;
   *) echo "Invalid ACT_POLICY_TYPE" >&2; exit 2 ;;
 esac
+# USE_VAE=0 trains ACT without its CVAE latent. On this corpus the latent
+# collapses on every seed -- the KL term falls to 0.005 by 10k steps and 0.000 by
+# 40k -- so the encoder carries nothing; the ablation asks whether removing it
+# changes closed-loop behaviour or seed variance (ControlVLA blames posterior
+# collapse for ACT's weakness in low-data settings).
+case "${USE_VAE:-1}" in
+  1) ;;
+  0) POLICY_ARGS+=(--policy.use_vae=false); [ -n "${RUN_SUFFIX:-}" ] || RUN_SUFFIX=novae ;;
+  *) echo "USE_VAE must be 0 or 1" >&2; exit 2 ;;
+esac
 RUN_NAME="${ACT_POLICY_TYPE}_${ACT_DATASET}_s${TRAIN_SEED:-1000}"
 # A conditioned arm trained from scratch and one fine-tuned from an rgb
 # checkpoint are different experiments and must not share an output directory.
@@ -116,6 +126,7 @@ cat > "$OCTVLA_OUTPUT_ROOT/run_metadata/${RUN_NAME}.json" <<JSON
   "backbone": "act",
   "conditioning": "${ACT_CONDITIONING:-rgb}",
   "stage": "${ACT_STAGE:-pretrain}",
+  "use_vae": ${USE_VAE:-1},
   "pretrained_from": "${ACT_PRETRAINED:-}",
   "seed": ${TRAIN_SEED:-1000},
   "steps": ${TRAIN_STEPS:-40000},

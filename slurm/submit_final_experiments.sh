@@ -23,6 +23,8 @@ mkdir -p "$LOGS"
 #   kv_adaln    + KV and scene AdaLN on every block            stage 2
 #   kv_tokens   + KV and entity tokens in the encoder          stage 2
 #   scratch_kv  kv trained with no stage 1                     w/o pretrain
+#   rgb_novae   stock ACT with the CVAE latent off (use_vae=false), as rgb
+#               otherwise: 40k steps from scratch. Its KL collapses to 0 anyway
 #
 # rgb_cont is the fair baseline: every stage-2 arm trains 40k steps on top of
 # rgb's 40k, so against rgb alone a gain could be the extra training.
@@ -41,12 +43,12 @@ mkdir -p "$LOGS"
 ARMS="${ARMS:-rgb rgb_cont kv kv_adaln kv_tokens scratch_kv}"
 PREFIX="${PREFIX:-F}"
 declare -A ARM_POLICY=(
-  [rgb]=act [rgb_cont]=act
+  [rgb]=act [rgb_cont]=act [rgb_novae]=act
   [kv]=control_act [kv_adaln]=control_act [kv_tokens]=control_act [scratch_kv]=control_act
 )
 declare -A ARM_CONDITIONING=([kv]=kv [kv_adaln]=kv_adaln [kv_tokens]=kv_tokens [scratch_kv]=kv)
 # Directory suffix per arm, as named before the rename.
-declare -A ARM_SUFFIX=([rgb]="" [rgb_cont]=_cont [kv]="" [kv_adaln]=_adaln [kv_tokens]=_incontext [scratch_kv]=_scratch)
+declare -A ARM_SUFFIX=([rgb]="" [rgb_cont]=_cont [rgb_novae]=_novae [kv]="" [kv_adaln]=_adaln [kv_tokens]=_incontext [scratch_kv]=_scratch)
 # The EE-absolute *view*, not the unified export it derives from: the unified
 # dataset's canonical pair is absolute joint, and absolute EE is the only
 # encoding that has produced a non-zero closed-loop result here.
@@ -144,15 +146,19 @@ for arm in $ARMS; do
       # The sbatch derives _scratch itself from an unset ACT_PRETRAINED, so the
       # scratch arm passes no suffix; the others pass theirs without the "_".
       suffix="${ARM_SUFFIX[$arm]#_}"; [ "$arm" = scratch_kv ] && suffix=""
+      # Arms trained from scratch (no stage-1 checkpoint, no dependency on it).
+      from_scratch=$(case "$arm" in scratch_kv|rgb_novae) echo 1 ;; *) echo 0 ;; esac)
       train=$(CONDITIONING="${ARM_CONDITIONING[$arm]:-}" \
         ACT_DATASET="$DATASET" ACT_POLICY_TYPE="${ARM_POLICY[$arm]}" \
         TRAIN_SEED="$seed" N_ACTION_STEPS=25 RUN_SUFFIX="$suffix" \
-        ACT_PRETRAINED=$([ "$arm" = scratch_kv ] && echo "" || echo "$stage1") \
+        USE_VAE=$([ "$arm" = rgb_novae ] && echo 0 || echo 1) \
+        ACT_PRETRAINED=$([ "$from_scratch" = 1 ] && echo "" || echo "$stage1") \
         submit "${SB[@]}" --job-name="octvla-$cell" --time=04:00:00 \
-          $([ "$arm" = scratch_kv ] || after "${STAGE1_JOB[$seed]}") \
+          $([ "$from_scratch" = 1 ] || after "${STAGE1_JOB[$seed]}") \
           --output="$LOGS/$cell-%j.out" --export=ALL slurm/train_act_shelf_restock.sbatch)
       cells=$((cells + 1))
-      echo "    train  $train  (${ARM_CONDITIONING[$arm]:-continue}${STAGE1_JOB[$seed]:+ after ${STAGE1_JOB[$seed]}})"
+      label=$([ "$from_scratch" = 1 ] && echo "from scratch" || echo "${ARM_CONDITIONING[$arm]:-continue}${STAGE1_JOB[$seed]:+ after ${STAGE1_JOB[$seed]}}")
+      echo "    train  $train  ($label)"
     fi
     [ "${SKIP_EVAL:-0}" = 1 ] && continue
     for tier in seen heldout novel; do

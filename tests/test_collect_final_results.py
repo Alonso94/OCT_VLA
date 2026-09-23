@@ -119,3 +119,10 @@ def test_the_budget_control_is_a_baseline_and_mechanisms_are_contrasted(
     assert {"rgb->kv_adaln/three_object", "rgb_cont->kv_adaln/three_object",
             "kv->kv_adaln/three_object"} <= set(table["paired"])
     assert "rgb_cont->rgb/three_object" not in table["paired"]
+
+
+def test_stage_survival_conditions_each_stage_on_the_one_before():
+    rows = [{"lift": l, "transfers": t} for l, t in
+            [(True, 3), (True, 2), (True, 1), (True, 0), (False, 0)]]
+    stages = collect.stage_survival(rows, 3)
+    assert stages == [("lift", 4, 5), ("T1|lift", 3, 4), ("T2|T1", 2, 3), ("T3|T2", 1, 2)]

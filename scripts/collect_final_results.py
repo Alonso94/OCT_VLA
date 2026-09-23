@@ -45,12 +45,14 @@ CELL = re.compile(r"^(?P<prefix>[A-Z]{1,2})-(?P<arm>[a-z_]+)-s(?P<seed>\d+)-(?P<
 #: policy, then what conditioning adds to it, then the ablation that omits
 #: stage one entirely. No `semantic`: its cells trained the entity model under
 #: another name (the flag selecting it was never read).
-ARMS = ("rgb", "rgb_cont", "kv", "kv_adaln", "kv_tokens", "scratch_kv")
+ARMS = ("rgb", "rgb_cont", "rgb_novae", "kv", "kv_adaln", "kv_tokens", "scratch_kv")
 #: Arm names used before the 2026-09-23 rename, as they appear in result files.
 ARM_ALIASES = {"entity": "kv", "adaln": "kv_adaln", "incontext": "kv_tokens", "scratch": "scratch_kv"}
 #: What each conditioned arm is paired against. rgb_cont is the fair one: it has
 #: the stage-2 arms' total training steps, so a gain over it is not budget.
 BASELINES = ("rgb", "rgb_cont")
+#: Changes to the baseline policy itself, each paired against rgb.
+BASELINE_ABLATIONS = ("rgb_novae",)
 CONDITIONED = ("kv", "kv_adaln", "kv_tokens", "scratch_kv")
 #: Q2: each encoder-side arm against KV alone, and against each other.
 MECHANISM_CONTRASTS = (("kv", "kv_adaln"), ("kv", "kv_tokens"), ("kv_adaln", "kv_tokens"))
@@ -59,6 +61,7 @@ PROFILES = ("two_object", "three_object", "four_object")
 ARM_NOTE = {
     "rgb": "stage 1: images and proprioception, no conditioning",
     "rgb_cont": "budget control: rgb continued for the steps stage 2 adds, no conditioning",
+    "rgb_novae": "rgb with the CVAE latent off (use_vae=false), 40k steps from scratch",
     "kv": "stage 2: ControlVLA's KV term, from the rgb checkpoint",
     "kv_adaln": "stage 2: kv + scene AdaLN on every block (LPWM-inspired)",
     "kv_tokens": "stage 2: kv + entity tokens in the encoder (LPWM-inspired)",
@@ -209,6 +212,36 @@ def row_line(label: str, sub: str, stats: dict[int, dict]) -> tuple[str, dict]:
     }
 
 
+OBJECTS = {"two_object": 2, "three_object": 3, "four_object": 4}
+
+
+def stage_survival(rows: list[dict], objects: int) -> list[tuple[str, int, int]]:
+    """(stage, reached, attempted) for each stage of the sequence, pooled.
+
+    lift: any object ever lifted. T1 | lift: at least one transfer given a lift.
+    Tk | Tk-1: at least k transfers given at least k-1, the per-stage reliability
+    ControlVLA reports for its long-horizon tasks. If the stages multiply to the
+    task success, failure is compounding local error, not a sequencing failure.
+
+    Transfers are the count on the upper shelf when the episode ends, so an
+    object restocked and later knocked off counts as not transferred.
+    """
+    stages = [("lift", sum(r["lift"] for r in rows), len(rows))]
+    previous = [r for r in rows if r["lift"]]
+    stages.append(("T1|lift", sum(r["transfers"] >= 1 for r in previous), len(previous)))
+    for k in range(2, objects + 1):
+        before = [r for r in rows if r["transfers"] >= k - 1]
+        stages.append((f"T{k}|T{k - 1}", sum(r["transfers"] >= k for r in before), len(before)))
+    return stages
+
+
+def stage_line(label: str, sub: str, stages) -> str:
+    cells = "  ".join(
+        f"{name} {hit}/{n} ({hit / n:.2f})" if n else f"{name} -/0" for name, hit, n in stages
+    )
+    return f"{label:10} {sub:13} {cells}"
+
+
 def header(sub: str) -> str:
     return (f"{'arm':10} {sub:13} {'seeds':>5} {'success':>18} {'>=1 transfer':>18} "
             f"{'mean transfers':>18}\n" + "-" * 86)
@@ -272,6 +305,25 @@ def main() -> int:
                     table["identity"][f"{arm}/{tier}"] = row_line(arm, tier, stats[(arm, tier)])[1]
     table["identity_split"] = split
 
+    # ---- stage-wise survival -----------------------------------------------
+    print("\nSTAGES (pooled over training seeds; reached/attempted)")
+    table["stages"] = {}
+    for arm in arms:
+        scopes = ([(t, dict(profile="three_object", tier=t), 3) for t in TIERS] if split
+                  else [("all", dict(profile="three_object"), 3)])
+        scopes += [(p.replace("_object", ""), dict(profile=p, tier="seen"), OBJECTS[p])
+                   for p in ("two_object", "four_object")]
+        for sub, where, objects in scopes:
+            chosen = pick(arm=arm, **where)
+            if not chosen:
+                continue
+            stages = stage_survival(chosen, objects)
+            print(stage_line(arm, sub, stages))
+            table["stages"][f"{arm}/{sub}"] = [
+                {"stage": name, "reached": hit, "attempted": n} for name, hit, n in stages
+            ]
+        print()
+
     # ---- object count, seen identities -----------------------------------
     print("\nOBJECT COUNT (seen identities; trained on three)")
     print(header("objects"))
@@ -286,6 +338,7 @@ def main() -> int:
 
     # ---- paired against rgb ----------------------------------------------
     contrasts = [(b, a) for b in BASELINES for a in CONDITIONED if b in arms and a in arms]
+    contrasts += [("rgb", a) for a in BASELINE_ABLATIONS if "rgb" in arms and a in arms]
     contrasts += [(b, a) for b, a in MECHANISM_CONTRASTS if b in arms and a in arms]
     if contrasts:
         print("PAIRED over matched (training seed, tier, scene seed) episodes; "
