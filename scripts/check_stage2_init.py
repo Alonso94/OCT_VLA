@@ -20,8 +20,10 @@ Writes a JSON report to <output root>/run_metadata/<job>_init_check.json and exi
 non-zero on failure.
 """
 
-from __future__ import annotations
-
+# No `from __future__ import annotations`: LeRobot's `parser.wrap` reads the
+# wrapped function's annotation to find its config class, and a stringified
+# annotation fails there -- which is how every INIT_CHECK in the first smoke
+# run failed before it ran a single check.
 import dataclasses
 import json
 import sys
