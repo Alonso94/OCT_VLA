@@ -40,16 +40,23 @@ from aggregate_eval import paired_difference  # noqa: E402
 
 #: `<prefix>-<arm>-s<seed>-<job>`, where job is a tier, or `count` for the
 #: two- and four-object rollouts on seen identities.
-CELL = re.compile(r"^(?P<prefix>[A-Z])-(?P<arm>[a-z]+)-s(?P<seed>\d+)-(?P<job>[a-z]+)$")
+CELL = re.compile(r"^(?P<prefix>[A-Z])-(?P<arm>[a-z_]+)-s(?P<seed>\d+)-(?P<job>[a-z]+)$")
 #: Ordered so the table reads as the ControlVLA recipe does: the stage-one
 #: policy, then what conditioning adds to it, then the ablation that omits
 #: stage one entirely. No `semantic`: its cells trained the entity model under
 #: another name (the flag selecting it was never read).
-ARMS = ("rgb", "entity", "adaln", "incontext", "scratch")
+ARMS = ("rgb", "rgb_cont", "entity", "adaln", "incontext", "scratch")
+#: What each conditioned arm is paired against. rgb_cont is the fair one: it has
+#: the stage-2 arms' total training steps, so a gain over it is not budget.
+BASELINES = ("rgb", "rgb_cont")
+CONDITIONED = ("entity", "adaln", "incontext", "scratch")
+#: Q2: each encoder-side arm against layerwise alone, and against each other.
+MECHANISM_CONTRASTS = (("entity", "adaln"), ("entity", "incontext"), ("adaln", "incontext"))
 TIERS = ("seen", "heldout", "novel")
 PROFILES = ("two_object", "three_object", "four_object")
 ARM_NOTE = {
     "rgb": "stage 1: images and proprioception, no conditioning",
+    "rgb_cont": "budget control: rgb continued for the steps stage 2 adds, no conditioning",
     "entity": "stage 2: layerwise conditioning on geometry, from the rgb checkpoint",
     "adaln": "stage 2: entity + AdaLN-Zero on every encoder/decoder block (LPWM)",
     "incontext": "stage 2: entity + entity tokens in the encoder sequence (LPWM)",
@@ -58,9 +65,10 @@ ARM_NOTE = {
 #: The variants each tier must be pinned to, per matrix. Checked against what a
 #: rollout requested, so a file whose name and pin disagree is refused rather
 #: than filed under the tier its name claims. Must match the submitter's TIER.
-TIER_IDS = {
-    "F": {"seen": [1, 2, 3, 4], "heldout": [0, 6], "novel": [5]},
-}
+#: Every shelf-restock matrix (F absolute EE; J, D, X the other control regimes)
+#: shares the one identity holdout.
+SHELF_TIER_IDS = {"seen": [1, 2, 3, 4], "heldout": [0, 6], "novel": [5]}
+TIER_IDS = {prefix: SHELF_TIER_IDS for prefix in "FJDX"}
 TIER_NOTE = {
     "seen": "identities the policy trained on",
     "heldout": "identities excluded from the dataset",
@@ -86,8 +94,10 @@ def read(path: Path, prefix: str) -> list[dict]:
     tier = "seen" if job == "count" else job
     if tier not in TIERS:
         raise Rejected(f"{path.name}: unknown job {job!r}")
-    expected = TIER_IDS.get(prefix, {}).get(tier)
-    if expected is not None and sorted(requested) != expected:
+    if prefix not in TIER_IDS:
+        raise Rejected(f"{path.name}: no tier definition for matrix {prefix!r}")
+    expected = TIER_IDS[prefix][tier]
+    if sorted(requested) != expected:
         raise Rejected(
             f"{path.name}: named {tier!r} but pinned to {sorted(requested)}, not {expected}"
         )
@@ -220,7 +230,7 @@ def main() -> int:
         return select(rows, **where)
 
     arms = [a for a in ARMS if pick(arm=a)]
-    table: dict = {"identity": {}, "object_count": {}, "paired_vs_rgb": {}}
+    table: dict = {"identity": {}, "object_count": {}, "paired": {}}
 
     # ---- identity tiers, three objects -----------------------------------
     stats = {
@@ -269,36 +279,44 @@ def main() -> int:
         print()
 
     # ---- paired against rgb ----------------------------------------------
-    if "rgb" in arms:
-        print("PAIRED vs rgb over matched (training seed, evaluation seed, scene) episodes")
-        print(f"{'arm':10} {'scope':13} {'pairs':>5} {'success rgb->arm':>18} {'p':>7} "
-              f"{'transfer rgb->arm':>18} {'p':>7}")
-        print("-" * 86)
+    contrasts = [(b, a) for b in BASELINES for a in CONDITIONED if b in arms and a in arms]
+    contrasts += [(b, a) for b, a in MECHANISM_CONTRASTS if b in arms and a in arms]
+    if contrasts:
+        print("PAIRED over matched (training seed, tier, scene seed) episodes; "
+              "b = only baseline won, c = only arm won")
+        print(f"{'baseline -> arm':22} {'scope':8} {'pairs':>5} {'success':>13} {'b/c':>6} "
+              f"{'p':>6} {'>=1 transfer':>13} {'b/c':>6} {'p':>6}")
+        print("-" * 92)
         scopes = {"three_object": dict(profile="three_object")}
         scopes |= {p: dict(profile=p, tier="seen") for p in ("two_object", "four_object")}
-        for arm in arms:
-            if arm == "rgb":
-                continue
+
+        def keyed(arm, where):
+            return {(r["train_seed"], r["tier"], r["profile"], r["eval_seed"]): r
+                    for r in pick(arm=arm, **where)}
+
+        for baseline, arm in contrasts:
             for scope, where in scopes.items():
-                def keyed(a):
-                    return {(r["train_seed"], r["tier"], r["profile"], r["eval_seed"]): r
-                            for r in pick(arm=a, **where)}
-                base, treat = keyed("rgb"), keyed(arm)
+                base, treat = keyed(baseline, where), keyed(arm, where)
                 shared = sorted(set(base) & set(treat))
                 if not shared:
                     continue
-                result = {}
-                for metric in ("success", "transfer"):
-                    result[metric] = paired_difference(
+                result = {
+                    metric: paired_difference(
                         [(base[k][metric], treat[k][metric]) for k in shared]
                     )
-                s, t = result["success"], result["transfer"]
-                print(f"{arm:10} {scope.replace('_object', ' obj'):13} {len(shared):>5} "
-                      f"{s['baseline_rate']:>8.2f} -> {s['treatment_rate']:<6.2f} "
-                      f"{s['mcnemar_p']:>7.3f} "
-                      f"{t['baseline_rate']:>8.2f} -> {t['treatment_rate']:<6.2f} "
-                      f"{t['mcnemar_p']:>7.3f}")
-                table["paired_vs_rgb"][f"{arm}/{scope}"] = result
+                    for metric in ("success", "transfer")
+                }
+                cells = []
+                for metric in ("success", "transfer"):
+                    r = result[metric]
+                    cells.append(
+                        f"{r['baseline_rate']:>5.2f}->{r['treatment_rate']:<5.2f} "
+                        f"{r['baseline_only_wins']:>2}/{r['treatment_only_wins']:<3} "
+                        f"{r['mcnemar_p']:>6.3f}"
+                    )
+                print(f"{baseline + ' -> ' + arm:22} {scope.replace('_object', ''):8} "
+                      f"{len(shared):>5}  {cells[0]}  {cells[1]}")
+                table["paired"][f"{baseline}->{arm}/{scope}"] = result
         print()
 
     single = [k for section in ("identity", "object_count")
@@ -307,7 +325,7 @@ def main() -> int:
         print("WARNING: single-seed cells, not to be reported as results: " + ", ".join(single))
     print("Ranges are min-max across training seeds, not confidence intervals.\n"
           "A cell whose range spans zero has not established anything. p is two-sided\n"
-          "exact McNemar; with 5 arms x 3 scopes, read p < 0.05 as a lead, not a finding.")
+          "exact McNemar; with this many contrasts, read p < 0.05 as a lead, not a finding.")
     if args.output:
         table["arm_notes"] = {a: ARM_NOTE[a] for a in arms}
         table["tier_notes"] = TIER_NOTE

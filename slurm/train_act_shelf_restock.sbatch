@@ -46,7 +46,20 @@ fi
 ACT_POLICY_TYPE="${ACT_POLICY_TYPE:-act}"
 POLICY_ARGS=(--policy.type="$ACT_POLICY_TYPE")
 case "$ACT_POLICY_TYPE" in
-  act) ;;
+  act)
+    # Continue a trained rgb checkpoint: the budget control for stage two.
+    # Every conditioned arm trains its 40k steps *on top of* stage one's 40k,
+    # so without an rgb arm given the same extra steps, a gain could be extra
+    # training rather than objects. This used to be ignored for plain act --
+    # the variable was read only in the control_act branch -- so a
+    # "continued" run would have silently retrained from scratch.
+    if [ -n "${ACT_PRETRAINED:-}" ]; then
+      [ -d "$ACT_PRETRAINED" ] || { echo "No checkpoint at $ACT_PRETRAINED" >&2; exit 2; }
+      [ -n "${RUN_SUFFIX:-}" ] || { echo "A continued act run needs RUN_SUFFIX" >&2; exit 2; }
+      POLICY_ARGS+=(--policy.pretrained_path="$ACT_PRETRAINED")
+      ACT_STAGE=continue
+    fi
+    ;;
   control_act)
     ENTITY_ARGS_TEXT=$("$OCTVLA_POLICY_PYTHON" "$OCTVLA_REPO/scripts/entity_training_args.py" "$DATASET")
     mapfile -t ENTITY_ARGS <<< "$ENTITY_ARGS_TEXT"

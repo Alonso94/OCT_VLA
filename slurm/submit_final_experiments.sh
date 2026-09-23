@@ -30,6 +30,11 @@ mkdir -p "$LOGS"
 #   adaln      entity + AdaLN-Zero on every encoder/decoder block (stage 2)
 #   incontext  entity + entity tokens in the encoder sequence  (stage 2)
 #   scratch    entity conditioning with no stage 1             (w/o pretrain)
+#   rgb_cont   rgb continued for as many steps as stage 2 adds (budget control)
+#
+# rgb_cont exists because every stage-2 arm trains 40k steps on top of rgb's
+# 40k. Against rgb alone, a gain could be the extra training; against rgb_cont,
+# which sees the same total steps and the same fresh optimiser, it cannot.
 #
 # adaln and incontext follow LPWM (arXiv:2603.04553). ACT has one decoder
 # layer, so the layerwise branch alone is a single seam and the encoder sees
@@ -46,13 +51,15 @@ mkdir -p "$LOGS"
 # rollouts -- which is how the voided tier rollouts are redone. SKIP_EVAL=1 submits training only, for a task
 # with no rollout harness yet. PREFIX names the cells (default F) so two tasks'
 # matrices cannot collide in job names or evaluation tags.
-ARMS="${ARMS:-rgb entity adaln incontext scratch}"
+ARMS="${ARMS:-rgb rgb_cont entity adaln incontext scratch}"
 PREFIX="${PREFIX:-F}"
 declare -A ARM_POLICY=(
   [rgb]=act [entity]=control_act [adaln]=control_act [incontext]=control_act [scratch]=control_act
+  [rgb_cont]=act
 )
 declare -A ARM_FLAGS=(
   [rgb]="" [entity]="" [adaln]="OBJECT_ADALN=1" [incontext]="OBJECT_INCONTEXT=1" [scratch]=""
+  [rgb_cont]=""
 )
 # The EE-absolute *view*, not the unified export it derives from: the unified
 # dataset's canonical pair is absolute joint, and absolute EE is the only
@@ -106,9 +113,12 @@ for seed in $SEEDS; do
     echo "    $run exists without a final checkpoint: running or failed, resolve first" >&2
     exit 2
   else
+    # AFTER_JOB: a job stage one must wait for, e.g. the one projecting the
+    # dataset view it trains on.
     STAGE1_JOB[$seed]=$(ACT_DATASET="$DATASET" ACT_POLICY_TYPE=act \
       TRAIN_SEED="$seed" N_ACTION_STEPS=25 \
       submit "${SB[@]}" --job-name="octvla-$cell" --time=04:00:00 \
+        ${AFTER_JOB:+--dependency=afterok:$AFTER_JOB} \
         --output="$LOGS/$cell-%j.out" --export=ALL slurm/train_act_shelf_restock.sbatch)
     echo "    train  ${STAGE1_JOB[$seed]}  (stage 1)"
   fi
@@ -145,6 +155,7 @@ for arm in $ARMS; do
     case "$arm" in
       scratch) run="${run}_scratch" ;;
       adaln|incontext) run="${run}_${arm}" ;;
+      rgb_cont) run="${run}_cont" ;;
     esac
     if [ "$arm" = rgb ]; then
       train="${STAGE1_JOB[$seed]}"; run="${STAGE1_RUN[$seed]}"
@@ -163,7 +174,7 @@ for arm in $ARMS; do
         OBJECT_INCONTEXT=$([ "$arm" = incontext ] && echo 1 || echo 0) \
         ACT_DATASET="$DATASET" ACT_POLICY_TYPE="${ARM_POLICY[$arm]}" \
         TRAIN_SEED="$seed" N_ACTION_STEPS=25 \
-        RUN_SUFFIX=$(case "$arm" in adaln|incontext) echo "$arm" ;; esac) \
+        RUN_SUFFIX=$(case "$arm" in adaln|incontext) echo "$arm" ;; rgb_cont) echo cont ;; esac) \
         ACT_PRETRAINED=$([ "$arm" = scratch ] && echo "" || echo "$stage1") \
         submit "${SB[@]}" --job-name="octvla-$cell" --time=04:00:00 \
           $([ "$arm" = scratch ] || after "${STAGE1_JOB[$seed]}") \

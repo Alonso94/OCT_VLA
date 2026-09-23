@@ -97,6 +97,19 @@ def test_object_count_and_pairing(tmp_path, capsys, monkeypatch):
     assert set(table["object_count"]) >= {
         "adaln/two_object", "adaln/three_object", "adaln/four_object"
     }
-    paired = table["paired_vs_rgb"]["adaln/three_object"]["success"]
+    paired = table["paired"]["rgb->adaln/three_object"]["success"]
     assert paired["pairs"] == 6
     assert paired["treatment_only_wins"] == 4 and paired["baseline_only_wins"] == 0
+
+
+def test_the_budget_control_is_a_baseline_and_mechanisms_are_contrasted(
+    tmp_path, capsys, monkeypatch
+):
+    for seed in (1000, 1001):
+        for arm, transfers in (("rgb", [0, 0]), ("rgb_cont", [1, 0]),
+                               ("entity", [1, 1]), ("adaln", [3, 1])):
+            write(tmp_path, f"F-{arm}-s{seed}-seen", transfers)
+    table, _ = run(tmp_path, capsys, monkeypatch)
+    assert {"rgb->adaln/three_object", "rgb_cont->adaln/three_object",
+            "entity->adaln/three_object"} <= set(table["paired"])
+    assert "rgb_cont->rgb/three_object" not in table["paired"]
