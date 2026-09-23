@@ -136,6 +136,7 @@ conditioning second. Its "without pretraining" ablation fails, and our
 | `adaln` | `entity` plus **AdaLN-Zero** (LPWM, arXiv:2603.04553): a scene vector modulates all 11 encoder and decoder blocks | same files, `object_adaln=true` |
 | `incontext` | `entity` plus **in-context entity tokens** (LPWM): the tokens are appended to the encoder sequence and discarded after it | same files, `object_incontext=true` |
 | `scratch` | `entity` conditioning trained from scratch, with no stage 1 | `ACT_PRETRAINED` unset |
+| `rgb_cont` | nothing; `rgb` continued for the 40 k steps stage 2 adds (the **budget control**) | `ACT_POLICY_TYPE=act` with `ACT_PRETRAINED` |
 
 **Why `adaln` and `incontext` exist.** LeRobot ACT has **one** decoder layer. So
 `entity`, which is "layerwise", really adds one attention term at one seam. The
@@ -201,10 +202,12 @@ an early sweep scored exactly zero transfers.
 1. **Training budget.** Each stage-2 arm trains 40 k steps *on top of* `rgb`'s
    40 k. So every conditioned arm has seen twice the gradient steps, and part
    of any gain could be extra training rather than objects. **The control is
-   `rgb` continued for 40 k more steps**, called `rgb_cont`. It has not been
-   run. `train_act_shelf_restock.sbatch` currently ignores `ACT_PRETRAINED` for
-   plain `act`, so the control needs a one-line fix first. Until it runs, Q1 and
-   Q2 are preliminary. `scratch` gets the same 40 k as `rgb`, so the
+   `rgb` continued for 40 k more steps**, called `rgb_cont`. It uses the same
+   fresh optimiser, and every arm is paired against it as well as against
+   `rgb`. It is submitted. The training script used to ignore `ACT_PRETRAINED`
+   for plain `act`, so a continued run would have silently retrained from
+   scratch; that is fixed in `69c620b`. Until it runs, Q1 and Q2 are
+   preliminary. `scratch` gets the same 40 k as `rgb`, so the
    `scratch` comparison is not confounded.
 2. **Validation loss.** Validation loss is not used to rank cells or to pick
    checkpoints. It has contradicted closed-loop success nine times. Every cell
@@ -321,20 +324,35 @@ is possible from rates at zero.
 
 ---
 
-## 5. What answers each question, and what it costs
+## 5. What answers each question, and what is running
 
-| # | runs needed | status | cost |
-| --- | --- | --- | --- |
-| Q1, Q2 (ACT) | pinned rollouts of the 5 arms × 3 seeds, plus the `rgb_cont` budget control × 3 seeds | rollouts queued; `rgb_cont` not started | ~3 GPU-h training, ~2 GPU-h eval |
-| Q3 (ACT) | 2- and 4-object rollouts of the same 15 checkpoints (plus `rgb_cont`) | queued | ~1 GPU-h per cell |
-| Q4 (ACT) | `rgb` on absolute joint, joint delta and EE delta views of the identity corpus × 3 seeds (absolute EE exists) | not started | ~9 GPU-h training, ~5 GPU-h eval |
-| Q4 (VLAs) | 3 backbones × regimes × 3 seeds, RGB only | not started | ~7 GPU-h average per cell |
-| Q1–Q3 (VLAs) | stage-2 arms on each VLA's best regime × 3 seeds, after an adapter-aware stage-2 loader, GR00T's padding/mask fixes, and ports of AdaLN/in-context | code not written | ~7 GPU-h per cell |
+Matrix prefixes: `F` absolute EE, `J` absolute joint, `D` joint delta, `X` EE
+delta. Each cell is 3 seeds × 4 pinned rollouts: three-object seen, held-out and
+novel, plus a `count` job at 2 and 4 objects.
 
----
+| # | runs | status |
+| --- | --- | --- |
+| Q1, Q2, Q3 (ACT) | `F`: rgb, rgb_cont, entity, adaln, incontext, scratch | **submitted.** rgb_cont trains first; the other five reuse existing checkpoints |
+| Q4 (ACT) | `J`, `D`, `X`: rgb × 3 seeds, on views projected from the same unified identity export | **submitted**, after the projection job |
+| Q1 × Q4 (ACT) | the best Stage A conditioned arm, plus rgb_cont, on `J`, `D`, `X` | waits for the Stage A winner |
+| Q4 (VLAs) | SmolVLA, pi0.5, GR00T × {absolute joint, absolute EE} × 3 seeds, RGB. The delta regimes are dropped: they have been the weakest for every backbone | code first (below), then after Stage A |
+| Q1, Q2 (VLAs) | on each VLA's better regime: layerwise, plus ACT's best encoder-side arm, × 3 seeds | code first (below) |
+
+VLA prerequisites, none written yet:
+- an adapter-aware stage-2 loader: merge the stage-1 LoRA, load it into
+  `control_*`, and add a fresh adapter, tested to be exactly stage 1 at step 0;
+- GR00T's action padding (16 → 132 columns) and missing `action_is_pad` mask;
+- GR00T's broken `checkpoints/last` link;
+- a port of ACT's best encoder-side arm;
+- a VLA path in `submit_final_experiments.sh`.
+
+The trimmed VLA plan is about 250 GPU-h.
 
 ## Update log
 
+- **2026-09-23.** Submitted `rgb_cont` (the budget control) and `rgb` on the
+  three other control regimes, 12 training cells and 48 rollouts. The VLA
+  scope is set to the trimmed plan.
 - **2026-09-23.** Document created.
   - Q1/Q2 are preliminary, from unpinned three-seed rollouts.
   - Found and fixed the identity-tier bug; pinned tier and count rollouts are
