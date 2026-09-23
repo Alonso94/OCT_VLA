@@ -10,6 +10,7 @@ from .control_pi05.configuration_control_pi05 import ControlPI05Config
 from .control_smolvla.configuration_control_smolvla import ControlSmolVLAConfig
 from .control_vla_jepa.configuration_control_vla_jepa import ControlVLAJEPAConfig
 from .masked_pi05.configuration_masked_pi05 import MaskedPI05Config
+from .slim_groot.configuration_slim_groot import SlimGrootConfig
 
 __all__ = [
     "ControlACTConfig",
@@ -18,4 +19,5 @@ __all__ = [
     "ControlSmolVLAConfig",
     "ControlVLAJEPAConfig",
     "MaskedPI05Config",
+    "SlimGrootConfig",
 ]

@@ -55,6 +55,7 @@ import torch
 from torch import Tensor, nn
 
 from oct_vla.data.token_transforms import TOKEN_MODES, apply_token_mode, token_dim_for_mode
+from oct_vla.policies.stage_loading import VerifiedLoadMixin
 
 #: How the object set reaches the action stream. "controlvla" is the legacy
 #: single-seam unpooled approximation; "layerwise" is the native-query,
@@ -247,6 +248,14 @@ class ObjectTokenConfigMixin:
                 raise ValueError("entity_v2 prohibits slot embeddings and oracle-role transforms")
             if mode != "layerwise":
                 raise ValueError("entity_v2 requires layerwise injection")
+        # The encoder-side arms (LPWM): each is layerwise *plus* one path, so
+        # that against layerwise alone it isolates exactly that addition.
+        adaln = bool(getattr(self, "object_adaln", False))
+        incontext = bool(getattr(self, "object_incontext", False))
+        if adaln and incontext:
+            raise ValueError("set at most one of object_adaln / object_incontext")
+        if (adaln or incontext) and (representation != "entity_v2" or mode != "layerwise"):
+            raise ValueError("object_adaln / object_incontext require entity_v2 layerwise")
 
 
 class ObjectExpert(nn.Module):
@@ -535,7 +544,7 @@ class ObjectConditioning(nn.Module):
         )
 
 
-class ObjectConditionedPolicyMixin:
+class ObjectConditionedPolicyMixin(VerifiedLoadMixin):
     """The policy half: feeds the batch in, and keeps PEFT from dropping it.
 
     `object_module_path` is the one thing a new backbone overrides. Everything
@@ -571,6 +580,11 @@ class ObjectConditionedPolicyMixin:
     @property
     def _object_state_prefix(self) -> str:
         return f"{self.object_module_path}.{self.object_module_attr}."
+
+    def _fresh_state_prefixes(self) -> tuple[str, ...]:
+        # A stage-1 checkpoint has no conditioning subtree; everything else in
+        # the model must come from the file (VerifiedLoadMixin).
+        return (self._object_state_prefix,)
 
     def select_action(self, batch: dict[str, Tensor], **kwargs: Any) -> Tensor:
         """Condition the closed-loop path too, whatever route the backbone takes.

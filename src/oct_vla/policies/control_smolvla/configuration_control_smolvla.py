@@ -46,6 +46,14 @@ class ControlSmolVLAConfig(ObjectTokenConfigMixin, SmolVLAConfig):
     #: Used by the "pooled" mode only.
     object_queries: int = 4
     object_attention_heads: int = 8
+    # Encoder-side arms (LPWM, arXiv:2603.04553), each on top of layerwise so
+    # an arm isolates one addition, as for control_act. AdaLN: the pooled
+    # scene is added, through a zero-initialised projection, to the vector the
+    # action model already modulates its norms by (exact identity at init).
+    object_adaln: bool = False
+    # In-context: entity tokens prepended to the action-model sequence and
+    # dropped from its output. Not identity at init (they enter attention).
+    object_incontext: bool = False
 
     def __post_init__(self) -> None:
         super().__post_init__()

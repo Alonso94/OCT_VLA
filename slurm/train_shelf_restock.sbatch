@@ -55,10 +55,16 @@ case "$BACKBONE" in
     # its published checkpoint carries `model_type`, not LeRobot's `type`.
     DEFAULT_BASE_MODEL=""
     OBJECT_POLICY_TYPE="control_groot"
-    # No masked variant: GR00T does not mask action_is_pad either way, so the
-    # RGB and object arms are affected equally and stay comparable. Worth
-    # revisiting -- 17.4% of targets on this corpus are padding.
-    STOCK_POLICY_TYPE="groot"
+    # GR00T's own loss is already masked: its processor (GrootN17PackInputsStep)
+    # builds `action_mask` from both `action_is_pad` and the valid action width,
+    # and the head divides by `action_mask.sum()` (groot_n1_7.py). So neither
+    # the 17.4% padded steps nor the 116 unused columns of its 132-wide action
+    # enter the loss (tests/policies/test_layerwise_backbones.py).
+    #
+    # slim_groot, not stock groot: the same network, but its checkpoint leaves
+    # out the frozen 6.1 GB backbone, which is rebuilt from the base on load.
+    # A stock save was ~49 GB on disk per checkpoint with optimiser state.
+    STOCK_POLICY_TYPE="slim_groot"
     PRECISION_ARGS=(--policy.use_amp=true)
     # No LoRA: GR00T freezes its LLM and vision tower by default and tunes only
     # the projector and diffusion head, and its weights arrive through
@@ -133,6 +139,28 @@ EVAL_SPLIT=$("$OCTVLA_POLICY_PYTHON" -c "import json,sys; print(json.load(open(s
 
 BASE_MODEL="${OCTVLA_BASE_MODEL:-$DEFAULT_BASE_MODEL}"
 
+# Stage two of the ControlVLA recipe, and its budget control. STAGE1_CHECKPOINT
+# is a full-weights stage-1 checkpoint that both the object arms (control_*) and
+# rgb_cont (the stock type, continued) start from:
+#   pi05, smolvla  the *merged* directory scripts/merge_stage1_adapter.py writes:
+#                  stage 1 is a LoRA adapter, which no loader can put under a
+#                  different policy class
+#   groot          stage 1's own pretrained_model (slim: head only)
+# Every such load is verified tensor by tensor (oct_vla.policies.stage_loading):
+# pi0.5's loader returns an unloaded model on failure, printing a warning only.
+STAGE="pretrain"
+if [ -n "${STAGE1_CHECKPOINT:-}" ]; then
+  [ -f "$STAGE1_CHECKPOINT/model.safetensors" ] || {
+    echo "STAGE1_CHECKPOINT=$STAGE1_CHECKPOINT has no model.safetensors" >&2
+    [ -f "$STAGE1_CHECKPOINT/adapter_config.json" ] && \
+      echo "It is a LoRA adapter: merge it first with scripts/merge_stage1_adapter.py" >&2
+    exit 2
+  }
+  [ -n "${TRAIN_TAG:-}" ] || { echo "A stage-2 run needs TRAIN_TAG to name it" >&2; exit 2; }
+  BASE_MODEL="$STAGE1_CHECKPOINT"
+  STAGE=$([ "$TRAIN_VARIANT" = object ] && echo finetune || echo continue)
+fi
+
 # The variant selects the policy CLASS, not just the dataset. `object` swaps in
 # the object-conditioned plugin, which reads the dataset's object-token columns
 # through a zero-initialised residual; `rgb` is the stock backbone and ignores
@@ -178,10 +206,25 @@ else
   )
 fi
 
+# The encoder-side arms (LPWM), each layerwise plus one path, as for ACT.
+# Refused outside entity_v2 object runs rather than ignored: an ignored arm
+# flag is how the `semantic` arm trained the entity model under another name.
+ENCODER_ARM=""
+case "${OBJECT_ADALN:-0}${OBJECT_INCONTEXT:-0}" in
+  00) ;;
+  10) ENCODER_ARM=adaln ;;
+  01) ENCODER_ARM=incontext ;;
+  *) echo "Set at most one of OBJECT_ADALN / OBJECT_INCONTEXT, to 1" >&2; exit 2 ;;
+esac
+if [ -n "$ENCODER_ARM" ] && [ "$OBJECT_REPRESENTATION" != entity_v2 ]; then
+  echo "OBJECT_${ENCODER_ARM^^} needs OBJECT_REPRESENTATION=entity_v2" >&2; exit 2
+fi
+
 if [ "$OBJECT_REPRESENTATION" = entity_v2 ]; then
   ENTITY_ARGS_TEXT=$("$OCTVLA_POLICY_PYTHON" "$OCTVLA_REPO/scripts/entity_training_args.py" "$DATASET")
   mapfile -t ENTITY_ARGS <<< "$ENTITY_ARGS_TEXT"
   POLICY_ARGS+=("${ENTITY_ARGS[@]}")
+  [ -n "$ENCODER_ARM" ] && POLICY_ARGS+=(--policy.object_"$ENCODER_ARM"=true)
 fi
 
 # The execution horizon is a measured convention (25; see
@@ -202,6 +245,7 @@ if [ "$TRAIN_VARIANT" = "object" ]; then
   # directory written before this knob existed keeps its name.
   [ "$OBJECT_INJECTION_MODE" != "controlvla" ] && RUN_NAME="${RUN_NAME}_${OBJECT_INJECTION_MODE}"
   [ "$OBJECT_REPRESENTATION" != legacy ] && RUN_NAME="${RUN_NAME}_${OBJECT_REPRESENTATION}"
+  [ -n "$ENCODER_ARM" ] && RUN_NAME="${RUN_NAME}_${ENCODER_ARM}"
   [ "$OBJECT_ENTITY_POSITIONAL" = "true" ] && RUN_NAME="${RUN_NAME}_entpos"
 fi
 # TRAIN_TAG distinguishes cells this name cannot -- a different dataset view,
@@ -248,6 +292,9 @@ echo "token_mode : $OBJECT_TOKEN_MODE"
 echo "seed       : $TRAIN_SEED"
 echo "eval_split : $EVAL_SPLIT"
 echo "output     : $OUTPUT"
+echo "stage      : $STAGE ${STAGE1_CHECKPOINT:+from $STAGE1_CHECKPOINT}"
+# The resolved policy flags, so a log shows which arm actually trained.
+echo "policy args: ${POLICY_ARGS[*]}"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
 # The cell's identity, recorded rather than left in a job log that ages out of
@@ -264,6 +311,8 @@ cat > "$OCTVLA_OUTPUT_ROOT/run_metadata/${RUN_NAME}.json" <<JSON
   "token_mode": "$OBJECT_TOKEN_MODE",
   "object_representation": "$OBJECT_REPRESENTATION",
   "injection_mode": "$OBJECT_INJECTION_MODE",
+  "stage": "$STAGE",
+  "stage1_checkpoint": "${STAGE1_CHECKPOINT:-}",
   "seed": $TRAIN_SEED,
   "steps": ${TRAIN_STEPS:-20000},
   "batch_size": ${BATCH_SIZE:-4},
@@ -289,7 +338,15 @@ RENAME_MAP=$(PYTHONPATH="$OCTVLA_REPO/src" "$OCTVLA_POLICY_PYTHON" -c \
 # the path -- previously only the rename-map subshell above did.
 export PYTHONPATH="$OCTVLA_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
 
-srun "$OCTVLA_POLICY_PYTHON" -u -m lerobot.scripts.lerobot_train \
+# INIT_CHECK=1: instead of training, build this exact run and prove stage 2
+# starts at stage 1 and that gradient reaches the object branch
+# (scripts/check_stage2_init.py). Minutes, not hours, and it writes no checkpoint.
+ENTRY=(-m lerobot.scripts.lerobot_train)
+if [ "${INIT_CHECK:-0}" = 1 ]; then
+  [ -n "${STAGE1_CHECKPOINT:-}" ] || { echo "INIT_CHECK needs STAGE1_CHECKPOINT" >&2; exit 2; }
+  ENTRY=("$OCTVLA_REPO/scripts/check_stage2_init.py")
+fi
+srun "$OCTVLA_POLICY_PYTHON" -u "${ENTRY[@]}" \
   --dataset.repo_id="$TRAIN_REPO_ID" \
   --dataset.root="$DATASET" \
   --dataset.eval_split="$EVAL_SPLIT" \
@@ -303,9 +360,16 @@ srun "$OCTVLA_POLICY_PYTHON" -u -m lerobot.scripts.lerobot_train \
   --num_workers="${NUM_WORKERS:-8}" \
   --eval_steps="${EVAL_STEPS:-50}" \
   --max_eval_samples="${MAX_EVAL_SAMPLES:-256}" \
-  --save_freq="${SAVE_FREQ:-2000}" \
+  --save_freq="${SAVE_FREQ:-${TRAIN_STEPS:-20000}}" \
   --log_freq=100 \
   --seed="$TRAIN_SEED" \
   --output_dir="$OUTPUT" \
   --job_name="$RUN_NAME" \
   --wandb.enable=false
+
+# Storage: 1 TB of vault for everything. Only the final checkpoint is kept
+# (save_freq defaults to the step budget; every evaluation reads `last`), and
+# its optimiser state goes once the run has succeeded -- nothing here resumes.
+# Only this run's own directory, and only after srun returned 0 (set -e).
+rm -rf "$OUTPUT"/checkpoints/*/training_state
+du -sh "$OUTPUT" 2>/dev/null | sed 's/^/kept       : /'

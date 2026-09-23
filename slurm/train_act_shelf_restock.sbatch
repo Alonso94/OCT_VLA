@@ -157,9 +157,16 @@ srun "$OCTVLA_POLICY_PYTHON" -u -m lerobot.scripts.lerobot_train \
   --num_workers="${NUM_WORKERS:-8}" \
   --eval_steps="${EVAL_STEPS:-1000}" \
   --max_eval_samples="${MAX_EVAL_SAMPLES:-256}" \
-  --save_freq="${SAVE_FREQ:-5000}" \
+  --save_freq="${SAVE_FREQ:-${TRAIN_STEPS:-40000}}" \
   --log_freq=200 \
   --seed="${TRAIN_SEED:-1000}" \
   --output_dir="$OUTPUT" \
   --job_name="$RUN_NAME" \
   --wandb.enable=false
+
+# Storage: 1 TB of vault for everything. A 40k-step run used to keep eight
+# checkpoints with optimiser state, 9.4 GB; every evaluation reads `last`, and
+# stage 2 continues from `last/pretrained_model`. So one checkpoint, and its
+# optimiser state removed once the run succeeded (set -e): ~0.4 GB a run.
+rm -rf "$OUTPUT"/checkpoints/*/training_state
+du -sh "$OUTPUT" 2>/dev/null | sed 's/^/kept       : /'

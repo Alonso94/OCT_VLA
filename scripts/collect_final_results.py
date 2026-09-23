@@ -40,7 +40,7 @@ from aggregate_eval import paired_difference  # noqa: E402
 
 #: `<prefix>-<arm>-s<seed>-<job>`, where job is a tier, or `count` for the
 #: two- and four-object rollouts on seen identities.
-CELL = re.compile(r"^(?P<prefix>[A-Z])-(?P<arm>[a-z_]+)-s(?P<seed>\d+)-(?P<job>[a-z]+)$")
+CELL = re.compile(r"^(?P<prefix>[A-Z]{1,2})-(?P<arm>[a-z_]+)-s(?P<seed>\d+)-(?P<job>[a-z]+)$")
 #: Ordered so the table reads as the ControlVLA recipe does: the stage-one
 #: policy, then what conditioning adds to it, then the ablation that omits
 #: stage one entirely. No `semantic`: its cells trained the entity model under
@@ -65,10 +65,12 @@ ARM_NOTE = {
 #: The variants each tier must be pinned to, per matrix. Checked against what a
 #: rollout requested, so a file whose name and pin disagree is refused rather
 #: than filed under the tier its name claims. Must match the submitter's TIER.
-#: Every shelf-restock matrix (F absolute EE; J, D, X the other control regimes)
-#: shares the one identity holdout.
+#: Every shelf-restock matrix shares the one identity holdout. A prefix's last
+#: letter is its control regime (F absolute EE; J absolute joint; D joint delta;
+#: X EE delta); a VLA matrix puts its backbone first (P pi0.5, S SmolVLA,
+#: G GR00T), so `PF` is pi0.5 on absolute EE.
 SHELF_TIER_IDS = {"seen": [1, 2, 3, 4], "heldout": [0, 6], "novel": [5]}
-TIER_IDS = {prefix: SHELF_TIER_IDS for prefix in "FJDX"}
+TIER_IDS = {regime: SHELF_TIER_IDS for regime in "FJDX"}
 TIER_NOTE = {
     "seen": "identities the policy trained on",
     "heldout": "identities excluded from the dataset",
@@ -94,9 +96,9 @@ def read(path: Path, prefix: str) -> list[dict]:
     tier = "seen" if job == "count" else job
     if tier not in TIERS:
         raise Rejected(f"{path.name}: unknown job {job!r}")
-    if prefix not in TIER_IDS:
+    if prefix[-1] not in TIER_IDS:
         raise Rejected(f"{path.name}: no tier definition for matrix {prefix!r}")
-    expected = TIER_IDS[prefix][tier]
+    expected = TIER_IDS[prefix[-1]][tier]
     if sorted(requested) != expected:
         raise Rejected(
             f"{path.name}: named {tier!r} but pinned to {sorted(requested)}, not {expected}"

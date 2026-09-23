@@ -372,6 +372,63 @@ class SceneAdaLN(nn.Module):
         return out.view(memory.shape[0], self.sites, 3, self.width)
 
 
+class SceneVector(nn.Module):
+    """A pooled entity set as an additive delta on a host's own condition vector.
+
+    The VLA form of AdaLN-Zero (LPWM, arXiv:2603.04553). pi0.5's action expert
+    and GR00T's DiT already modulate every block from a condition vector -- the
+    flow-matching timestep -- through their own adaptive norms. Adding the scene
+    to that vector conditions every block the way DiT conditions on a class
+    label, through the pretrained modulation layers, with no new sites. The
+    output projection is zero-initialised, so at step 0 the host is exactly its
+    stage-1 self; an empty scene contributes exactly zero at any step.
+
+    ``out_dim`` may also be ``sites * 2 * width`` for a host with no adaptive
+    norm of its own (SmolVLA), which the caller reshapes into per-site
+    (gamma, beta) pairs.
+    """
+
+    def __init__(self, config: Any, width: int, out_dim: int, *, heads: int | None = None) -> None:
+        super().__init__()
+        self.width = width
+        self.out_dim = int(out_dim)
+        self.embedding = EntityV2Embedding(
+            width,
+            getattr(config, "object_entity_normalizer", None),
+            identities=int(getattr(config, "object_identity_cardinality", 0) or 0),
+        )
+        self.query = nn.Parameter(torch.randn(1, 1, width) * 0.02)
+        self.pool = nn.MultiheadAttention(
+            width,
+            heads or int(getattr(config, "object_attention_heads", 8)),
+            dropout=float(getattr(config, "dropout", 0.0) or 0.0),
+            batch_first=True,
+        )
+        self.projection = nn.Linear(width, self.out_dim)
+        nn.init.zeros_(self.projection.weight)
+        nn.init.zeros_(self.projection.bias)
+
+    @property
+    def is_live(self) -> bool:
+        return bool(self.projection.weight.any().item() or self.projection.bias.any().item())
+
+    def forward(self, tokens: Tensor | None, mask: Tensor | None, batch: int) -> Tensor | None:
+        """``[B, out_dim]``, or None if there is no scene at all."""
+        if tokens is None or tokens.shape[-2] == 0:
+            return None
+        memory, padding = _entity_inputs(self.embedding, tokens, mask, batch)
+        empty = padding.all(dim=1)
+        safe = padding.clone()
+        if empty.any():
+            safe[empty, 0] = False
+        query = self.query.to(memory.dtype).expand(memory.shape[0], -1, -1)
+        pooled = self.pool(query, memory, memory, key_padding_mask=safe, need_weights=False)[0]
+        out = self.projection(F.silu(pooled[:, 0]))
+        if empty.any():
+            out = out.masked_fill(empty[:, None], 0)
+        return out
+
+
 class InContextEntities(nn.Module):
     """Entity tokens appended to a host encoder's sequence, then discarded.
 
@@ -399,6 +456,18 @@ class InContextEntities(nn.Module):
     @property
     def is_live(self) -> bool:
         return bool(self.gate.item() != self.gate_init)
+
+    def embed(
+        self, tokens: Tensor, mask: Tensor | None, batch: int, dtype: torch.dtype
+    ) -> tuple[Tensor, Tensor]:
+        """Batch-first ``[B, N, D]`` entity tokens and their ``[B, N]`` padding.
+
+        For hosts that take a batch-first sequence (the VLA action experts).
+        The learned position code marks them as entities rather than actions.
+        """
+        memory, padding = _entity_inputs(self.embedding, tokens, mask, batch)
+        entities = self.projection(memory) + self.position.to(memory.dtype)
+        return entities.to(dtype), padding
 
     def extend(
         self,

@@ -88,6 +88,7 @@ _RENAME_MAPS: dict[str, dict[str, str]] = {
     "smolvla": SMOLVLA_RENAME_MAP,
     "groot": GROOT_RENAME_MAP,
     "control_groot": GROOT_RENAME_MAP,
+    "slim_groot": GROOT_RENAME_MAP,
     "vla_jepa": VLA_JEPA_RENAME_MAP,
     "control_vla_jepa": VLA_JEPA_RENAME_MAP,
     # The unconditioned RGB baseline for the VLA-JEPA arm. It reaches LeRobot's

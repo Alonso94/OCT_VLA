@@ -9,11 +9,14 @@ from lerobot.utils.constants import ACTION, OBS_LANGUAGE_ATTENTION_MASK, OBS_LAN
 from torch import Tensor
 
 from oct_vla.policies.masked_loss import masked_loss, padded_fraction
+from oct_vla.policies.stage_loading import VerifiedLoadMixin
 
 from .configuration_masked_pi05 import MaskedPI05Config
 
 
-class MaskedPI05Policy(PI05Policy):
+class MaskedPI05Policy(VerifiedLoadMixin, PI05Policy):
+    # VerifiedLoadMixin: pi0.5's loader swallows its own load failures, and this
+    # is the class the rgb_cont arm continues from a merged stage-1 checkpoint.
     config_class = MaskedPI05Config
     name = "masked_pi05"
 

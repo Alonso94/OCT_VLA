@@ -22,7 +22,9 @@ from oct_vla.policies.masked_loss import masked_loss, padded_fraction
 from oct_vla.policies.object_conditioning import (
     ObjectConditionedPolicyMixin,
     ObjectConditioning,
+    unwrap_object_conditioning,
 )
+from oct_vla.policies.vla_branches import prepend_entities, scene_inputs
 
 from .configuration_control_pi05 import ControlPI05Config
 
@@ -43,6 +45,17 @@ class ControlPI05Pytorch(PI05Pytorch):
             from oct_vla.policies.layerwise_backbones import install_pi_layerwise
 
             install_pi_layerwise(self)
+        width = self.action_in_proj.out_features
+        if getattr(config, "object_adaln", False):
+            from oct_vla.policies.layerwise_attention import SceneVector
+
+            # adarms_cond is the expert-width time vector every expert layer's
+            # adaptive RMSNorm is modulated by; the scene adds to it.
+            self.object_conditioning.adaln = SceneVector(config, width, width)
+        if getattr(config, "object_incontext", False):
+            from oct_vla.policies.layerwise_attention import InContextEntities
+
+            self.object_conditioning.incontext = InContextEntities(config, width)
 
     def embed_suffix(self, noisy_actions: Tensor, timestep: Tensor):
         # π0.5 returns four values here; SmolVLA's analogue returns three. That
@@ -50,12 +63,18 @@ class ControlPI05Pytorch(PI05Pytorch):
         action_emb, pad_masks, att_masks, adarms_cond = super().embed_suffix(
             noisy_actions, timestep
         )
-        return (
-            self.object_conditioning.residual(action_emb),
-            pad_masks,
-            att_masks,
-            adarms_cond,
+        control = unwrap_object_conditioning(self.object_conditioning)
+        action_emb = control.residual(action_emb)
+        inputs = scene_inputs(control)
+        adaln = getattr(control, "adaln", None)
+        if adaln is not None and inputs is not None:
+            delta = adaln(*inputs, adarms_cond.shape[0])
+            if delta is not None:
+                adarms_cond = adarms_cond + delta.to(adarms_cond.dtype)
+        action_emb, pad_masks, att_masks = prepend_entities(
+            control, action_emb, pad_masks, att_masks
         )
+        return action_emb, pad_masks, att_masks, adarms_cond
 
 
 class ControlPI05Policy(ObjectConditionedPolicyMixin, PI05Policy):
