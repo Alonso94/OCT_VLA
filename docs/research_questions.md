@@ -222,6 +222,71 @@ is possible from rates at zero.
 
 ---
 
+### 4.5 Why the baseline is weak: stage-wise diagnostics (ACT, Stage A)
+
+Before changing the conditioning again, three measurements, none needing new
+rollouts.
+
+**Stage-wise survival** (`collect_final_results.py`, STAGES section). Pooled
+over 3 seeds × 20 scenes, three objects, seen identities:
+
+| arm | lift | T1 \| lift | T2 \| T1 | T3 \| T2 | task success |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| rgb | 0.78 | 0.57 | 0.30 | 0.25 | 0.03 |
+| kv | 0.92 | 0.56 | 0.42 | 0.46 | 0.10 |
+| kv_adaln | 0.90 | 0.54 | 0.59 | 0.59 | 0.17 |
+| kv_tokens | 0.93 | 0.70 | 0.56 | 0.64 | 0.23 |
+
+Reading:
+- **The conditioned arms have flat per-stage survival.** For `kv_tokens` it is
+  about 0.6 per stage, and the product (0.93 × 0.70 × 0.56 × 0.64 ≈ 0.23) *is*
+  its task success. That is compounding local error, not a sequencing failure.
+  ControlVLA's long-horizon tasks run at about 0.75–0.9 per stage.
+- **`rgb` decays stage by stage** (0.57, 0.30, 0.25): a genuine sequencing
+  problem, which conditioning partly repairs.
+- **The weakest link in every arm is the first lift → transfer** (0.54–0.70).
+  That points at grasp and release timing, not at object identity.
+- **With two objects even the first transfer collapses** (T1 | lift about 0.2,
+  against about 0.55 with three). That is a distribution shift from the trained
+  count, not compounding.
+
+**Atomic clips and ACT chunking.** Training cuts each run into three atomic
+clips, and targets past a clip's end are masked (`action_is_pad`). With chunk
+50:
+- 17 % of all target positions are padding;
+- 35 % of frames have less than a full 50-step target, and 17 % under half.
+
+At rollout, 15 % of the 25-step executed blocks run past a clip's end, by 14.7
+unsupervised actions on average. So the policy executes actions that had no
+target in training, exactly around the switch to the next object.
+
+**The CVAE latent collapses.** ACT's KL term falls to 0.005 by 10 k steps and
+0.000 by 40 k, identically on all three seeds. The latent carries nothing.
+ControlVLA attributes ACT's weakness in low data to exactly this.
+
+### 4.6 The baseline rescue study (running)
+
+Plain RGB ACT, one variable at a time, before any more conditioning:
+
+| study | arm / prefix | what differs | status |
+| --- | --- | --- | --- |
+| continuous runs | `AF-rgb` vs `CF-rgb` | atomic clips vs full runs, recollected with the current code from the **same** 200 seeds, identical export | collection → build → view → train → rollouts queued |
+| no CVAE | `F-rgb_novae` vs `F-rgb` | `use_vae=false`, same data and recipe | queued |
+
+Both corpora are recollected because the current scene sampler draws one
+random number more per object than the September collection did: same scene
+distribution, but each seed's y positions differ. So the old atomic corpus is
+not a like-for-like control.
+
+**Next, only if these do not fix it** (in this order):
+- ACT with two observations and a short chunk (16–24, executing 5–8);
+- a gripper classification head, since lift → transfer is the weakest stage;
+- a scene-geometric rather than history-based previous-neighbour rule, so the
+  oracle's labels are Markov in the observation.
+
+Object conditioning, including the 16 + 16 entity, returns after RGB ACT chains
+the sequence reliably.
+
 ## 5. What answers each question, and what is running
 
 Matrix prefixes: `F` absolute EE, `J` absolute joint, `D` joint delta, `X` EE
@@ -248,6 +313,11 @@ delta. VLA matrices put the backbone first: `P` pi0.5, `S` SmolVLA, `G` GR00T
 - Rollout videos stay on the vault: home allocates 32 MB per file.
 
 ## Update log
+
+- **2026-09-23 (night).** Stage-wise diagnostics (§4.5). Conditioned arms fail
+  by compounding local error, `rgb` by sequencing; lift → transfer is the
+  weakest stage; atomic-clip padding and a collapsed CVAE confirmed. The
+  baseline rescue study (§4.6) is queued.
 
 - **2026-09-23 (evening).** Code cleanup (`cec6f52`).
   - Arms renamed `kv`, `kv_adaln`, `kv_tokens`, `scratch_kv`.
