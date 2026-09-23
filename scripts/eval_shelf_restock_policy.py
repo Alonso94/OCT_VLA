@@ -156,10 +156,10 @@ def run_episode(
     seed, profile, max_steps, object_token_spec, torch, np, control_space="cartesian",
     privileged=False, uint8_images=True, state_encoding="position", video=None,
     gripper_encoding="measured_aperture",
-    entity_max_entities=None,
+    entity_max_entities=None, model_ids=None,
 ) -> dict:
     observation = client.reset(seed, profile, control_space=control_space,
-                               gripper_encoding=gripper_encoding)
+                               gripper_encoding=gripper_encoding, model_ids=model_ids)
     policy.reset()
     # Fixed once, from the scene at reset -- exactly as the exporter does.
     ranks = None
@@ -171,6 +171,10 @@ def run_episode(
         "seed": seed, "profile": profile, "success": False, "steps": 0,
         "transfers_completed": 0, "reason": "step_limit", "detail": "",
         "infeasible_steps": 0, "objects_lifted": 0, "objects_total": 0,
+        # What the scene held, as reported by the simulator -- not what was
+        # asked for. The difference between those two is how an identity
+        # tier once went unapplied for a whole matrix without a trace.
+        "model_ids": sorted(set(observation.model_ids.values())),
     }
     # Carried across steps so the velocity block is a backward difference of
     # consecutive observations, the same quantity the exporter differenced.
@@ -260,6 +264,18 @@ def main() -> int:
     )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
+        "--model-ids",
+        default="",
+        help="Comma-separated mesh variants the scene may spawn -- the identity "
+        "tier. Sent with every reset and verified against what was spawned.",
+    )
+    parser.add_argument(
+        "--label",
+        default="",
+        help="The cell this rollout scores (arm, seed, tier), recorded in the "
+        "report so it does not depend on the file name surviving.",
+    )
+    parser.add_argument(
         "--video-dir",
         type=Path,
         help="Record each episode as an mp4 here: head and both wrist views side "
@@ -314,6 +330,7 @@ def main() -> int:
     else:
         seeds = [int(v) for v in args.seeds.split(",") if v.strip()]
     profiles = [p.strip() for p in args.profiles.split(",") if p.strip()]
+    model_ids = tuple(int(v) for v in args.model_ids.split(",") if v.strip()) or None
 
     if args.max_steps <= 0 or (args.steps_per_object is not None and args.steps_per_object <= 0):
         parser.error("step budgets must be positive")
@@ -495,7 +512,7 @@ def main() -> int:
                     control_space=control_space, privileged=privileged,
                     uint8_images=uint8_images, state_encoding=state_encoding,
                     gripper_encoding=gripper_encoding, video=video,
-                    entity_max_entities=entity_max_entities,
+                    entity_max_entities=entity_max_entities, model_ids=model_ids,
                 )
                 outcome["evaluation_split"] = args.evaluation_split
                 results.append(outcome)
@@ -514,6 +531,8 @@ def main() -> int:
         }
     report = {
         "checkpoint": str(args.checkpoint),
+        "label": args.label,
+        "model_ids_requested": list(model_ids) if model_ids else None,
         "evaluation_split": args.evaluation_split,
         "steps_per_object": args.steps_per_object,
         "object_tokens": bool(spec is not None or entity_v2),

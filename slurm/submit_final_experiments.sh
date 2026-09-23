@@ -41,8 +41,9 @@ mkdir -p "$LOGS"
 # with no variant code; the arm returns with a v3 export and embedding.
 #
 # ARMS selects a subset, e.g. ARMS="adaln incontext" to add two arms to a
-# matrix whose stage 1 already exists. A stage-1 checkpoint already on disk is
-# reused instead of retrained. SKIP_EVAL=1 submits training only, for a task
+# matrix whose stage 1 already exists. Any cell whose checkpoint is already on
+# disk is reused instead of retrained, so re-running this re-queues only the
+# rollouts -- which is how the voided tier rollouts are redone. SKIP_EVAL=1 submits training only, for a task
 # with no rollout harness yet. PREFIX names the cells (default F) so two tasks'
 # matrices cannot collide in job names or evaluation tags.
 ARMS="${ARMS:-rgb entity adaln incontext scratch}"
@@ -74,11 +75,19 @@ done
 
 # The identity tiers a rollout is pinned to. Mixing them into one number is
 # what makes an identity holdout meaningless.
+# Must match TIER_IDS in scripts/collect_final_results.py, which refuses a
+# rollout whose pin disagrees with its name.
 declare -A TIER=(
   [seen]="1,2,3,4"       # trained on
   [heldout]="0,6"        # excluded from the dataset
   [novel]="5"            # in zero collected runs
 )
+# Compositional generalisation: the same checkpoint on two and four objects,
+# seen identities only, so a change is attributable to count and not identity.
+# A fixed budget per object (3 x 200 = the 600 the tier rollouts get) rather
+# than 600 for every count, which would hand two objects half again the time
+# per transfer and four objects two thirds of it.
+STEPS_PER_OBJECT=200
 
 submit() { if [ "${DRY_RUN:-0}" = 1 ]; then echo "    would submit: $*" >&2; echo 0; else sbatch --parsable "$@"; fi; }
 
@@ -107,6 +116,28 @@ done
 
 after() { [ -n "$1" ] && echo "--dependency=afterok:$1" || true; }
 cells=0; rollouts=0
+
+# Every episode is recorded, to a staging area rather than the repository:
+# which episode is *representative* is only known once all seeds are in, and
+# the rollouts are deterministic, so recording now saves a second pass.
+# scripts/select_rollout_videos.py picks one per reported row into docs/.
+VIDEO_STAGE="${VIDEO_STAGE:-$HPCVAULT/octvla-rollout-videos/final}"
+
+# rollout TAG PROFILES MODEL_IDS [VAR=VALUE...] -- one pinned evaluation of
+# $run after $train, 20 scenes per profile. Prints the job id. Runs in the
+# caller's $(...), so the variables it exports never leak into the next cell.
+rollout() {
+  local tag="$1" profiles="$2" ids="$3"; shift 3
+  [ "$#" -gt 0 ] && export "$@"
+  EVAL_CHECKPOINT="$OCTVLA_OUTPUT_ROOT/$run/checkpoints/last/pretrained_model" \
+  EVAL_VARIANT=rgb EVAL_DATASET="$DATASET" EVAL_SEEDS=800-819 \
+  EVAL_PROFILES="$profiles" EVAL_N_ACTION_STEPS=25 \
+  EVAL_MODEL_IDS="$ids" EVAL_TAG="$tag" \
+  EVAL_VIDEO_DIR="$VIDEO_STAGE/$tag" EVAL_VIDEO_LABEL="$tag" \
+    submit "${SB[@]}" --job-name="octvla-$tag" --time=04:00:00 \
+      $(after "$train") --output="$LOGS/$tag-%j.out" \
+      --export=ALL slurm/eval_shelf_restock.sbatch
+}
 for arm in $ARMS; do
   for seed in $SEEDS; do
     cell="${PREFIX}-${arm}-s${seed}"
@@ -118,6 +149,13 @@ for arm in $ARMS; do
     if [ "$arm" = rgb ]; then
       train="${STAGE1_JOB[$seed]}"; run="${STAGE1_RUN[$seed]}"
       [ -n "$train" ] && cells=$((cells + 1))
+    elif [ -d "$OCTVLA_OUTPUT_ROOT/$run/checkpoints/last/pretrained_model" ]; then
+      echo "$cell"
+      echo "    reuse  $run  (on disk)"
+      train=""
+    elif [ -e "$OCTVLA_OUTPUT_ROOT/$run" ]; then
+      echo "    $run exists without a final checkpoint: running or failed, resolve first" >&2
+      exit 2
     else
       echo "$cell"
       stage1="$OCTVLA_OUTPUT_ROOT/${STAGE1_RUN[$seed]}/checkpoints/last/pretrained_model"
@@ -139,16 +177,14 @@ for arm in $ARMS; do
     fi
     [ "${SKIP_EVAL:-0}" = 1 ] && continue
     for tier in seen heldout novel; do
-      evalj=$(EVAL_CHECKPOINT="$OCTVLA_OUTPUT_ROOT/$run/checkpoints/last/pretrained_model" \
-        EVAL_VARIANT=rgb EVAL_DATASET="$DATASET" EVAL_SEEDS=800-819 \
-        EVAL_PROFILES=three_object EVAL_MAX_STEPS=600 EVAL_N_ACTION_STEPS=25 \
-        EVAL_MODEL_IDS="${TIER[$tier]}" EVAL_TAG="${cell}-${tier}" \
-        submit "${SB[@]}" --job-name="octvla-$cell-$tier" --time=04:00:00 \
-          $(after "$train") --output="$LOGS/$cell-$tier-%j.out" \
-          --export=ALL slurm/eval_shelf_restock.sbatch)
+      evalj=$(rollout "$cell-$tier" three_object "${TIER[$tier]}" EVAL_MAX_STEPS=600)
       rollouts=$((rollouts + 1))
       echo "    eval   $tier -> $evalj"
     done
+    evalj=$(rollout "$cell-count" two_object,four_object "${TIER[seen]}" \
+      EVAL_STEPS_PER_OBJECT=$STEPS_PER_OBJECT)
+    rollouts=$((rollouts + 1))
+    echo "    eval   count (2, 4 objects) -> $evalj"
   done
 done
 echo

@@ -15,8 +15,10 @@ measured success rate.
 from __future__ import annotations
 
 import math
+import os
 import socket
 import traceback
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 from oct_vla.core.action import Action, action_between, apply_action
@@ -97,6 +99,47 @@ PROFILE_TASKS = {
 
 class EvalServerError(RuntimeError):
     """The episode cannot continue; the client is told and the socket stays up."""
+
+
+#: Read by `ShelfRestockTask._load_objects`. Set here, per reset, rather than by
+#: the launching job: the job used to export it *after* forking this server, so
+#: the pin never arrived and every identity tier scored the same mixed scenes.
+MODEL_IDS_ENV = "OCTVLA_MODEL_IDS"
+
+
+@contextmanager
+def _pinned_model_ids(model_ids: tuple[int, ...] | None):
+    """Pin the mesh variants for one scene build, then restore the environment."""
+    previous = os.environ.get(MODEL_IDS_ENV)
+    if model_ids is None:
+        os.environ.pop(MODEL_IDS_ENV, None)
+    else:
+        os.environ[MODEL_IDS_ENV] = ",".join(str(v) for v in model_ids)
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(MODEL_IDS_ENV, None)
+        else:
+            os.environ[MODEL_IDS_ENV] = previous
+
+
+def _spawned_model_ids(task, requested: tuple[int, ...] | None) -> dict[str, int]:
+    """What the scene actually holds, checked against what was asked for."""
+    spawned = dict(getattr(task, "spawned_model_ids", None) or {})
+    if requested is None:
+        return spawned
+    if not spawned:
+        raise EvalServerError(
+            f"model_ids {list(requested)} were requested but the task reports no "
+            "spawned variants, so the pin cannot be verified"
+        )
+    stray = {track: v for track, v in spawned.items() if v not in requested}
+    if stray:
+        raise EvalServerError(
+            f"model_ids {list(requested)} were requested but the scene spawned {stray}"
+        )
+    return spawned
 
 
 @dataclass
@@ -314,7 +357,10 @@ class ShelfRestockEvalServer:
     def reset(
         self, seed: int, profile: str, max_steps: int, control_space: str = "cartesian",
         gripper_encoding: str = "measured_aperture",
+        model_ids: tuple[int, ...] | None = None,
     ) -> tuple[dict, tuple[protocol.Blob, ...]]:
+        if model_ids is not None and not model_ids:
+            raise EvalServerError("model_ids, when given, must name at least one variant")
         if profile not in PROFILE_TASKS:
             raise EvalServerError(f"Unknown profile {profile!r}; have {sorted(PROFILE_TASKS)}")
         if control_space not in CONTROL_SPACES:
@@ -335,7 +381,9 @@ class ShelfRestockEvalServer:
             self._port = self._port_factory(PROFILE_TASKS[profile])
             self._profile = profile
 
-        self._port.reset(seed)
+        with _pinned_model_ids(model_ids):
+            self._port.reset(seed)
+        spawned = _spawned_model_ids(self._port.task, model_ids)
         tracked = {
             track_id: TrackedActor(
                 actor=entry.actor,
@@ -356,6 +404,7 @@ class ShelfRestockEvalServer:
             gripper_encoding=gripper_encoding,
         )
         header, blobs, _ = self._snapshot()
+        header["model_ids"] = spawned
         return header, blobs
 
     def _terminate(
@@ -652,12 +701,14 @@ class ShelfRestockEvalServer:
                 return
             try:
                 if op == "reset":
+                    requested = message.header.get("model_ids")
                     header, blobs = self.reset(
                         int(message.header["seed"]),
                         str(message.header["profile"]),
                         int(message.header.get("max_steps", 600)),
                         str(message.header.get("control_space", "cartesian")),
                         str(message.header.get("gripper_encoding", "measured_aperture")),
+                        None if requested is None else tuple(int(v) for v in requested),
                     )
                 elif op == "step":
                     header, blobs = self.step(list(message.header["action"]))

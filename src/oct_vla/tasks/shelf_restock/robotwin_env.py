@@ -144,6 +144,11 @@ class ShelfRestockTask(Base_Task):
         rng = random.Random(self._episode_seed)
 
         self.tracked_objects: dict[str, Any] = {}
+        #: track_id -> the mesh variant actually spawned. Reported back to the
+        #: evaluator, which checks it against the pin it asked for: a pin that
+        #: never reached this process once left every identity tier sampling
+        #: all seven meshes, and nothing downstream could tell.
+        self.spawned_model_ids: dict[str, int] = {}
         # An asset and a variant *per object*, where this used to draw one
         # variant for the whole episode. The old comment justified that by
         # saying a mixed-size row "makes the placement/compaction geometry vary
@@ -229,6 +234,7 @@ class ShelfRestockTask(Base_Task):
             # allow_contact_with both key on this name, so identical names
             # would let a contact with any object be excused as the held one.
             actor.actor.set_name(f"restock_object_{index}")
+            self.spawned_model_ids[f"obj_{index}"] = int(model_id)
             self.tracked_objects[f"obj_{index}"] = TrackedObject(
                 actor, size, UPRIGHT_ROTATION, offset, category=model
             )

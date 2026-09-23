@@ -34,6 +34,8 @@ export MPLCONFIGDIR="${TMPDIR:-/tmp}/matplotlib-$SLURM_JOB_ID"
 # SAPIEN stops it importing. The policy client needs them anyway: video is
 # decoded at training time, while here frames arrive over the bridge as raw RGB.
 unset LD_LIBRARY_PATH
+# The server pins variants per reset; an inherited value would pin every scene.
+unset OCTVLA_MODEL_IDS
 
 # A free port per job, so two evaluations on one node cannot collide.
 EVAL_PORT="${EVAL_PORT:-$((20000 + SLURM_JOB_ID % 20000))}"
@@ -67,7 +69,13 @@ echo "server ready on port $EVAL_PORT"
 # Which mesh variants the simulator may spawn. The identity holdout means a
 # rollout is only interpretable when pinned: EVAL_MODEL_IDS=1,2,3,4 is the seen
 # set, 0,6 the held-out identities, 5 the mesh no collected run contains.
-if [ -n "${EVAL_MODEL_IDS:-}" ]; then export OCTVLA_MODEL_IDS="$EVAL_MODEL_IDS"; fi
+#
+# Sent over the bridge with every reset, and verified against what spawned.
+# This used to be exported here as OCTVLA_MODEL_IDS -- after the server had
+# already been forked above, so the server never saw it and all 44 tier
+# rollouts of the final matrix scored identical mixed-identity scenes.
+MODEL_FLAG=()
+[ -n "${EVAL_MODEL_IDS:-}" ] && MODEL_FLAG=(--model-ids "$EVAL_MODEL_IDS")
 
 OBJECT_FLAG=()
 [ "$EVAL_VARIANT" = "object" ] && OBJECT_FLAG=(--object-tokens)
@@ -118,9 +126,12 @@ echo "eval dataset : $EVAL_DATASET_DIR ($EVAL_REPO_ID)"
   --profiles "${EVAL_PROFILES:-two_object,three_object,four_object}" \
   --seeds "$EVAL_SEEDS" \
   --max-steps "${EVAL_MAX_STEPS:-600}" \
+  ${EVAL_STEPS_PER_OBJECT:+--steps-per-object "$EVAL_STEPS_PER_OBJECT"} \
   "${OBJECT_FLAG[@]}" \
   "${EXEC_FLAG[@]}" \
   "${VIDEO_FLAG[@]}" \
+  "${MODEL_FLAG[@]}" \
+  --label "${EVAL_TAG:-}" \
   --output "$RESULTS"
 STATUS=$?
 echo "eval exit=$STATUS; results at $RESULTS"

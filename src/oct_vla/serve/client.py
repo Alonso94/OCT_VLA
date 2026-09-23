@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import socket
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from oct_vla.core.objects import ObjectScene, TaskContext
 from oct_vla.core.observation import RGBFrame
@@ -42,6 +42,9 @@ class RemoteObservation:
     scene: ObjectScene
     context: TaskContext
     supports: tuple = ()
+    #: track_id -> spawned mesh variant. Reported on reset only; empty after a
+    #: step, and empty from a server too old to report it.
+    model_ids: dict[str, int] = field(default_factory=dict)
 
     def frame(self, name: str) -> RGBFrame:
         try:
@@ -91,6 +94,7 @@ def _observation(message: protocol.Message) -> RemoteObservation:
         scene=scene_from_json(header["scene"]),
         context=context_from_json(header["context"]),
         supports=supports_from_json(header.get("supports", [])),
+        model_ids={str(k): int(v) for k, v in (header.get("model_ids") or {}).items()},
     )
 
 
@@ -141,6 +145,7 @@ class ShelfRestockEvalClient:
         profile: str = "three_object",
         control_space: str = "cartesian",
         gripper_encoding: str = "measured_aperture",
+        model_ids: Sequence[int] | None = None,
     ) -> RemoteObservation:
         """Start a fresh scene. Raises if the simulator cannot build that seed.
 
@@ -149,19 +154,35 @@ class ShelfRestockEvalClient:
         for absolute joint targets commanded directly. Declared rather than
         inferred from the vector's width, so a policy whose action space does
         not match the robot fails loudly instead of being misread.
+
+        `model_ids` pins which mesh variants the scene may spawn. It is checked
+        here as well as on the server, because a server that predates the field
+        ignores it without complaint -- and a silently unpinned rollout is
+        indistinguishable from a pinned one in every score it reports.
         """
         self._control_space = control_space
-        return _observation(
-            self._round_trip(
-                {
-                    "op": "reset",
-                    "seed": seed,
-                    "profile": profile,
-                    "control_space": control_space,
-                    "gripper_encoding": gripper_encoding,
-                }
-            )
-        )
+        header = {
+            "op": "reset",
+            "seed": seed,
+            "profile": profile,
+            "control_space": control_space,
+            "gripper_encoding": gripper_encoding,
+        }
+        if model_ids is not None:
+            header["model_ids"] = [int(v) for v in model_ids]
+        observation = _observation(self._round_trip(header))
+        if model_ids is not None:
+            if not observation.model_ids:
+                raise protocol.ProtocolError(
+                    f"requested model_ids {list(model_ids)} but the server reported no "
+                    "spawned variants; it may predate the field and have ignored the pin"
+                )
+            stray = {t: v for t, v in observation.model_ids.items() if v not in set(model_ids)}
+            if stray:
+                raise protocol.ProtocolError(
+                    f"requested model_ids {list(model_ids)} but the scene holds {stray}"
+                )
+        return observation
 
     def step(self, action: Sequence[float]) -> StepResult:
         """Apply one action in whatever space `reset` declared.

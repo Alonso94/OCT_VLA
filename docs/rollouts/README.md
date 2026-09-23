@@ -1,5 +1,50 @@
 # Rollout videos
 
+## Final matrix: one representative episode per reported row
+
+The report's videos are in [`final/`](final/), with the table that says what each
+one shows in [`final/table.md`](final/table.md). There is one per row of the
+results table (`scripts/collect_final_results.py`), for each arm (`rgb`,
+`entity`, `adaln`, `incontext`, `scratch`):
+
+- **3 objects**: one video per identity tier (seen / held-out / novel) if the
+  table splits the tiers. If no arm's tier differs consistently across seeds,
+  the table pools them, and there is one video for the pooled row.
+- **2 objects** and **4 objects**, on seen identities: the compositional rows.
+
+**How they are recorded.** Every final-matrix rollout records every episode, to
+`$HPCVAULT/octvla-rollout-videos/final/<cell>-<tier|count>/`. That is a staging
+area, not the repository. The rollouts are deterministic: three separate jobs
+reproduced the same checkpoint's episodes exactly, down to step counts. So
+recording them all costs one pass, not two.
+
+**How one is chosen.** By rule, never by eye. The tempting choice is the best
+episode, and a best episode is how this project came to headline a 6/20 that
+did not replicate. `scripts/select_rollout_videos.py` takes:
+
+1. the row's **median training seed** by mean transfers, so a lucky seed is not
+   the face of the arm; then
+2. that seed's episode whose transfers, then lifts, are **closest to the seed's
+   mean**, breaking ties on the lowest scene seed.
+
+A row averaging 0.4 transfers therefore shows an episode with no transfer. That
+is what a viewer should expect from that arm.
+
+```bash
+PYTHONPATH=src "$OCTVLA_POLICY_PYTHON" scripts/select_rollout_videos.py \
+  "$OCTVLA_OUTPUT_ROOT/eval" --dest docs/rollouts/final
+```
+
+It exits non-zero if any reported row has no video. It uses the same
+pin-checked reader as the results table, so an unpinned rollout cannot supply a
+video either.
+
+---
+
+## Earlier grid (seed 1000, pre-identity corpus)
+
+Kept as history. Nothing below is a final-matrix result.
+
 One closed-loop episode per trained cell, recorded through the same bridge and
 servo loop evaluation uses. Each file is 40 s at 15 Hz — head camera, left wrist,
 right wrist, side by side — with the cell name and live counters burned in.
