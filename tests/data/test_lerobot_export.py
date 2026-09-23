@@ -3,7 +3,6 @@ from types import SimpleNamespace
 import pytest
 
 from oct_vla.data.lerobot_export import CAMERA_FEATURES, _features, _state_vector
-from oct_vla.data.object_tokens import ObjectTokenSpec
 
 
 def test_state_vector_and_camera_mapping_match_lerobot_contract():
@@ -21,21 +20,6 @@ def test_state_vector_and_camera_mapping_match_lerobot_contract():
         "left_wrist_rgb": "observation.images.left_wrist",
         "right_wrist_rgb": "observation.images.right_wrist",
     }
-
-
-def test_object_feature_schema_is_fixed_and_numeric():
-    frame = SimpleNamespace(height=240, width=320)
-    observation = SimpleNamespace(
-        head_rgb=frame,
-        left_wrist_rgb=frame,
-        right_wrist_rgb=frame,
-        joints=None,
-    )
-    episode = SimpleNamespace(samples=(SimpleNamespace(observation=observation),))
-    features = _features(episode, object_token_spec=ObjectTokenSpec(max_objects=8))
-
-    assert features["observation.object_tokens"] == {"dtype": "float32", "shape": (8, 15)}
-    assert features["observation.object_token_mask"] == {"dtype": "float32", "shape": (8,)}
 
 
 def _observation_with_joints(joints_per_arm=7):
@@ -180,34 +164,8 @@ def test_joint_delta_shares_the_joint_feature_layout():
     assert features["observation.state"]["shape"] == (16,)
 
 
-def test_privileged_export_has_env_state_and_no_cameras():
-    """ACT accepts 'at least one image or the environment state', so a dataset
-    with privileged scene state and no cameras trains a vision-free policy with
-    no new policy class."""
-    features = _features(
-        _two_frame_episode(),
-        control_space="joint_delta",
-        object_token_spec=ObjectTokenSpec(max_objects=8),
-        privileged=True,
-    )
-    assert features["observation.environment_state"]["shape"] == (8 * 15,)
-    assert not [k for k in features if "images" in k], "cameras must be absent"
-    assert features["action"]["shape"] == (16,)
-    # The per-slot token columns are redundant once the tokens ARE the env state.
-    assert "observation.object_tokens" not in features
-
-
-def test_privileged_export_requires_an_object_spec():
-    with pytest.raises(ValueError, match="privileged export needs an object token spec"):
-        _features(_two_frame_episode(), control_space="joint_delta", privileged=True)
-
-
-def test_a_normal_export_still_carries_cameras():
-    features = _features(
-        _two_frame_episode(),
-        control_space="joint_delta",
-        object_token_spec=ObjectTokenSpec(max_objects=8),
-    )
+def test_an_export_carries_cameras_and_no_flat_environment_state():
+    features = _features(_two_frame_episode(), control_space="joint_delta")
     assert [k for k in features if "images" in k]
     assert "observation.environment_state" not in features
 
@@ -507,20 +465,6 @@ def test_the_joint_side_channel_is_off_by_default():
     features = _features(episode)
     assert "action.joint_position" not in features
     assert "observation.joint_state" not in features
-
-
-def test_a_privileged_cartesian_export_is_refused():
-    """The privileged branch sits inside the joint-space block, so this would
-    otherwise declare camera features on a dataset created with use_videos=False
-    -- video columns with no video behind them."""
-    from oct_vla.data.lerobot_export import _features
-    from oct_vla.data.object_tokens import ObjectTokenSpec
-
-    episode = _eef_episode(POSE_A, POSE_B)
-    with pytest.raises(ValueError, match="joint spaces only"):
-        _features(
-            episode, control_space="cartesian", privileged=True, object_token_spec=ObjectTokenSpec()
-        )
 
 
 def test_entity_feature_schema_is_opt_in_and_role_free():

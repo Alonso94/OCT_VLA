@@ -1,5 +1,10 @@
 #!/usr/bin/env python
-"""Validate exported entity metadata and emit one policy argument per line."""
+"""Validate a dataset's entity metadata and emit the policy arguments it implies.
+
+One argument per line: the entity capacity, and the training-split
+normalisation statistics the policy standardises entities with. The arm itself
+(`--policy.object_conditioning`) is the launcher's choice, not the dataset's.
+"""
 
 from __future__ import annotations
 
@@ -35,8 +40,6 @@ def entity_training_args(dataset: Path) -> list[str]:
         if list(info.get("features", {}).get(key, {}).get("shape", [])) != expected:
             raise ValueError(f"Dataset feature {key} disagrees with entity metadata")
     return [
-        "--policy.object_representation=entity_v2",
-        "--policy.object_injection_mode=layerwise",
         f"--policy.object_max_entities={capacity}",
         "--policy.object_entity_normalizer=" + json.dumps(stats.to_dict(), separators=(",", ":")),
     ]

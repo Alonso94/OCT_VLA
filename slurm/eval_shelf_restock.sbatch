@@ -17,14 +17,10 @@ set -uo pipefail
 : "${OCTVLA_DATASET_ROOT:?Set LeRobot dataset root}"
 : "${OCTVLA_OUTPUT_ROOT:?Set output root}"
 : "${EVAL_CHECKPOINT:?Set the trained policy directory}"
-: "${EVAL_VARIANT:?Set rgb, object or privileged}"
+: "${EVAL_DATASET:?Set the dataset view the checkpoint was trained on}"
 : "${EVAL_SEEDS:?Set evaluation seeds, e.g. 800-829}"
-
-# `privileged` selects the vision-free dataset, whose observation.environment_state
-# is what tells the evaluator this checkpoint reads privileged scene state rather
-# than cameras. Pointing it at an rgb dataset would leave that undetected and the
-# policy would be fed an observation it was never trained on.
-case "$EVAL_VARIANT" in rgb|object|privileged) ;; *) echo "Invalid EVAL_VARIANT" >&2; exit 2 ;; esac
+# What the policy reads -- cameras, entities, the action space -- comes from
+# the checkpoint and its dataset, not from a variable here.
 
 export PYTHONPATH="$OCTVLA_REPO/src${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONUNBUFFERED=1
@@ -44,7 +40,7 @@ READY="${TMPDIR:-/tmp}/octvla-eval-ready-$SLURM_JOB_ID"
 # happened to run it. A sweep produces dozens of these, and a job id alone
 # cannot say which arm, seed or profile a file describes once the Slurm
 # accounting database has aged out.
-RESULTS="$OCTVLA_OUTPUT_ROOT/eval/${EVAL_TAG:-${EVAL_VARIANT}_${SLURM_JOB_ID}}.json"
+RESULTS="$OCTVLA_OUTPUT_ROOT/eval/${EVAL_TAG:-eval_${SLURM_JOB_ID}}.json"
 rm -f "$READY"
 
 cd "$OCTVLA_ROBOTWIN_ROOT"
@@ -77,17 +73,6 @@ echo "server ready on port $EVAL_PORT"
 MODEL_FLAG=()
 [ -n "${EVAL_MODEL_IDS:-}" ] && MODEL_FLAG=(--model-ids "$EVAL_MODEL_IDS")
 
-OBJECT_FLAG=()
-[ "$EVAL_VARIANT" = "object" ] && OBJECT_FLAG=(--object-tokens)
-# The shuffled control: same weights as the object arm, tokens permuted across
-# objects. A policy that genuinely reads them degrades; one that ignores them
-# scores the same. Evaluation only -- training with shuffled tokens would teach
-# the policy to ignore them, which is the opposite of what this detects.
-if [ "${EVAL_SHUFFLE_TOKENS:-0}" = "1" ]; then
-  [ "$EVAL_VARIANT" = "object" ] || { echo "EVAL_SHUFFLE_TOKENS needs EVAL_VARIANT=object" >&2; exit 2; }
-  OBJECT_FLAG+=(--shuffle-tokens)
-fi
-
 EXEC_FLAG=()
 [ -n "${EVAL_N_ACTION_STEPS:-}" ] && EXEC_FLAG+=(--n-action-steps "$EVAL_N_ACTION_STEPS")
 [ -n "${EVAL_TEMPORAL_ENSEMBLE_COEFF:-}" ] && EXEC_FLAG+=(--temporal-ensemble-coeff "$EVAL_TEMPORAL_ENSEMBLE_COEFF")
@@ -103,19 +88,10 @@ fi
 
 cd "$OCTVLA_REPO"
 # The dataset supplies the action width, the control space and the state
-# encoding, so it has to be the one the checkpoint was fit on -- not merely one
-# of the same variant. EVAL_DATASET names it directly; the default reproduces
-# the original three_object_<variant> convention.
-EVAL_DATASET="${EVAL_DATASET:-three_object_${EVAL_VARIANT}}"
+# encoding, so it has to be the one the checkpoint was fit on.
 EVAL_DATASET_DIR="$OCTVLA_DATASET_ROOT/$EVAL_DATASET"
 [ -d "$EVAL_DATASET_DIR" ] || { echo "No dataset at $EVAL_DATASET_DIR" >&2; exit 2; }
-# Matches how build_shelf_restock_splits.sbatch names the repo it created; a
-# dataset built under the old convention keeps its three_object- form.
-if [ "$EVAL_DATASET" = "three_object_${EVAL_VARIANT}" ]; then
-  EVAL_REPO_ID="local/oct-vla-shelf-restock-three_object-${EVAL_VARIANT}"
-else
-  EVAL_REPO_ID="local/oct-vla-shelf-restock-${EVAL_DATASET#three_object_}"
-fi
+EVAL_REPO_ID="local/oct-vla-shelf-restock-${EVAL_DATASET#three_object_}"
 echo "eval dataset : $EVAL_DATASET_DIR ($EVAL_REPO_ID)"
 
 "$OCTVLA_POLICY_PYTHON" -u -B scripts/eval_shelf_restock_policy.py \
@@ -127,7 +103,6 @@ echo "eval dataset : $EVAL_DATASET_DIR ($EVAL_REPO_ID)"
   --seeds "$EVAL_SEEDS" \
   --max-steps "${EVAL_MAX_STEPS:-600}" \
   ${EVAL_STEPS_PER_OBJECT:+--steps-per-object "$EVAL_STEPS_PER_OBJECT"} \
-  "${OBJECT_FLAG[@]}" \
   "${EXEC_FLAG[@]}" \
   "${VIDEO_FLAG[@]}" \
   "${MODEL_FLAG[@]}" \

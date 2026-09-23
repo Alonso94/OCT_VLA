@@ -101,9 +101,7 @@ def main() -> int:
 
         chunk_2, loss_2 = outputs(policy)
         chunk_1, loss_1 = outputs(reference)
-        arm = ("adaln" if getattr(inner.config, "object_adaln", False) else
-               "incontext" if getattr(inner.config, "object_incontext", False) else
-               "layerwise" if hasattr(inner.config, "object_representation") else "rgb")
+        arm = getattr(inner.config, "object_conditioning", "rgb")
         report = {
             "stage1": str(stage1), "type": inner.config.type, "arm": arm,
             "chunk_relative_change": relative(chunk_2, chunk_1),
@@ -131,12 +129,14 @@ def main() -> int:
         report["object_gradients"] = grads
 
         failures = []
-        tolerance = GROSS if arm == "incontext" else EXACT
+        tolerance = GROSS if arm == "kv_tokens" else EXACT
         if report["chunk_relative_change"] > tolerance:
             failures.append(f"stage 2 does not start at stage 1: chunk change "
                             f"{report['chunk_relative_change']:.3e} > {tolerance}")
+        # The branch each arm adds, by its state-dict name (object_conditioning.py).
+        added = {"kv": "layers", "kv_adaln": "adaln", "kv_tokens": "incontext"}.get(arm)
         for name, g in grads.items():
-            required = name == arm or (arm == "layerwise" and name == "layers")
+            required = name in ("layers", added)
             if g["trainable"] == 0:
                 failures.append(f"{name}: no trainable parameters (PEFT did not keep it)")
             elif required and g["nonzero"] == 0:

@@ -25,12 +25,6 @@ from oct_vla.data.entity_tokens import (
     shelf_support_entities,
 )
 from oct_vla.data.episode import Episode, validate_episode
-from oct_vla.data.object_tokens import (
-    ObjectTokenSpec,
-    object_token_ranks,
-    object_tokens,
-    stable_ranks,
-)
 from oct_vla.data.store import read_episode
 from oct_vla.tasks.shelf_restock.spec import DEFAULT_SPEC
 
@@ -263,33 +257,10 @@ def _require_joints(episode: Episode, control_space: str) -> None:
         )
 
 
-def _privileged_features(spec: ObjectTokenSpec) -> dict[str, dict]:
-    """Object tokens as a flat `observation.environment_state`.
-
-    LeRobot policies accept privileged scene state under this name, and ACT in
-    particular requires "at least one image or the environment state" -- so a
-    dataset carrying this and no cameras trains a vision-free, state-only
-    policy with no new policy class.
-
-    Flattened rather than kept as [N, D] because `environment_state` is a
-    vector feature. The mask is not exported: a padded slot is already all
-    zeros, which is what an absent object should look like to an MLP, and a
-    separate mask column would need a policy that knows to read it.
-    """
-    return {
-        "observation.environment_state": {
-            "dtype": "float32",
-            "shape": (spec.max_objects * spec.token_dim,),
-        }
-    }
-
-
 def _features(
     episode: Episode,
     *,
-    object_token_spec: ObjectTokenSpec | None = None,
     control_space: str = "cartesian",
-    privileged: bool = False,
     state_encoding: str = "position",
     joint_side_channel: bool = False,
     entity_token_max_entities: int | None = None,
@@ -304,17 +275,6 @@ def _features(
             f"state_encoding={state_encoding!r} is only defined for a joint-space "
             f"export; control_space is {control_space!r}, whose observation.state "
             "is an end-effector pose."
-        )
-    if privileged and not _is_joint_space(control_space):
-        # The privileged branch lives inside the joint-space block below, so a
-        # privileged cartesian export would silently fall through to the camera
-        # block while the dataset was created with use_videos=False -- declared
-        # video features with no video written. Refused rather than repaired,
-        # because the right fix is to decide what a vision-free end-effector
-        # observation should be, not to guess one here.
-        raise ValueError(
-            f"privileged export is implemented for joint spaces only; "
-            f"control_space is {control_space!r}."
         )
     _require_joints(episode, control_space)
     joint_names = _joint_motor_names(observation)
@@ -339,17 +299,10 @@ def _features(
             },
         }
         alt_block = _alt_features(joint_names) if control_space == UNIFIED_CONTROL_SPACE else {}
-        if privileged:
-            # No cameras: this variant exists to measure what privileged scene
-            # state alone can do, as an upper bound on what vision could add.
-            if object_token_spec is None:
-                raise ValueError("privileged export needs an object token spec")
-            return {**joint_block, **alt_block, **_privileged_features(object_token_spec)}
         return {
             **joint_block,
             **alt_block,
             **_camera_features(observation),
-            **_object_features(object_token_spec),
             **_entity_features(entity_token_max_entities),
         }
     features = {
@@ -392,7 +345,6 @@ def _features(
             "names": {"motors": joint_names},
         }
     features.update(_camera_features(observation))
-    features.update(_object_features(object_token_spec))
     features.update(_entity_features(entity_token_max_entities))
     return features
 
@@ -439,24 +391,6 @@ def _camera_features(observation) -> dict[str, dict]:
             "names": ["height", "width", "channel"],
         }
         for attr, feature_name in CAMERA_FEATURES.items()
-    }
-
-
-def _object_features(spec: ObjectTokenSpec | None) -> dict[str, dict]:
-    if spec is None:
-        return {}
-    return {
-        "observation.object_tokens": {
-            "dtype": "float32",
-            "shape": (spec.max_objects, spec.token_dim),
-        },
-        # Float avoids an Arrow bool/nested-array incompatibility in LeRobot v3
-        # and is converted to bool by the policy branch.
-        "observation.object_token_mask": {"dtype": "float32", "shape": (spec.max_objects,)},
-        # The episode-stable ordering the role-stripped arm sorts by. Exported
-        # rather than recomputed per frame because it is a property of the
-        # episode's first scene, which a single frame cannot recover.
-        "observation.object_token_rank": {"dtype": "float32", "shape": (spec.max_objects,)},
     }
 
 
@@ -513,9 +447,7 @@ def export_episodes(
     robot_type: str = "robotwin_franka_bimanual",
     include_unsuccessful: bool = False,
     append: bool = False,
-    object_token_spec: ObjectTokenSpec | None = None,
     control_space: str = "cartesian",
-    privileged: bool = False,
     state_encoding: str = "position",
     joint_side_channel: bool = False,
     gripper_encoding: str = "measured_aperture",
@@ -539,8 +471,6 @@ def export_episodes(
         raise ValueError("entity_normalizer requires entity_token_max_entities")
     if entity_token_max_entities is not None and entity_token_max_entities <= 0:
         raise ValueError("entity_token_max_entities must be positive")
-    if entity_token_max_entities is not None and privileged:
-        raise ValueError("entity-token export is not implemented for privileged-only datasets")
     # Include both physical shelf decks by default; callers with another task
     # must supply its exact support geometry for export/inference parity.
     supports = shelf_support_entities(DEFAULT_SPEC) if entity_supports is None else entity_supports
@@ -586,9 +516,7 @@ def export_episodes(
     else:
         features = _features(
             accepted[0][1],
-            object_token_spec=object_token_spec,
             control_space=control_space,
-            privileged=privileged,
             state_encoding=state_encoding,
             joint_side_channel=joint_side_channel,
             entity_token_max_entities=entity_token_max_entities,
@@ -599,10 +527,9 @@ def export_episodes(
             fps=fps,
             robot_type=robot_type,
             features=features,
-            use_videos=not privileged,
+            use_videos=True,
         )
     for _, episode in accepted:
-        episode_ranks = stable_ranks(episode.samples[0].scene) if object_token_spec else {}
         for index, sample in enumerate(episode.samples):
             _require_joints(episode, control_space)
             # Gripper channel positions differ by action layout: a 16-d joint or
@@ -689,24 +616,6 @@ def export_episodes(
                     f"episode seed {episode.seed} has no recorded joints; "
                     "re-collect the whole set so every frame carries them."
                 )
-            if privileged:
-                tokens, _ = object_tokens(sample.scene, sample.context, spec=object_token_spec)
-                frame["observation.environment_state"] = np.asarray(
-                    [value for token in tokens for value in token], dtype=np.float32
-                )
-            elif object_token_spec is not None:
-                tokens, mask = object_tokens(sample.scene, sample.context, spec=object_token_spec)
-                frame["observation.object_tokens"] = np.asarray(tokens, dtype=np.float32)
-                frame["observation.object_token_mask"] = np.asarray(mask, dtype=np.float32)
-                frame["observation.object_token_rank"] = np.asarray(
-                    object_token_ranks(
-                        sample.scene,
-                        episode_ranks,
-                        spec=object_token_spec,
-                        context=sample.context,
-                    ),
-                    dtype=np.float32,
-                )
             if entity_token_max_entities is not None:
                 tokens, mask = build_entity_tokens(
                     sample.scene,
@@ -716,7 +625,7 @@ def export_episodes(
                 )
                 frame["observation.entity_tokens"] = np.asarray(tokens, dtype=np.float32)
                 frame["observation.entity_mask"] = np.asarray(mask, dtype=np.float32)
-            for attr, feature_name in ({} if privileged else CAMERA_FEATURES).items():
+            for attr, feature_name in CAMERA_FEATURES.items():
                 rgb = getattr(sample.observation, attr)
                 frame[feature_name] = np.frombuffer(rgb.data, dtype=np.uint8).reshape(
                     rgb.height, rgb.width, 3

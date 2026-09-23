@@ -43,12 +43,9 @@ ARGS=(
 )
 # `if` rather than `[ ... ] && ...`: under `set -e` a false test is a failing
 # command, so the short form would abort the job whenever a flag is off.
-if [ "${OBJECT_TOKENS:-0}" = "1" ]; then ARGS+=(--object-tokens); fi
-if [ "${PRIVILEGED:-0}" = "1" ]; then ARGS+=(--privileged); fi
 # The entity-v2 export. It fits its normalization on the reserved *training*
 # partition alone and records the fitting sources in the split manifest, so it
-# has to be the split builder rather than export_lerobot_dataset.py, whose
-# --entity-training-sources is named by hand and unchecked.
+# has to be the split builder: nothing else knows which clips are training.
 if [ "${ENTITY_TOKENS:-0}" = "1" ]; then ARGS+=(--entity-tokens); fi
 if [ -n "${MAX_ENTITIES:-}" ]; then ARGS+=(--max-entities "$MAX_ENTITIES"); fi
 # Whole object identities withheld from training, so an evaluation can separate

@@ -36,17 +36,17 @@ def test_online_entities_match_shared_builder_and_ignore_oracle_roles():
     obs = SimpleNamespace(scene=scene, eef=eef, supports=supports,
                           frame=lambda name: frame,
                           context=TaskContext("restock", "a"))
-    actual = module.build_observation(obs, object_token_spec=None, torch=torch, np=np,
+    actual = module.build_observation(obs, torch=torch, np=np,
                                       entity_max_entities=16)
     expected, mask = build_entity_tokens(scene, eef, supports, 16)
     torch.testing.assert_close(actual["observation.entity_tokens"], torch.tensor([expected]))
     assert torch.equal(actual["observation.entity_mask"], torch.tensor([mask]))
     assert "observation.object_tokens" not in actual
     obs.context = TaskContext("restock", "unobserved-oracle-id", phase="release")
-    changed = module.build_observation(obs, object_token_spec=None, torch=torch, np=np,
+    changed = module.build_observation(obs, torch=torch, np=np,
                                        entity_max_entities=16)
     assert torch.equal(actual["observation.entity_tokens"], changed["observation.entity_tokens"])
     obs.supports = ()
     with pytest.raises(ValueError, match="updated simulator server"):
-        module.build_observation(obs, object_token_spec=None, torch=torch, np=np,
+        module.build_observation(obs, torch=torch, np=np,
                                  entity_max_entities=16)

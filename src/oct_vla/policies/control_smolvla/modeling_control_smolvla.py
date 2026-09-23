@@ -1,16 +1,14 @@
-"""Object-conditioned SmolVLA with a zero-initialized residual injection.
+"""Where each arm attaches in SmolVLA.
 
-The analogue of ``control_pi05``, and deliberately as close to it as the two
-backbones allow -- the sweep compares backbones, so any gratuitous difference
-here would be a confound.
+* ``kv``: the KV term in every expert attention layer
+  (``conditioning.hosts.install_smol_kv``).
+* ``kv_adaln``: SmolVLA's expert has no adaptive norm to condition, unlike
+  pi0.5's and GR00T's, so the pooled scene drives a zero-initialised FiLM,
+  ``out * (1 + g) + b``, on every expert RMSNorm.
+* ``kv_tokens``: the entities prepended to the expert suffix.
 
-Two things differ from π0.5, both in ``VLAFlowMatching``:
-
-* ``embed_suffix`` returns three values, not four (π0.5 also carries
-  ``adarms_cond``).
-* ``SmolVLAPolicy.forward`` already builds the loss, so this wrapper only has
-  to make the object tokens available around it, rather than reimplementing
-  the forward pass as the π0.5 arm must.
+``SmolVLAPolicy.forward`` already builds the loss, so the policy wrapper only
+makes the entities available around it.
 """
 
 from __future__ import annotations
@@ -21,12 +19,14 @@ import torch
 from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy, VLAFlowMatching
 from torch import Tensor
 
+from oct_vla.policies.conditioning.adaln import SceneVector
+from oct_vla.policies.conditioning.hosts import install_smol_kv
+from oct_vla.policies.conditioning.tokens import EntityTokens, prepend_entities, scene_inputs
 from oct_vla.policies.object_conditioning import (
     ObjectConditionedPolicyMixin,
     ObjectConditioning,
     unwrap_object_conditioning,
 )
-from oct_vla.policies.vla_branches import prepend_entities, scene_inputs
 
 from .configuration_control_smolvla import ControlSmolVLAConfig
 
@@ -40,18 +40,13 @@ class ControlVLAFlowMatching(VLAFlowMatching):
         self.object_conditioning = ObjectConditioning(
             config, self.action_in_proj.out_features
         )
-        if config.object_injection_mode == "layerwise":
-            from oct_vla.policies.layerwise_backbones import install_smol_layerwise
-
-            install_smol_layerwise(self)
+        install_smol_kv(self)
         width = self.action_in_proj.out_features
         self._adaln_cache = None
-        if getattr(config, "object_adaln", False):
+        if config.object_conditioning == "kv_adaln":
             self._install_adaln(config, width)
-        if getattr(config, "object_incontext", False):
-            from oct_vla.policies.layerwise_attention import InContextEntities
-
-            self.object_conditioning.incontext = InContextEntities(config, width)
+        if config.object_conditioning == "kv_tokens":
+            self.object_conditioning.incontext = EntityTokens(config, width)
 
     def _install_adaln(self, config, width: int) -> None:
         """FiLM every expert RMSNorm from the pooled scene: out * (1 + g) + b.
@@ -61,8 +56,6 @@ class ControlVLAFlowMatching(VLAFlowMatching):
         (DiT) form of control_act's hooks. The expert's layers are its own
         modules and only ever see the suffix, so no prefix token is touched.
         """
-        from oct_vla.policies.layerwise_attention import SceneVector
-
         norms = []
         for layer in self.vlm_with_expert.lm_expert.layers:
             norms += [layer.input_layernorm, layer.post_attention_layernorm]
@@ -105,7 +98,6 @@ class ControlVLAFlowMatching(VLAFlowMatching):
         # action-time embedding, which is exactly what the residual conditions.
         embs, pad_masks, att_masks = super().embed_suffix(noisy_actions, timestep)
         control = unwrap_object_conditioning(self.object_conditioning)
-        embs = control.residual(embs)
         return prepend_entities(control, embs, pad_masks, att_masks)
 
 

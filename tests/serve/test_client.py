@@ -184,15 +184,3 @@ def test_codec_round_trips_scene_context_and_eef():
     assert scene_from_json(scene_to_json(_scene())) == _scene()
     assert context_from_json(context_to_json(_context())) == _context()
     assert eef_from_json(eef_to_json(_eef())) == _eef()
-
-
-def test_object_tokens_build_from_a_decoded_scene():
-    """The decoded scene must satisfy the token encoder, since that is the only
-    reason the client carries object state at all."""
-    from oct_vla.data.object_tokens import ObjectTokenSpec, object_tokens
-
-    scene = scene_from_json(scene_to_json(_scene()))
-    tokens, mask = object_tokens(scene, _context(), spec=ObjectTokenSpec())
-    assert len(tokens) == 8 and len(tokens[0]) == 15
-    assert mask[0] is True and mask[1] is False
-    assert tokens[0][:3] == (0.1, 0.0, 0.9)

@@ -45,22 +45,24 @@ CELL = re.compile(r"^(?P<prefix>[A-Z]{1,2})-(?P<arm>[a-z_]+)-s(?P<seed>\d+)-(?P<
 #: policy, then what conditioning adds to it, then the ablation that omits
 #: stage one entirely. No `semantic`: its cells trained the entity model under
 #: another name (the flag selecting it was never read).
-ARMS = ("rgb", "rgb_cont", "entity", "adaln", "incontext", "scratch")
+ARMS = ("rgb", "rgb_cont", "kv", "kv_adaln", "kv_tokens", "scratch_kv")
+#: Arm names used before the 2026-09-23 rename, as they appear in result files.
+ARM_ALIASES = {"entity": "kv", "adaln": "kv_adaln", "incontext": "kv_tokens", "scratch": "scratch_kv"}
 #: What each conditioned arm is paired against. rgb_cont is the fair one: it has
 #: the stage-2 arms' total training steps, so a gain over it is not budget.
 BASELINES = ("rgb", "rgb_cont")
-CONDITIONED = ("entity", "adaln", "incontext", "scratch")
-#: Q2: each encoder-side arm against layerwise alone, and against each other.
-MECHANISM_CONTRASTS = (("entity", "adaln"), ("entity", "incontext"), ("adaln", "incontext"))
+CONDITIONED = ("kv", "kv_adaln", "kv_tokens", "scratch_kv")
+#: Q2: each encoder-side arm against KV alone, and against each other.
+MECHANISM_CONTRASTS = (("kv", "kv_adaln"), ("kv", "kv_tokens"), ("kv_adaln", "kv_tokens"))
 TIERS = ("seen", "heldout", "novel")
 PROFILES = ("two_object", "three_object", "four_object")
 ARM_NOTE = {
     "rgb": "stage 1: images and proprioception, no conditioning",
     "rgb_cont": "budget control: rgb continued for the steps stage 2 adds, no conditioning",
-    "entity": "stage 2: layerwise conditioning on geometry, from the rgb checkpoint",
-    "adaln": "stage 2: entity + AdaLN-Zero on every encoder/decoder block (LPWM)",
-    "incontext": "stage 2: entity + entity tokens in the encoder sequence (LPWM)",
-    "scratch": "w/o pretrain: conditioning with no stage 1 -- ControlVLA's failing ablation",
+    "kv": "stage 2: ControlVLA's KV term, from the rgb checkpoint",
+    "kv_adaln": "stage 2: kv + scene AdaLN on every block (LPWM-inspired)",
+    "kv_tokens": "stage 2: kv + entity tokens in the encoder (LPWM-inspired)",
+    "scratch_kv": "w/o pretrain: kv with no stage 1 -- ControlVLA's failing ablation",
 }
 #: The variants each tier must be pinned to, per matrix. Checked against what a
 #: rollout requested, so a file whose name and pin disagree is refused rather
@@ -86,7 +88,8 @@ class Rejected(ValueError):
 def read(path: Path, prefix: str) -> list[dict]:
     """One row per episode, tagged with its cell. Raises Rejected if unpinned."""
     match = CELL.match(path.stem)
-    if not match or match["prefix"] != prefix or match["arm"] not in ARMS:
+    arm = ARM_ALIASES.get(match["arm"], match["arm"]) if match else None
+    if not match or match["prefix"] != prefix or arm not in ARMS:
         return []
     report = json.loads(path.read_text())
     requested = report.get("model_ids_requested")
@@ -112,7 +115,7 @@ def read(path: Path, prefix: str) -> list[dict]:
                 f"outside the requested {requested}"
             )
         rows.append({
-            "arm": match["arm"], "train_seed": int(match["seed"]), "tier": tier,
+            "arm": arm, "train_seed": int(match["seed"]), "tier": tier,
             "profile": episode["profile"], "eval_seed": int(episode["seed"]),
             "success": bool(episode.get("success")),
             "transfer": episode.get("transfers_completed", 0) > 0,

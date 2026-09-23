@@ -19,6 +19,7 @@ from lerobot.policies.vla_jepa.world_model import ActionConditionedVideoPredicto
 from lerobot.utils.constants import ACTION, OBS_STATE
 from torch import Tensor
 
+from oct_vla.policies.conditioning.hosts import install_diffusers_kv
 from oct_vla.policies.object_conditioning import (
     ObjectConditionedPolicyMixin,
     ObjectConditioning,
@@ -169,36 +170,12 @@ class ControlVLAJEPAPolicy(ObjectConditionedPolicyMixin, VLAJEPAPolicy):
         self.reset()
         head = self.model.action_model
         head.object_conditioning = ObjectConditioning(config, head.input_embedding_dim)
-        self._object_hook = head.action_encoder.register_forward_hook(self._condition_action_embeddings)
-
-    def _condition_action_embeddings(self, _module: Any, _inputs: Any, output: Tensor) -> Tensor:
-        """Match upstream ``Tensor.repeat(r, ...)`` diffusion ordering.
-
-        ``repeat_interleave`` would pair each scene with r adjacent samples;
-        upstream repeats whole batches, so it would condition the wrong scenes.
-        """
-        conditioning = self.object_conditioning
-        if conditioning._inputs is None or conditioning._inputs[0] is None:
-            return output
-        tokens, mask = conditioning._inputs
-        assert tokens is not None
-        if output.shape[0] == tokens.shape[0]:
-            return conditioning.residual(output)
-        if output.shape[0] % tokens.shape[0]:
-            raise RuntimeError(
-                f"action batch {output.shape[0]} is not a whole repeat of object batch {tokens.shape[0]}"
-            )
-        repeats = output.shape[0] // tokens.shape[0]
-        repeated_tokens = tokens.repeat(repeats, *([1] * (tokens.ndim - 1)))
-        repeated_mask = (
-            mask.repeat(repeats, *([1] * (mask.ndim - 1))) if mask is not None else None
+        # KV in every DiT attention layer. The head repeats its batch r times
+        # for flow matching with `Tensor.repeat` (whole-batch tiling), which
+        # KVAttention mirrors when it tiles the entities (entity.repeat_to).
+        self._object_hooks = install_diffusers_kv(
+            head.model, head.object_conditioning, conditioning_owner=head
         )
-        original = conditioning._inputs
-        conditioning.set_inputs(repeated_tokens, repeated_mask)
-        try:
-            return conditioning.residual(output)
-        finally:
-            conditioning._inputs = original
 
     def _prepare_model_inputs(self, batch: dict[str, Tensor], training: bool = True) -> dict[str, Any]:
         keys = self.config.camera_keys
@@ -263,9 +240,8 @@ class ControlVLAJEPAPolicy(ObjectConditionedPolicyMixin, VLAJEPAPolicy):
 
     def forward(self, batch: dict[str, Tensor], **kwargs: Any):
         self._set_object_inputs(batch)
-        # Deltas are [t, t+1, ...]. ObjectConditioning accepts temporal sets
-        # too, where its generic set encoder intentionally selects the last
-        # element. JEPA needs current visual context, so select t here.
+        # Deltas are [t, t+1, ...]. The entity embedding takes the *last* step
+        # of a temporal set; JEPA conditions on the current step, so select t.
         tokens, mask = self.object_conditioning._inputs
         if tokens is not None and tokens.ndim == 4:
             tokens = tokens[:, 0]

@@ -1,10 +1,10 @@
-"""Object-conditioned π0.5 with a zero-initialized residual injection.
+"""Where each arm attaches in pi0.5.
 
-This plugin accepts already-extracted canonical scene tokens.  Perception and
-RoboTwin remain outside the policy boundary.
-
-Everything backbone-independent lives in ``oct_vla.policies.object_conditioning``;
-what is left here is the π0.5-specific hook.
+* ``kv``: the KV term in every action-expert attention layer, using Gemma's own
+  query (``conditioning.hosts.install_pi_kv``).
+* ``kv_adaln``: the pooled scene added to ``adarms_cond`` -- the expert-width
+  time vector every expert layer's adaptive RMSNorm is already modulated by.
+* ``kv_tokens``: the entities prepended to the action-expert suffix.
 """
 
 from __future__ import annotations
@@ -18,53 +18,38 @@ from lerobot.utils.constants import ACTION, OBS_LANGUAGE_ATTENTION_MASK, OBS_LAN
 from lerobot.utils.import_utils import require_package
 from torch import Tensor
 
+from oct_vla.policies.conditioning.adaln import SceneVector
+from oct_vla.policies.conditioning.hosts import install_pi_kv
+from oct_vla.policies.conditioning.tokens import EntityTokens, prepend_entities, scene_inputs
 from oct_vla.policies.masked_loss import masked_loss, padded_fraction
 from oct_vla.policies.object_conditioning import (
     ObjectConditionedPolicyMixin,
     ObjectConditioning,
     unwrap_object_conditioning,
 )
-from oct_vla.policies.vla_branches import prepend_entities, scene_inputs
 
 from .configuration_control_pi05 import ControlPI05Config
 
 
 class ControlPI05Pytorch(PI05Pytorch):
-    """π0.5 with the conditioning module mounted on its action embedding.
-
-    The width comes from the projection rather than the config: it is the
-    action expert's width, which the config expresses only as a variant name.
-    """
+    """pi0.5 with the conditioning module mounted on its action expert."""
 
     def __init__(self, config: ControlPI05Config, rtc_processor=None) -> None:
         super().__init__(config, rtc_processor=rtc_processor)
-        self.object_conditioning = ObjectConditioning(
-            config, self.action_in_proj.out_features
-        )
-        if config.object_injection_mode == "layerwise":
-            from oct_vla.policies.layerwise_backbones import install_pi_layerwise
-
-            install_pi_layerwise(self)
+        # The action expert's width; the config states it only as a variant name.
         width = self.action_in_proj.out_features
-        if getattr(config, "object_adaln", False):
-            from oct_vla.policies.layerwise_attention import SceneVector
-
-            # adarms_cond is the expert-width time vector every expert layer's
-            # adaptive RMSNorm is modulated by; the scene adds to it.
+        self.object_conditioning = ObjectConditioning(config, width)
+        install_pi_kv(self)
+        if config.object_conditioning == "kv_adaln":
             self.object_conditioning.adaln = SceneVector(config, width, width)
-        if getattr(config, "object_incontext", False):
-            from oct_vla.policies.layerwise_attention import InContextEntities
-
-            self.object_conditioning.incontext = InContextEntities(config, width)
+        if config.object_conditioning == "kv_tokens":
+            self.object_conditioning.incontext = EntityTokens(config, width)
 
     def embed_suffix(self, noisy_actions: Tensor, timestep: Tensor):
-        # π0.5 returns four values here; SmolVLA's analogue returns three. That
-        # arity is now the only difference between the two plugins.
         action_emb, pad_masks, att_masks, adarms_cond = super().embed_suffix(
             noisy_actions, timestep
         )
         control = unwrap_object_conditioning(self.object_conditioning)
-        action_emb = control.residual(action_emb)
         inputs = scene_inputs(control)
         adaln = getattr(control, "adaln", None)
         if adaln is not None and inputs is not None:

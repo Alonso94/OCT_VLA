@@ -155,11 +155,6 @@ def test_every_processor_factory_pins_entity_normalization_to_identity(policy_ty
     import oct_vla.policies  # noqa: F401  -- registers the types
 
     config = PreTrainedConfig._choice_registry[policy_type]()
-    if not hasattr(config, "object_representation"):
-        pytest.skip(f"{policy_type} has no entity representation")
-    config.object_representation = "entity_v2"
-    config.object_injection_mode = "layerwise"
-    config.validate_object_tokens()
     config.input_features = {
         "observation.state": PolicyFeature(type=FeatureType.STATE, shape=(16,)),
         "observation.images.head": PolicyFeature(type=FeatureType.VISUAL, shape=(3, 32, 32)),

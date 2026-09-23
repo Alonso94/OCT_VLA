@@ -1,8 +1,19 @@
-"""Native-query attention adapters; object branches stay in one checkpoint subtree.
+"""Where KV attaches in each host's attention, using the host's real query.
 
-π0.5 calls Gemma attention directly during joint training and through Gemma
-layers during cached inference. A context-local dispatcher covers both routes;
-other policies and prefix-only calls retain the unmodified function.
+KV (``kv.py``) needs the host's own projected query and output projection, and
+the hosts expose them differently:
+
+* ``install_pi_kv``        pi0.5: Gemma attention, called directly in joint
+                           training and through Gemma layers in cached
+                           inference; one context-local dispatcher covers both.
+* ``install_smol_kv``      SmolVLA: its expert's attention interface.
+* ``install_diffusers_kv`` any diffusers ``Attention`` (``to_q``/``to_out``):
+                           GR00T's and VLA-JEPA's DiT action heads.
+
+Each adds the branch's residual to the action tokens only and leaves the prefix
+exactly unchanged. These hooks encode bugs already found once (PEFT's active
+copy, cached-inference skips, a module cycle): read the comments before
+changing them.
 """
 
 from __future__ import annotations
@@ -29,7 +40,7 @@ def _context(branch, query, inputs, scaling=None):
     return branch(query, *inputs, output_weight=identity, scaling=scaling)
 
 
-def install_pi_layerwise(model):
+def install_pi_kv(model):
     from transformers.models.gemma import modeling_gemma
 
     host = model.paligemma_with_expert
@@ -97,7 +108,7 @@ def install_pi_layerwise(model):
     host.forward = MethodType(forward, host)
 
 
-def install_smol_layerwise(model):
+def install_smol_kv(model):
     host = model.vlm_with_expert
     control = model.object_conditioning
     branches = {}
@@ -174,7 +185,7 @@ def install_smol_layerwise(model):
         setattr(host, method_name, MethodType(wrap(native, "cross" in method_name), host))
 
 
-def install_diffusers_layerwise(head, control, *, conditioning_owner=None):
+def install_diffusers_kv(head, control, *, conditioning_owner=None):
     """Inject before native output projection using the actual projected query.
 
     ``head`` is the DiT module holding attention layers; its parent owns the

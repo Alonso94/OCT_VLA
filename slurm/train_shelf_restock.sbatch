@@ -85,39 +85,23 @@ case "$BACKBONE" in
   *) echo "Invalid BACKBONE: $BACKBONE (expected pi05, smolvla, groot or vla_jepa)" >&2; exit 2 ;;
 esac
 
-# Arm C of the sweep ("is the object win real, or task-state leakage?") trains
-# on the *same* dataset as arm B and differs only in how the policy reads the
-# stored tokens, so this is a separate knob from TRAIN_VARIANT rather than a
-# third variant with a dataset of its own.
-OBJECT_TOKEN_MODE="${OBJECT_TOKEN_MODE:-full}"
-case "$OBJECT_TOKEN_MODE" in full|role_stripped) ;; *) echo "Invalid OBJECT_TOKEN_MODE" >&2; exit 2 ;; esac
-
-# How the object set reaches the action stream. "controlvla" is the published
-# dual-attention injection over the unpooled set; "pooled" is the weaker
-# broadcast residual every arm recorded before 2026-09-20 used, kept so the two
-# can be compared directly rather than across a code change.
-OBJECT_INJECTION_MODE="${OBJECT_INJECTION_MODE:-controlvla}"
-case "$OBJECT_INJECTION_MODE" in controlvla|pooled|layerwise) ;; *) echo "Invalid OBJECT_INJECTION_MODE" >&2; exit 2 ;; esac
-
-# A learned code across entity slots. Off keeps the encoder
-# permutation-invariant; on makes it order-sensitive, which is the only setting
-# in which the shuffled-token evaluation control measures anything.
-OBJECT_ENTITY_POSITIONAL="${OBJECT_ENTITY_POSITIONAL:-false}"
-case "$OBJECT_ENTITY_POSITIONAL" in true|false) ;; *) echo "OBJECT_ENTITY_POSITIONAL must be true or false" >&2; exit 2 ;; esac
-if [ "$TRAIN_VARIANT" = "rgb" ] && [ "$OBJECT_TOKEN_MODE" != "full" ]; then
-  echo "OBJECT_TOKEN_MODE=$OBJECT_TOKEN_MODE is meaningless for TRAIN_VARIANT=rgb" >&2
-  exit 2
-fi
-
-OBJECT_REPRESENTATION="${OBJECT_REPRESENTATION:-legacy}"
-case "$OBJECT_REPRESENTATION" in legacy|entity_v2) ;; *) echo "Invalid OBJECT_REPRESENTATION" >&2; exit 2 ;; esac
-if [ "$OBJECT_REPRESENTATION" = entity_v2 ]; then
-  [ "$TRAIN_VARIANT" = object ] && [ "$OBJECT_TOKEN_MODE" = full ] && [ "$OBJECT_ENTITY_POSITIONAL" = false ] || { echo "entity_v2 requires object/full with positional codes disabled" >&2; exit 2; }
-  OBJECT_INJECTION_MODE=layerwise
-fi
-# Hooks retain batch context only during forward; checkpoint recomputation is unsupported.
-if [ "$OBJECT_INJECTION_MODE" = layerwise ] && [ "$BACKBONE" = pi05 ]; then
-  PRECISION_ARGS=(--policy.dtype=bfloat16 --policy.gradient_checkpointing=false)
+# The object arm (oct_vla.policies.conditioning): kv, kv_adaln or kv_tokens.
+# Refused rather than ignored if unknown or given to an rgb run -- an ignored
+# arm variable is how the old `semantic` arm trained the entity model under
+# another name.
+for gone in OBJECT_ADALN OBJECT_INCONTEXT OBJECT_TOKEN_MODE OBJECT_INJECTION_MODE \
+            OBJECT_ENTITY_POSITIONAL OBJECT_REPRESENTATION; do
+  if [ -n "${!gone:-}" ]; then echo "$gone is gone since the cleanup: set CONDITIONING" >&2; exit 2; fi
+done
+CONDITIONING="${CONDITIONING:-}"
+if [ "$TRAIN_VARIANT" = object ]; then
+  CONDITIONING="${CONDITIONING:-kv}"
+  case "$CONDITIONING" in kv|kv_adaln|kv_tokens) ;; *) echo "Invalid CONDITIONING=$CONDITIONING" >&2; exit 2 ;; esac
+  # The KV hooks hold batch context only during forward; checkpoint
+  # recomputation would replay them without it (see control_pi05's config).
+  [ "$BACKBONE" = pi05 ] && PRECISION_ARGS=(--policy.dtype=bfloat16 --policy.gradient_checkpointing=false)
+elif [ -n "$CONDITIONING" ]; then
+  echo "CONDITIONING=$CONDITIONING is meaningless for TRAIN_VARIANT=rgb" >&2; exit 2
 fi
 
 TRAIN_SEED="${TRAIN_SEED:-1000}"
@@ -184,9 +168,7 @@ if [ "$TRAIN_VARIANT" = "object" ]; then
   POLICY_ARGS=(
     --policy.type="$OBJECT_POLICY_TYPE"
     --policy.discover_packages_path=oct_vla.policies
-    --policy.object_token_mode="$OBJECT_TOKEN_MODE"
-    --policy.object_injection_mode="$OBJECT_INJECTION_MODE"
-    --policy.object_entity_positional="$OBJECT_ENTITY_POSITIONAL"
+    --policy.object_conditioning="$CONDITIONING"
   )
   [ -n "$BASE_MODEL" ] && POLICY_ARGS+=(--policy.pretrained_path="$BASE_MODEL")
 elif [ -z "$BASE_MODEL" ]; then
@@ -206,25 +188,11 @@ else
   )
 fi
 
-# The encoder-side arms (LPWM), each layerwise plus one path, as for ACT.
-# Refused outside entity_v2 object runs rather than ignored: an ignored arm
-# flag is how the `semantic` arm trained the entity model under another name.
-ENCODER_ARM=""
-case "${OBJECT_ADALN:-0}${OBJECT_INCONTEXT:-0}" in
-  00) ;;
-  10) ENCODER_ARM=adaln ;;
-  01) ENCODER_ARM=incontext ;;
-  *) echo "Set at most one of OBJECT_ADALN / OBJECT_INCONTEXT, to 1" >&2; exit 2 ;;
-esac
-if [ -n "$ENCODER_ARM" ] && [ "$OBJECT_REPRESENTATION" != entity_v2 ]; then
-  echo "OBJECT_${ENCODER_ARM^^} needs OBJECT_REPRESENTATION=entity_v2" >&2; exit 2
-fi
-
-if [ "$OBJECT_REPRESENTATION" = entity_v2 ]; then
+# The entity capacity and training-split normalisation the dataset declares.
+if [ "$TRAIN_VARIANT" = object ]; then
   ENTITY_ARGS_TEXT=$("$OCTVLA_POLICY_PYTHON" "$OCTVLA_REPO/scripts/entity_training_args.py" "$DATASET")
   mapfile -t ENTITY_ARGS <<< "$ENTITY_ARGS_TEXT"
   POLICY_ARGS+=("${ENTITY_ARGS[@]}")
-  [ -n "$ENCODER_ARM" ] && POLICY_ARGS+=(--policy.object_"$ENCODER_ARM"=true)
 fi
 
 # The execution horizon is a measured convention (25; see
@@ -239,15 +207,7 @@ fi
 # from arm C seed 1002 without going back to the Slurm accounting database,
 # and aggregation has nothing to group by. Job id goes in run_metadata.json
 # below instead, where it is still available but is not the identity.
-RUN_NAME="${BACKBONE}_${TRAIN_VARIANT}_${OBJECT_TOKEN_MODE}_s${TRAIN_SEED}"
-if [ "$TRAIN_VARIANT" = "object" ]; then
-  # Only for object arms, and only when it is not the default, so every
-  # directory written before this knob existed keeps its name.
-  [ "$OBJECT_INJECTION_MODE" != "controlvla" ] && RUN_NAME="${RUN_NAME}_${OBJECT_INJECTION_MODE}"
-  [ "$OBJECT_REPRESENTATION" != legacy ] && RUN_NAME="${RUN_NAME}_${OBJECT_REPRESENTATION}"
-  [ -n "$ENCODER_ARM" ] && RUN_NAME="${RUN_NAME}_${ENCODER_ARM}"
-  [ "$OBJECT_ENTITY_POSITIONAL" = "true" ] && RUN_NAME="${RUN_NAME}_entpos"
-fi
+RUN_NAME="${BACKBONE}_${CONDITIONING:-rgb}_s${TRAIN_SEED}"
 # TRAIN_TAG distinguishes cells this name cannot -- a different dataset view,
 # most of all, since the action encoding does not appear in the name at all.
 [ -n "${TRAIN_TAG:-}" ] && RUN_NAME="${RUN_NAME}_${TRAIN_TAG}"
@@ -288,7 +248,7 @@ fi
 echo "backbone   : $BACKBONE"
 echo "dataset    : $DATASET"
 echo "variant    : $TRAIN_VARIANT"
-echo "token_mode : $OBJECT_TOKEN_MODE"
+echo "arm        : ${CONDITIONING:-rgb}"
 echo "seed       : $TRAIN_SEED"
 echo "eval_split : $EVAL_SPLIT"
 echo "output     : $OUTPUT"
@@ -307,10 +267,7 @@ cat > "$OCTVLA_OUTPUT_ROOT/run_metadata/${RUN_NAME}.json" <<JSON
 {
   "run_name": "$RUN_NAME",
   "backbone": "$BACKBONE",
-  "conditioning": "$TRAIN_VARIANT",
-  "token_mode": "$OBJECT_TOKEN_MODE",
-  "object_representation": "$OBJECT_REPRESENTATION",
-  "injection_mode": "$OBJECT_INJECTION_MODE",
+  "conditioning": "${CONDITIONING:-rgb}",
   "stage": "$STAGE",
   "stage1_checkpoint": "${STAGE1_CHECKPOINT:-}",
   "seed": $TRAIN_SEED,

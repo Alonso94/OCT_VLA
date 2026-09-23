@@ -83,8 +83,8 @@ def test_tiers_are_split_when_one_arm_drops_on_every_seed(tmp_path, capsys, monk
     assert table["identity_split"] is True
     assert {"rgb/seen", "rgb/heldout"} <= set(table["identity"])
     # Tested per tier once split, never pooled across them.
-    assert "rgb->adaln/three_heldout" in table["paired"]
-    assert "rgb->adaln/three_object" not in table["paired"]
+    assert "rgb->kv_adaln/three_heldout" in table["paired"]
+    assert "rgb->kv_adaln/three_object" not in table["paired"]
 
 
 def test_object_count_and_pairing(tmp_path, capsys, monkeypatch):
@@ -101,9 +101,9 @@ def test_object_count_and_pairing(tmp_path, capsys, monkeypatch):
         path.write_text(json.dumps(two))
     table, _ = run(tmp_path, capsys, monkeypatch)
     assert set(table["object_count"]) >= {
-        "adaln/two_object", "adaln/three_object", "adaln/four_object"
+        "kv_adaln/two_object", "kv_adaln/three_object", "kv_adaln/four_object"
     }
-    paired = table["paired"]["rgb->adaln/three_object"]["success"]
+    paired = table["paired"]["rgb->kv_adaln/three_object"]["success"]
     assert paired["pairs"] == 6
     assert paired["treatment_only_wins"] == 4 and paired["baseline_only_wins"] == 0
 
@@ -116,6 +116,6 @@ def test_the_budget_control_is_a_baseline_and_mechanisms_are_contrasted(
                                ("entity", [1, 1]), ("adaln", [3, 1])):
             write(tmp_path, f"F-{arm}-s{seed}-seen", transfers)
     table, _ = run(tmp_path, capsys, monkeypatch)
-    assert {"rgb->adaln/three_object", "rgb_cont->adaln/three_object",
-            "entity->adaln/three_object"} <= set(table["paired"])
+    assert {"rgb->kv_adaln/three_object", "rgb_cont->kv_adaln/three_object",
+            "kv->kv_adaln/three_object"} <= set(table["paired"])
     assert "rgb_cont->rgb/three_object" not in table["paired"]

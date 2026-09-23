@@ -73,12 +73,14 @@ def state_vector(eef) -> list[float]:
 
 
 def build_observation(
-    obs, *, object_token_spec, torch, np, ranks=None, control_space="cartesian",
-    privileged=False, uint8_images=True, state_encoding="position", previous_joints=None,
-    entity_max_entities=None,
+    obs, *, torch, np, control_space="cartesian", uint8_images=True,
+    state_encoding="position", previous_joints=None, entity_max_entities=None,
 ):
-    from oct_vla.data.object_tokens import object_token_ranks, object_tokens
+    """The policy's input batch, laid out exactly as the exporter wrote it.
 
+    ``entity_max_entities`` is set for an object-conditioned checkpoint, and
+    builds the entity set from the simulator's scene and support geometry.
+    """
     batch = {}
     for camera, feature in CAMERA_FEATURES.items():
         frame = obs.frame(camera)
@@ -112,61 +114,29 @@ def build_observation(
     else:
         state = state_vector(obs.eef)
     batch["observation.state"] = torch.tensor([state], dtype=torch.float32)
-    if object_token_spec is not None:
-        tokens, mask = object_tokens(obs.scene, obs.context, spec=object_token_spec)
-        batch["observation.object_tokens"] = torch.tensor([tokens], dtype=torch.float32)
-        batch["observation.object_token_mask"] = torch.tensor(
-            [[float(v) for v in mask]], dtype=torch.float32
-        )
-        if ranks is not None:
-            # The same episode-stable ordering the exporter wrote, rebuilt here
-            # from this episode's first scene. Training and evaluation must sort
-            # the role-stripped arm identically or the model sees a layout it
-            # was never fit on.
-            batch["observation.object_token_rank"] = torch.tensor(
-                [list(object_token_ranks(
-                    obs.scene, ranks, spec=object_token_spec, context=obs.context
-                ))],
-                dtype=torch.float32,
-            )
     if entity_max_entities is not None:
         from oct_vla.data.entity_tokens import build_entity_tokens
 
         supports = getattr(obs, "supports", ())
         if not supports:
-            raise ValueError("entity_v2 requires support geometry from an updated simulator server")
+            raise ValueError("entity inputs need support geometry from an updated simulator server")
         tokens, mask = build_entity_tokens(obs.scene, obs.eef, supports, entity_max_entities)
         batch["observation.entity_tokens"] = torch.tensor([tokens], dtype=torch.float32)
         batch["observation.entity_mask"] = torch.tensor([mask], dtype=torch.bool)
-    if privileged:
-        # Flattened object tokens, exactly as the privileged export writes them.
-        # The vision-free policy reads only this and observation.state; the
-        # camera tensors above are ignored because its config declares no image
-        # features, so they are left in place rather than special-cased out.
-        tokens, _ = object_tokens(obs.scene, obs.context, spec=object_token_spec)
-        batch["observation.environment_state"] = torch.tensor(
-            [[value for token in tokens for value in token]], dtype=torch.float32
-        )
     batch["task"] = [obs.context.instruction]
     return batch
 
 
 def run_episode(
     client, policy, preprocessor, postprocessor, *,
-    seed, profile, max_steps, object_token_spec, torch, np, control_space="cartesian",
-    privileged=False, uint8_images=True, state_encoding="position", video=None,
+    seed, profile, max_steps, torch, np, control_space="cartesian",
+    uint8_images=True, state_encoding="position", video=None,
     gripper_encoding="measured_aperture",
     entity_max_entities=None, model_ids=None,
 ) -> dict:
     observation = client.reset(seed, profile, control_space=control_space,
                                gripper_encoding=gripper_encoding, model_ids=model_ids)
     policy.reset()
-    # Fixed once, from the scene at reset -- exactly as the exporter does.
-    ranks = None
-    if object_token_spec is not None:
-        from oct_vla.data.object_tokens import stable_ranks
-
-        ranks = stable_ranks(observation.scene)
     result = {
         "seed": seed, "profile": profile, "success": False, "steps": 0,
         "transfers_completed": 0, "reason": "step_limit", "detail": "",
@@ -186,12 +156,9 @@ def run_episode(
     for step in range(max_steps):
         batch = build_observation(
             observation,
-            object_token_spec=object_token_spec,
             torch=torch,
             np=np,
-            ranks=ranks,
             control_space=control_space,
-            privileged=privileged,
             uint8_images=uint8_images,
             state_encoding=state_encoding,
             previous_joints=previous_joints,
@@ -236,7 +203,6 @@ def main() -> int:
     from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
     from lerobot.policies import make_policy, make_pre_post_processors
 
-    from oct_vla.data.object_tokens import ObjectTokenSpec
     from oct_vla.data.policy_inputs import rename_map_for
     from oct_vla.serve.client import ShelfRestockEvalClient
 
@@ -255,13 +221,6 @@ def main() -> int:
                         help="Use this many control steps per object instead of --max-steps.")
     parser.add_argument("--evaluation-split", choices=("development", "test"), default="test",
                         help="Only three-object development rollouts may select checkpoints.")
-    parser.add_argument("--object-tokens", action="store_true")
-    parser.add_argument(
-        "--shuffle-tokens",
-        action="store_true",
-        help="Permute complete token rows. This tests set invariance; it is not "
-        "a negative control for whether object information is used.",
-    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
         "--model-ids",
@@ -353,14 +312,6 @@ def main() -> int:
     # names, SmolVLA takes the dataset's own, and hard-coding either one would
     # silently feed the other backbone a wrist view as its scene view.
     rename_map = rename_map_for(config.type)
-    if args.shuffle_tokens:
-        if not hasattr(config, "object_token_shuffle"):
-            raise SystemExit(
-                "--shuffle-tokens needs an object-conditioned checkpoint; "
-                f"{args.checkpoint} is a {getattr(config, 'type', 'unknown')} policy, "
-                "which has no object tokens to shuffle."
-            )
-        config.object_token_shuffle = True
     # Derived from the dataset the checkpoint was fit on, not passed in: a
     # joint-space policy emits absolute joint targets and a Cartesian one emits
     # 14-d increments, and running either through the other's path would be
@@ -398,13 +349,11 @@ def main() -> int:
         control_space = str(recorded_space or "cartesian")
         state_encoding = "position"
     width = metadata.features["action"]["shape"][0]
-    # Whether to build observation.environment_state at all. Not the same as
-    # "vision-free": a dataset can carry both the cameras and the flattened
-    # object tokens, which is the RGB + objects arm. The builder writes the
-    # camera tensors either way and the policy's own config decides what it
-    # reads, so this only has to answer "is environment_state expected".
-    env_state = "observation.environment_state" in metadata.features
-    privileged = env_state
+    if "observation.environment_state" in metadata.features:
+        raise SystemExit(
+            f"{args.dataset_root} has a flat observation.environment_state: that is the "
+            "privileged arm, removed in the cleanup. Evaluate it from tag stageA-2026-09-23."
+        )
     has_cameras = any(k.startswith("observation.images.") for k in metadata.features)
     visual_norm = str((config.normalization_mapping or {}).get("VISUAL", "IDENTITY"))
     # Never uint8, whatever the normalization mapping says. Training converts
@@ -424,7 +373,7 @@ def main() -> int:
     print(
         f"control space: {control_space} (action width {width}) "
         f"state: {state_encoding} (width {state_width}) gripper: {gripper_encoding} "
-        f"env_state={env_state} cameras={has_cameras} "
+        f"cameras={has_cameras} "
         f"visual_norm={visual_norm} uint8_images={uint8_images}"
     )
     # Applied before make_policy, and that ordering is load-bearing: the policy
@@ -467,12 +416,9 @@ def main() -> int:
             "rename_observations_processor": {"rename_map": rename_map},
         },
     )
-    entity_v2 = getattr(config, "object_representation", "legacy") == "entity_v2"
-    uses_legacy_tokens = (
-        args.object_tokens or hasattr(config, "object_token_key")
-    ) and not entity_v2
-    spec = ObjectTokenSpec() if (uses_legacy_tokens or privileged) else None
-    entity_max_entities = getattr(config, "object_max_entities", 16) if entity_v2 else None
+    # Read from the checkpoint: an object-conditioned policy carries its arm.
+    conditioning = getattr(config, "object_conditioning", None)
+    entity_max_entities = config.object_max_entities if conditioning else None
 
     record = set(seeds)
     if args.video_dir and args.video_seeds:
@@ -508,8 +454,7 @@ def main() -> int:
                     max_steps=(args.steps_per_object * {"two_object": 2, "three_object": 3,
                                                        "four_object": 4}[profile]
                                if args.steps_per_object is not None else args.max_steps),
-                    object_token_spec=spec, torch=torch, np=np,
-                    control_space=control_space, privileged=privileged,
+                    torch=torch, np=np, control_space=control_space,
                     uint8_images=uint8_images, state_encoding=state_encoding,
                     gripper_encoding=gripper_encoding, video=video,
                     entity_max_entities=entity_max_entities, model_ids=model_ids,
@@ -535,13 +480,8 @@ def main() -> int:
         "model_ids_requested": list(model_ids) if model_ids else None,
         "evaluation_split": args.evaluation_split,
         "steps_per_object": args.steps_per_object,
-        "object_tokens": bool(spec is not None or entity_v2),
-        "object_representation": getattr(config, "object_representation", "legacy"),
-        # Recorded, not inferred later from the checkpoint path: the shuffled
-        # control reuses arm B's weights, so the path alone cannot distinguish
-        # the two and aggregation would silently merge them into one arm.
-        "token_mode": getattr(config, "object_token_mode", None),
-        "shuffled_tokens": bool(args.shuffle_tokens),
+        # The arm, from the checkpoint's own config (None for an RGB policy).
+        "object_conditioning": conditioning,
         # Same weights, different inference settings, so aggregation must not
         # merge them. `eval_tag` is empty when nothing was overridden, which
         # keeps a default re-run comparable with reports written before this

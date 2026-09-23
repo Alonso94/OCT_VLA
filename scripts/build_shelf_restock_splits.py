@@ -204,14 +204,12 @@ def partition_by_identity(train, val, holdout):
 
 def main() -> int:
     from oct_vla.data.lerobot_export import export_episodes
-    from oct_vla.data.object_tokens import ObjectTokenSpec
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--canonical-root", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path, help="Dataset root to create")
     parser.add_argument("--repo-id", required=True)
     parser.add_argument("--profile", default="three_object", choices=sorted(SPLIT_BLOCKS))
-    parser.add_argument("--object-tokens", action="store_true")
     parser.add_argument("--entity-tokens", action="store_true")
     parser.add_argument(
         "--identity-holdout",
@@ -232,13 +230,6 @@ def main() -> int:
         "run's atomic transfer clips. The unit is runs, not clips: --max-runs 25 "
         "means 25 scenes and the ~75 clips they contain. Applies to the train "
         "split only; validation always uses every reserved run it has.",
-    )
-    parser.add_argument(
-        "--privileged",
-        action="store_true",
-        help="Export object tokens as observation.environment_state and omit the "
-        "cameras, for a vision-free upper bound on what privileged scene state alone "
-        "can achieve. Implies --object-tokens.",
     )
     parser.add_argument(
         "--gripper-encoding",
@@ -328,8 +319,6 @@ def main() -> int:
 
     normalizer = None
     if args.entity_tokens:
-        if args.privileged:
-            parser.error("entity-v2 is separate from the legacy flattened privileged baseline")
         from oct_vla.data.entity_tokens import (
             EntityTokenNormalizer,
             build_entity_tokens,
@@ -348,14 +337,11 @@ def main() -> int:
                     )
 
         normalizer = EntityTokenNormalizer.fit(training_entities())
-    spec = ObjectTokenSpec() if (args.object_tokens or args.privileged) else None
     report = export_episodes(
         ordered,
         args.output,
         repo_id=args.repo_id,
-        object_token_spec=spec,
         control_space=args.control_space,
-        privileged=args.privileged,
         state_encoding=args.state_encoding,
         gripper_encoding=args.gripper_encoding,
         entity_token_max_entities=args.max_entities if args.entity_tokens else None,

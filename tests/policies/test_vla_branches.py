@@ -7,8 +7,9 @@ torch = pytest.importorskip("torch")
 pytest.importorskip("lerobot")
 from lerobot.policies.pi05.modeling_pi05 import make_att_2d_masks
 
-from oct_vla.policies.layerwise_attention import InContextEntities, SceneVector
-from oct_vla.policies.vla_branches import prepend_entities
+from oct_vla.policies.conditioning.adaln import SceneVector
+from oct_vla.policies.conditioning.tokens import EntityTokens
+from oct_vla.policies.conditioning.tokens import prepend_entities
 
 
 class Config:
@@ -19,7 +20,7 @@ class Config:
 class Control:
     def __init__(self, tokens, mask, width=8):
         self._inputs = (tokens, mask)
-        self.incontext = InContextEntities(Config(), width)
+        self.incontext = EntityTokens(Config(), width)
 
 
 def suffix(batch=2, chunk=3, width=8, causal=False):

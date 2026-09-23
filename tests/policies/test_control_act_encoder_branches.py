@@ -94,7 +94,7 @@ def test_adaln_is_exactly_stage1_at_init(pre_norm):
     torch.manual_seed(0)
     # float32 because ACT builds its latent in float32; identity is still
     # bitwise, since x * (1 + 0) + 0 is exact in any precision.
-    policy = ControlACTPolicy(config(pre_norm=pre_norm, object_adaln=True))
+    policy = ControlACTPolicy(config(pre_norm=pre_norm, object_conditioning="kv_adaln"))
     stock = stock_twin(policy)
     data = batch()
     torch.testing.assert_close(
@@ -105,7 +105,7 @@ def test_adaln_is_exactly_stage1_at_init(pre_norm):
 
 
 def test_adaln_sites_are_main_encoder_and_decoder_only():
-    policy = ControlACTPolicy(config(use_vae=True, object_adaln=True))
+    policy = ControlACTPolicy(config(use_vae=True, object_conditioning="kv_adaln"))
     sites = adaln_sites(policy.model)
     assert len(sites) == SITES
     assert policy.object_conditioning.adaln.sites == SITES
@@ -115,7 +115,7 @@ def test_adaln_sites_are_main_encoder_and_decoder_only():
 
 def test_adaln_every_site_receives_gradient_and_only_the_projection_at_step0():
     torch.manual_seed(0)
-    policy = ControlACTPolicy(config(object_adaln=True))
+    policy = ControlACTPolicy(config(object_conditioning="kv_adaln"))
     adaln = policy.object_conditioning.adaln
     policy.train()
     loss, _ = policy(batch())
@@ -145,7 +145,7 @@ def test_adaln_every_site_receives_gradient_and_only_the_projection_at_step0():
 
 def test_adaln_live_policy_reads_objects_but_empty_scene_is_stage1():
     torch.manual_seed(0)
-    policy = ControlACTPolicy(config(object_adaln=True))
+    policy = ControlACTPolicy(config(object_conditioning="kv_adaln"))
     data = batch()
     train(policy, data)
     assert policy.object_conditioning.adaln.is_live
@@ -163,7 +163,7 @@ def test_adaln_live_policy_reads_objects_but_empty_scene_is_stage1():
 
 def test_adaln_padded_slots_get_no_gradient():
     torch.manual_seed(0)
-    policy = ControlACTPolicy(config(object_adaln=True))
+    policy = ControlACTPolicy(config(object_conditioning="kv_adaln"))
     data = batch()
     train(policy, data)
     tokens = data["observation.entity_tokens"].clone().requires_grad_(True)
@@ -179,7 +179,7 @@ def test_incontext_extends_encoder_only_and_stays_near_stage1():
     # entities would face three native tokens, which no real run looks like.
     # The deviation falls with the native token count (2.6e-2 at 32 px,
     # 2.5e-3 at 96, 7.9e-4 at 160); production has ~240 image tokens.
-    policy = ControlACTPolicy(config(object_incontext=True, side=96))
+    policy = ControlACTPolicy(config(object_conditioning="kv_tokens", side=96))
     stock = stock_twin(policy)
     lengths = {}
 
@@ -203,7 +203,7 @@ def test_incontext_extends_encoder_only_and_stays_near_stage1():
 
 def test_incontext_gate_is_trainable_at_step0_and_padding_is_exact():
     torch.manual_seed(0)
-    policy = ControlACTPolicy(config(object_incontext=True))
+    policy = ControlACTPolicy(config(object_conditioning="kv_tokens"))
     policy.train()
     loss, _ = policy(batch())
     loss.backward()
@@ -218,17 +218,17 @@ def test_incontext_gate_is_trainable_at_step0_and_padding_is_exact():
     )
 
 
-@pytest.mark.parametrize("flag", ["object_adaln", "object_incontext"])
-def test_round_trip_and_closed_loop(flag, tmp_path):
+@pytest.mark.parametrize("arm", ["kv_adaln", "kv_tokens"])
+def test_round_trip_and_closed_loop(arm, tmp_path):
     torch.manual_seed(0)
-    policy = ControlACTPolicy(config(**{flag: True}))
+    policy = ControlACTPolicy(config(object_conditioning=arm))
     data = batch()
     train(policy, data)
     policy.eval()
     expected = policy.predict_action_chunk(data)
     policy.save_pretrained(tmp_path)
     restored = ControlACTPolicy.from_pretrained(tmp_path)
-    assert getattr(restored.config, flag) is True
+    assert restored.config.object_conditioning == arm
     torch.testing.assert_close(restored.predict_action_chunk(data), expected)
     restored.reset()
     torch.testing.assert_close(restored.select_action(data), expected[:, 0])
@@ -242,4 +242,4 @@ def test_default_checkpoint_has_neither_branch(tmp_path):
     assert not hasattr(policy.object_conditioning, "incontext")
     policy.save_pretrained(tmp_path)
     restored = ControlACTPolicy.from_pretrained(tmp_path)
-    assert restored.config.object_adaln is False and restored.config.object_incontext is False
+    assert restored.config.object_conditioning == "kv"

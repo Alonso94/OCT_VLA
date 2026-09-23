@@ -1,21 +1,21 @@
-"""Preserve ACT attention and inject object KV at every decoder layer.
+"""Where each arm attaches in ACT. Every piece mounts by a hook, so every
+stage-1 ACT state-dict key survives unchanged.
 
-Optionally also reach the encoder, which the layerwise branch never does:
-LeRobot ACT has one decoder layer, so that branch alone is a single seam, and
-the four encoder layers that fuse images with proprioception see no objects.
-``object_adaln`` modulates every encoder and decoder block from a pooled scene
-vector; ``object_incontext`` appends the entity tokens to the encoder sequence.
-Both mount by hooks, so every stage-1 ACT state-dict key survives.
+* ``kv``: the KV term at every decoder cross-attention layer. LeRobot ACT has
+  **one** decoder layer, so this is a single seam, and the four encoder layers
+  that fuse images with proprioception never see the objects -- which is why
+  the other two arms exist.
+* ``kv_adaln``: plus `SceneAdaLN` at all 11 main encoder/decoder sublayers.
+* ``kv_tokens``: plus the entities appended to the encoder sequence, and
+  stripped again before the decoder.
 """
 
 import torch
 from lerobot.policies.act.modeling_act import ACTPolicy
 
-from oct_vla.policies.layerwise_attention import (
-    InContextEntities,
-    SceneAdaLN,
-    packed_mha_query,
-)
+from oct_vla.policies.conditioning.adaln import SceneAdaLN
+from oct_vla.policies.conditioning.kv import packed_mha_query
+from oct_vla.policies.conditioning.tokens import EntityTokens
 from oct_vla.policies.object_conditioning import ObjectConditionedPolicyMixin, ObjectConditioning
 
 from .configuration_control_act import ControlACTConfig
@@ -55,7 +55,7 @@ class ControlACTPolicy(ObjectConditionedPolicyMixin, ACTPolicy):
                 host.register_forward_hook(self._make_hook(str(index)), with_kwargs=True)
             )
         self._adaln_cache = None
-        if getattr(config, "object_adaln", False):
+        if config.object_conditioning == "kv_adaln":
             sites = adaln_sites(self.model)
             conditioning.adaln = SceneAdaLN(config, config.dim_model, len(sites))
             for index, (sublayer, norm) in enumerate(sites):
@@ -64,8 +64,8 @@ class ControlACTPolicy(ObjectConditionedPolicyMixin, ACTPolicy):
                 )
                 self._object_hooks.append(norm.register_forward_hook(self._make_norm_hook(index)))
         self._incontext_count = None
-        if getattr(config, "object_incontext", False):
-            conditioning.incontext = InContextEntities(config, config.dim_model)
+        if config.object_conditioning == "kv_tokens":
+            conditioning.incontext = EntityTokens(config, config.dim_model)
             encoder = self.model.encoder
             self._object_hooks.append(
                 encoder.register_forward_pre_hook(self._incontext_pre_hook, with_kwargs=True)

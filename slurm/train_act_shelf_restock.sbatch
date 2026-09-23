@@ -64,16 +64,16 @@ case "$ACT_POLICY_TYPE" in
     ENTITY_ARGS_TEXT=$("$OCTVLA_POLICY_PYTHON" "$OCTVLA_REPO/scripts/entity_training_args.py" "$DATASET")
     mapfile -t ENTITY_ARGS <<< "$ENTITY_ARGS_TEXT"
     POLICY_ARGS+=(--policy.discover_packages_path=oct_vla.policies "${ENTITY_ARGS[@]}")
-    ACT_CONDITIONING=object
-    # Encoder-side branches beside the layerwise decoder one (LPWM,
-    # arXiv:2603.04553): AdaLN-Zero on every block, or entity tokens in the
-    # encoder sequence. Each is its own arm, so each isolates one addition.
-    case "${OBJECT_ADALN:-0}${OBJECT_INCONTEXT:-0}" in
-      00) ;;
-      10) POLICY_ARGS+=(--policy.object_adaln=true); ACT_CONDITIONING=object_adaln ;;
-      01) POLICY_ARGS+=(--policy.object_incontext=true); ACT_CONDITIONING=object_incontext ;;
-      *) echo "Set at most one of OBJECT_ADALN / OBJECT_INCONTEXT, to 1" >&2; exit 2 ;;
-    esac
+    # The arm (oct_vla.policies.conditioning): kv, kv_adaln or kv_tokens.
+    # Refused rather than ignored if unknown -- an ignored arm variable is how
+    # the old `semantic` arm trained the entity model under another name.
+    CONDITIONING="${CONDITIONING:-kv}"
+    case "$CONDITIONING" in kv|kv_adaln|kv_tokens) ;; *) echo "Invalid CONDITIONING=$CONDITIONING" >&2; exit 2 ;; esac
+    if [ -n "${OBJECT_ADALN:-}${OBJECT_INCONTEXT:-}" ]; then
+      echo "OBJECT_ADALN/OBJECT_INCONTEXT are gone since the cleanup: set CONDITIONING" >&2; exit 2
+    fi
+    POLICY_ARGS+=(--policy.object_conditioning="$CONDITIONING")
+    ACT_CONDITIONING="$CONDITIONING"
     # Stage two of ControlVLA's recipe. The paper pre-trains a general policy
     # on DROID and only then adds object-centric conditioning; its "w/o
     # pretrain" ablation -- conditioning a from-scratch policy -- reports

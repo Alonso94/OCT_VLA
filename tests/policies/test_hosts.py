@@ -9,7 +9,7 @@ import pytest
 torch = pytest.importorskip("torch")
 from torch import nn  # noqa: E402
 
-from oct_vla.policies.layerwise_backbones import install_diffusers_layerwise  # noqa: E402
+from oct_vla.policies.conditioning.hosts import install_diffusers_kv  # noqa: E402
 
 
 class _Branch(nn.Module):
@@ -46,7 +46,7 @@ def test_diffusers_hook_restores_flattened_native_layout_before_to_out():
     attention = _Attention()
     holder = nn.Module()
     holder.add_module("attention", attention)
-    install_diffusers_layerwise(holder, _Control())
+    install_diffusers_kv(holder, _Control())
     value = torch.arange(8, dtype=torch.float32).reshape(1, 2, 4)
 
     # The branch returns the post-output-projection [B,S,H*D] residual.
@@ -77,15 +77,12 @@ def test_native_groot_processor_masks_temporal_padding_and_inactive_action_width
 
 def test_active_peft_modules_to_save_copy_replaces_the_frozen_hook_target():
     from peft.utils.other import ModulesToSaveWrapper
-    from oct_vla.policies.layerwise_backbones import _active_control
+    from oct_vla.policies.conditioning.hosts import _active_control
     from oct_vla.policies.object_conditioning import ObjectConditioning
 
     class Config:
-        object_injection_mode = "layerwise"
         object_attention_heads = 2
-        object_representation = "legacy"
-        object_token_dim = 3
-        effective_object_token_dim = 3
+        object_entity_normalizer = None
 
     original = ObjectConditioning(Config(), 4)
     original.add_layer("0", 4, 2)

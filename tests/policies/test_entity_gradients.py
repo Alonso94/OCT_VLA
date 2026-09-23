@@ -17,7 +17,7 @@ pytest.importorskip("lerobot")
 from lerobot.configs.types import FeatureType, PolicyFeature
 
 from oct_vla.policies.control_act import ControlACTConfig, ControlACTPolicy
-from oct_vla.policies.layerwise_attention import LayerwiseObjectAttention
+from oct_vla.policies.conditioning.kv import KVAttention
 
 class _EntityConfig:
     """The fields LayerwiseObjectAttention reads off a policy config."""
@@ -143,7 +143,7 @@ def test_the_encoder_gradient_is_the_derivative_of_the_loss():
     the two.
     """
     torch.manual_seed(3)
-    layer = LayerwiseObjectAttention(_EntityConfig(), 8, heads=2).double()
+    layer = KVAttention(_EntityConfig(), 8, heads=2).double()
     tokens = torch.randn(2, 5, 17, dtype=torch.float64)
     mask = torch.ones(2, 5, dtype=torch.bool)
     query = torch.randn(2, 2, 3, 4, dtype=torch.float64)
@@ -177,7 +177,7 @@ def test_the_encoder_gradient_is_the_derivative_of_the_loss():
 def test_padded_entities_contribute_no_gradient():
     """A zero row that still reaches the encoder would train it on padding."""
     torch.manual_seed(5)
-    layer = LayerwiseObjectAttention(_EntityConfig(), 8, heads=2)
+    layer = KVAttention(_EntityConfig(), 8, heads=2)
     with torch.no_grad():
         layer.to_k.weight.normal_(std=0.3)
         layer.to_v.weight.normal_(std=0.3)

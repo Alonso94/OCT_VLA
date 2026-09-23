@@ -5,13 +5,13 @@
 #   source ~/octvla/env-leftmost.sh
 #   PHASE=stage1 slurm/submit_vla_experiments.sh             # Q4: RGB, both regimes
 #   PHASE=stage2 REGIME_pi05=F REGIME_smolvla=J REGIME_groot=F \
-#     ARMS="rgb_cont entity adaln" slurm/submit_vla_experiments.sh   # Q1-Q3
+#     ARMS="rgb_cont kv kv_adaln" slurm/submit_vla_experiments.sh   # Q1-Q3
 #
 # DRY_RUN=1 prints what would be submitted.
 #
 # Cells are named <P><R>-<arm>-s<seed>: P the backbone (P pi0.5, S SmolVLA,
 # G GR00T), R the regime (F absolute EE, J absolute joint), arm as in the ACT
-# matrix (`entity` = layerwise). scripts/collect_final_results.py --prefix PF.
+# matrix. scripts/collect_final_results.py --prefix PF.
 #
 # Storage is the binding constraint (1 TB of vault): every run keeps its final
 # checkpoint only and drops its optimiser state (train_shelf_restock.sbatch);
@@ -49,13 +49,13 @@ after() { [ -n "$1" ] && [ "$1" != 0 ] && echo "--dependency=afterok:$1" || true
 exists() { [ -d "$OCTVLA_OUTPUT_ROOT/$1/checkpoints/last/pretrained_model" ]; }
 
 # stage1_run BACKBONE REGIME SEED -> the stage-1 run directory name
-stage1_run() { echo "${1}_rgb_full_s${3}_${TAG[$2]}"; }
+stage1_run() { echo "${1}_rgb_s${3}_${TAG[$2]}"; }
 
 # rollout TAG CHECKPOINT DATASET PROFILES MODEL_IDS AFTER [VAR=VALUE...]
 rollout() {
   local tag="$1" ckpt="$2" dataset="$3" profiles="$4" ids="$5" dep="$6"; shift 6
   [ "$#" -gt 0 ] && export "$@"
-  EVAL_CHECKPOINT="$ckpt" EVAL_VARIANT=rgb EVAL_DATASET="$dataset" EVAL_SEEDS=800-819 \
+  EVAL_CHECKPOINT="$ckpt" EVAL_DATASET="$dataset" EVAL_SEEDS=800-819 \
   EVAL_PROFILES="$profiles" EVAL_N_ACTION_STEPS=25 EVAL_MODEL_IDS="$ids" EVAL_TAG="$tag" \
   EVAL_VIDEO_DIR="$VIDEO_STAGE/$tag" EVAL_VIDEO_LABEL="$tag" \
     submit "${SB[@]}" --job-name="octvla-$tag" --time=08:00:00 $(after "$dep") \
@@ -98,7 +98,7 @@ if [ "$PHASE" = stage1 ]; then
     done
   done
 elif [ "$PHASE" = stage2 ]; then
-  ARMS="${ARMS:?Set ARMS, e.g. \"rgb_cont entity adaln\"}"
+  ARMS="${ARMS:?Set ARMS, e.g. \"rgb_cont kv kv_adaln\"}"
   ROLLOUTS="${ROLLOUTS:-seen count}"
   for backbone in $BACKBONES; do
     var="REGIME_$backbone"; regime="${!var:?Set $var to F or J, the regime stage 1 favoured}"
@@ -123,10 +123,8 @@ $OCTVLA_POLICY_PYTHON -u scripts/merge_stage1_adapter.py --stage1 $stage1 \
       fi
       for arm in $ARMS; do
         case "$arm" in
-          rgb_cont)  arm_env=(TRAIN_VARIANT=rgb) ;;
-          entity)    arm_env=(TRAIN_VARIANT=object OBJECT_REPRESENTATION=entity_v2) ;;
-          adaln)     arm_env=(TRAIN_VARIANT=object OBJECT_REPRESENTATION=entity_v2 OBJECT_ADALN=1) ;;
-          incontext) arm_env=(TRAIN_VARIANT=object OBJECT_REPRESENTATION=entity_v2 OBJECT_INCONTEXT=1) ;;
+          rgb_cont)               arm_env=(TRAIN_VARIANT=rgb) ;;
+          kv|kv_adaln|kv_tokens)  arm_env=(TRAIN_VARIANT=object CONDITIONING="$arm") ;;
           *) echo "Unknown arm $arm" >&2; exit 2 ;;
         esac
         cell="$prefix-$arm-s$seed"
@@ -140,9 +138,8 @@ $OCTVLA_POLICY_PYTHON -u scripts/merge_stage1_adapter.py --stage1 $stage1 \
         echo "$cell: check $check -> train $dep"; jobs=$((jobs + 2))
         # The name train_shelf_restock.sbatch will give the run.
         case "$arm" in
-          rgb_cont) run2="${backbone}_rgb_full_s${seed}_${tag}" ;;
-          entity)   run2="${backbone}_object_full_s${seed}_layerwise_entity_v2_${tag}" ;;
-          *)        run2="${backbone}_object_full_s${seed}_layerwise_entity_v2_${arm}_${tag}" ;;
+          rgb_cont) run2="${backbone}_rgb_s${seed}_${tag}" ;;
+          *)        run2="${backbone}_${arm}_s${seed}_${tag}" ;;
         esac
         ckpt="$OCTVLA_OUTPUT_ROOT/$run2/checkpoints/last/pretrained_model"
         for r in $ROLLOUTS; do

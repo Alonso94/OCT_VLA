@@ -1,13 +1,15 @@
-"""Object-conditioned GR00T N1.7.
+"""Where each arm attaches in GR00T N1.7's diffusion action head.
 
-GR00T's action embedding comes from `GR00TN17ActionHead.action_encoder`, a
-`MultiEmbodimentActionEncoder` returning `[B, horizon, input_embedding_dim]` --
-the same shape X-VLA and VLA-JEPA produce, so the residual attaches with the
-same forward hook and no new mechanism. See `ObjectConditioning.attach_to`.
+* ``kv``: the KV term in every DiT attention layer, before its native output
+  projection (``conditioning.hosts.install_diffusers_kv``).
+* ``kv_adaln``: the pooled scene added to the DiT's timestep embedding, which
+  every block's AdaLayerNorm and the output norm are modulated by.
+* ``kv_tokens``: the entities prepended to the DiT sequence and stripped from
+  its output.
 
-`object_module_path` is `_groot_model.action_head`: the policy holds its model
-under a private attribute, and the width lives on the head rather than on the
-config, which states it only through the checkpoint's architecture.
+The policy keeps its model on a private attribute and embeds actions in the
+head, so `object_module_path` is ``_groot_model.action_head``. Checkpoints are
+slim: the frozen backbone is rebuilt from the base model, not saved.
 """
 
 from __future__ import annotations
@@ -18,12 +20,14 @@ import torch
 from lerobot.policies.groot.modeling_groot import GrootPolicy
 from torch import Tensor
 
+from oct_vla.policies.conditioning.adaln import SceneVector
+from oct_vla.policies.conditioning.hosts import install_diffusers_kv
+from oct_vla.policies.conditioning.tokens import EntityTokens, scene_inputs
 from oct_vla.policies.object_conditioning import (
     ObjectConditionedPolicyMixin,
     ObjectConditioning,
     unwrap_object_conditioning,
 )
-from oct_vla.policies.vla_branches import scene_inputs
 from oct_vla.policies.slim_groot.modeling_slim_groot import GROOT_BACKBONE
 from oct_vla.policies.stage_loading import SlimCheckpointMixin
 
@@ -50,19 +54,14 @@ class ControlGrootPolicy(SlimCheckpointMixin, ObjectConditionedPolicyMixin, Groo
         super().__init__(config, **kwargs)
         head = self._groot_model.action_head
         head.object_conditioning = ObjectConditioning(config, head.input_embedding_dim)
-        if config.object_injection_mode == "layerwise":
-            from oct_vla.policies.layerwise_backbones import install_diffusers_layerwise
-
-            self._object_hooks = install_diffusers_layerwise(
-                head.model, head.object_conditioning, conditioning_owner=head
-            )
-        else:
-            self._object_hook = head.object_conditioning.attach_to(head.action_encoder)
+        self._object_hooks = install_diffusers_kv(
+            head.model, head.object_conditioning, conditioning_owner=head
+        )
         self._branch_hooks = []
         self._incontext_count = 0
-        if getattr(config, "object_adaln", False):
+        if config.object_conditioning == "kv_adaln":
             self._install_adaln(config, head)
-        if getattr(config, "object_incontext", False):
+        if config.object_conditioning == "kv_tokens":
             self._install_incontext(config, head)
 
     def _control(self):
@@ -76,8 +75,6 @@ class ControlGrootPolicy(SlimCheckpointMixin, ObjectConditionedPolicyMixin, Groo
         action model through its pretrained modulation layers, as DiT does a
         class label. Zero-initialised, so step 0 is stage 1 exactly.
         """
-        from oct_vla.policies.layerwise_attention import SceneVector
-
         encoder = head.model.timestep_encoder
         dim = encoder.timestep_embedder.linear_2.out_features
         head.object_conditioning.adaln = SceneVector(config, head.input_embedding_dim, dim)
@@ -102,9 +99,7 @@ class ControlGrootPolicy(SlimCheckpointMixin, ObjectConditionedPolicyMixin, Groo
         the real entities are inserted, which requires every row of a batch to
         hold the same number -- true of each object-count profile, and checked.
         """
-        from oct_vla.policies.layerwise_attention import InContextEntities
-
-        head.object_conditioning.incontext = InContextEntities(config, head.input_embedding_dim)
+        head.object_conditioning.incontext = EntityTokens(config, head.input_embedding_dim)
         model = head.model
 
         def before(module, args, kwargs):
@@ -158,7 +153,7 @@ class ControlGrootPolicy(SlimCheckpointMixin, ObjectConditionedPolicyMixin, Groo
         targets = super()._get_default_peft_targets()
         # These are fresh embodiment-specific projections, not pretrained
         # weights to approximate with LoRA. Keep them fully trainable and in
-        # the adapter checkpoint alongside the layerwise object modules.
+        # the adapter checkpoint alongside the object modules.
         saves = list(targets.get("modules_to_save", []))
         saves.extend(
             f"_groot_model.action_head.{name}"
