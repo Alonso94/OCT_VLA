@@ -104,6 +104,11 @@ class ShelfRestockTask(Base_Task):
 
     spec: ShelfRestockSpec = DEFAULT_SPEC
     object_count: int = 3
+    #: How many objects' worth of x positions to draw before keeping
+    #: `object_count` of them; None means exactly `object_count`. Reported to
+    #: the evaluator as `layout`.
+    layout_count: int | None = None
+    layout: str = "independent"
 
     def setup_demo(self, **kwargs: Any) -> None:
         self._episode_seed = kwargs.get("seed", 0)
@@ -250,15 +255,22 @@ class ShelfRestockTask(Base_Task):
         already lower-bounds the Euclidean distance whatever y is sampled.
         """
         low, high = spec.object_variation.position_x_range
-        reserved = MIN_OBJECT_SEPARATION * (self.object_count - 1)
+        drawn = self.layout_count or self.object_count
+        reserved = MIN_OBJECT_SEPARATION * (drawn - 1)
         free = (high - low) - reserved
         if free < 0:
             raise RuntimeError(
-                f"cannot fit {self.object_count} objects {MIN_OBJECT_SEPARATION}m apart "
+                f"cannot fit {drawn} objects {MIN_OBJECT_SEPARATION}m apart "
                 f"in an x span of {high - low:.3f}m; widen position_x_range or spawn fewer"
             )
-        offsets = sorted(rng.uniform(0.0, free) for _ in range(self.object_count))
+        offsets = sorted(rng.uniform(0.0, free) for _ in range(drawn))
         positions = [low + offset + i * MIN_OBJECT_SEPARATION for i, offset in enumerate(offsets)]
+        if drawn > self.object_count:
+            # A sparser scene cut from a denser layout: keep the leftmost -- the
+            # first target -- and a random subset of the rest, so the first
+            # target's x is distributed exactly as in the denser profile.
+            kept = sorted(rng.sample(range(1, drawn), self.object_count - 1))
+            positions = [positions[0]] + [positions[i] for i in kept]
         # Decouple spatial order from object index so obj_0 is not always leftmost.
         rng.shuffle(positions)
         return positions
@@ -293,15 +305,22 @@ class ShelfRestockTask(Base_Task):
         return position
 
 
-# Count-shift profiles. They deliberately inherit `spec` rather than defining
-# their own: the shared spawn span is already sized for the largest of them
-# (see DEFAULT_SPEC), so `object_count` is the only thing that differs and a
-# count-shift result cannot be confounded by a change of geometry. Never used
-# for training data -- ShelfRestockTask itself is the training profile.
+# Count-shift profiles. They inherit `spec`, so the geometry is shared, but a
+# shared spawn span does not make object count the only difference: the
+# sampler reserves 0.15 m per gap, and the leftmost object -- always the first
+# target -- ranges over [-0.49, -0.17] with two objects, [-0.49, -0.32] with
+# three and [-0.49, -0.47] with four. Two independently drawn objects put the
+# first grasp up to 15 cm outside anything three-object training showed; four
+# stay inside that support, only denser at its left edge. So the two-object
+# profile draws a three-object layout and drops one of the later objects,
+# which makes its first target's distribution identical to training. Never
+# used for training data -- ShelfRestockTask itself is the training profile.
 class ShelfRestockTwoObjectTask(ShelfRestockTask):
-    """Sparse count-shift evaluation profile."""
+    """Sparse count-shift evaluation profile, nested in the training layout."""
 
     object_count = 2
+    layout_count = 3
+    layout = "nested_in_3"
 
 
 class ShelfRestockFourObjectTask(ShelfRestockTask):

@@ -71,3 +71,57 @@ def test_full_run_split_normalizes_selected_training_only(tmp_path, monkeypatch)
     assert manifest["train"]["seeds"] == [100]
     assert manifest["val"]["seeds"] == [200]
     assert len(manifest["entity_normalization_training_sources"]) == 1
+
+
+def _paired_corpus(root, model_ids):
+    """A paired collection: each seed holds two clips and the full run."""
+    for seed, model_id in model_ids.items():
+        for name, kind in (("episode_0", "atomic_restock"), ("episode_1", "atomic_restock"),
+                           ("episode_full", "full_run")):
+            path = root / f"seed_{seed}" / name
+            path.mkdir(parents=True)
+            metadata = {"episode_kind": kind, "model_ids": str(model_id), "paired_run": "true"}
+            (path / "episode.json").write_text(json.dumps({"metadata": metadata}))
+
+
+def _build(monkeypatch, tmp_path, canonical, name, *extra):
+    captured = {}
+
+    def export(sources, output, **kwargs):
+        captured["sources"] = list(sources)
+        output.mkdir()
+        return SimpleNamespace(exported=sources, skipped=[], output=output)
+
+    monkeypatch.setattr(lerobot_export, "export_episodes", export)
+    output = tmp_path / name
+    monkeypatch.setattr("sys.argv", ["build", "--canonical-root", str(canonical),
+                                     "--output", str(output), "--repo-id", "local/t", *extra])
+    assert _module.main() == 0
+    return captured["sources"], json.loads((output / "split_manifest.json").read_text())
+
+
+def test_paired_views_hold_the_same_runs_and_a_declared_holdout(tmp_path, monkeypatch):
+    canonical = tmp_path / "canonical"
+    _paired_corpus(canonical, {100: 1, 101: 6, 102: 3, 200: 2, 201: 0})
+    atomic, a = _build(monkeypatch, tmp_path, canonical, "a", "--episode-kind", "atomic",
+                       "--holdout-model-ids", "0,5,6")
+    full, f = _build(monkeypatch, tmp_path, canonical, "f", "--episode-kind", "full_run",
+                     "--holdout-model-ids", "0,5,6")
+    assert {p.name for p in full} == {"episode_full"}
+    assert {p.name for p in atomic} == {"episode_0", "episode_1"}
+    for split in ("train", "val"):
+        assert a[split]["seeds"] == f[split]["seeds"]
+    assert a["train"]["seeds"] == [100, 102] and a["val"]["seeds"] == [200]
+    assert a["identity_holdout"]["seeds"] == [101, 201]
+    assert a["identity_holdout"]["model_ids"] == [0, 5, 6]
+
+
+def test_a_paired_corpus_refuses_to_export_both_kinds_at_once(tmp_path, monkeypatch):
+    canonical = tmp_path / "canonical"
+    _paired_corpus(canonical, {100: 1, 200: 2})
+    monkeypatch.setattr("sys.argv", ["build", "--canonical-root", str(canonical),
+                                     "--output", str(tmp_path / "x"), "--repo-id", "local/t"])
+    import pytest
+
+    with pytest.raises(SystemExit, match="mixes episode kinds"):
+        _module.main()

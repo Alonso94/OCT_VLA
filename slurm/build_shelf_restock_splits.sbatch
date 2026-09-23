@@ -49,6 +49,9 @@ if [ -n "${MAX_ENTITIES:-}" ]; then ARGS+=(--max-entities "$MAX_ENTITIES"); fi
 # Whole object identities withheld from training, so an evaluation can separate
 # "learned the task" from "learned the object".
 if [ -n "${IDENTITY_HOLDOUT:-}" ]; then ARGS+=(--identity-holdout "$IDENTITY_HOLDOUT"); fi
+# The declared alternative: hold out these model ids (e.g. 0,6, the evaluation's
+# heldout tier) instead of the N rarest geometries.
+if [ -n "${HOLDOUT_MODEL_IDS:-}" ]; then ARGS+=(--holdout-model-ids "$HOLDOUT_MODEL_IDS"); fi
 if [ -n "${EPISODE_KIND:-}" ]; then ARGS+=(--episode-kind "$EPISODE_KIND"); fi
 if [ -n "${MAX_RUNS:-}" ]; then ARGS+=(--max-runs "$MAX_RUNS"); fi
 

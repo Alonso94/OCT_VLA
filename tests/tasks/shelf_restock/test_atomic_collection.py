@@ -321,3 +321,35 @@ def test_full_run_report_does_not_assume_atomic_metadata(tmp_path):
     assert report["transfers"] == "2"
     assert "neighbour" not in report
     assert read_episode(Path(report["path"])).success is True
+
+
+def test_a_paired_run_writes_clips_and_full_run_without_collision(tmp_path):
+    """A paired collection holds both representations of one oracle run in one
+    seed directory; the full run must not overwrite clip 0, and the clips keep
+    their own numbering."""
+    from oct_vla.tasks.shelf_restock.collect import _write_clips
+
+    base = demo_episode(4, "obj_0", None)
+    full = Episode(
+        samples=base.samples, seed=4, instruction=base.instruction, success=True,
+        metadata={"episode_kind": "full_run", "transfers": "2", "paired_run": "true"},
+    )
+    clips = (demo_episode(4, "obj_0", None), demo_episode(4, "obj_1", "obj_0"))
+    reports = _write_clips(tmp_path, 4, (full, *clips))
+    names = sorted(Path(r["path"]).name for r in reports)
+    assert names == ["episode_0004_0", "episode_0004_1", "episode_0004_full"]
+    assert [r["clip"] for r in reports] == ["full", 0, 1]
+
+
+def test_collect_dataset_passes_paired_through(tmp_path, monkeypatch):
+    kinds = []
+
+    def fake_collect_episode(port, *, seed, spec, hz, episode_kind="atomic"):
+        kinds.append(episode_kind)
+        return (demo_episode(seed, "obj_0", None),)
+
+    monkeypatch.setattr("oct_vla.tasks.shelf_restock.collect.collect_episode", fake_collect_episode)
+    collect_dataset(port=None, directory=tmp_path, seeds=(0,), episode_kind="paired")
+    assert kinds == ["paired"]
+    with pytest.raises(ValueError):
+        collect_dataset(port=None, directory=tmp_path, seeds=(0,), episode_kind="both")

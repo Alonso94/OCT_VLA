@@ -145,6 +145,10 @@ def run_episode(
         # asked for. The difference between those two is how an identity
         # tier once went unapplied for a whole matrix without a trace.
         "model_ids": sorted(set(observation.model_ids.values())),
+        "layout": observation.layout,
+        # Where each object's transfer stopped, from ground truth; filled from
+        # the final step (tasks/shelf_restock/events.py).
+        "events": {},
     }
     # Carried across steps so the velocity block is a backward difference of
     # consecutive observations, the same quantity the exporter differenced.
@@ -181,6 +185,7 @@ def run_episode(
             infeasible_steps=outcome.infeasible_steps,
             objects_lifted=max(result["objects_lifted"], outcome.objects_lifted),
             objects_total=outcome.objects_total or result["objects_total"],
+            events=outcome.events or result["events"],
         )
         if video is not None:
             video.add(observation, {

@@ -24,7 +24,11 @@ case "$COLLECTION_PROFILE" in
 esac
 
 EPISODE_KIND="${EPISODE_KIND:-atomic}"
-case "$EPISODE_KIND" in atomic|full_run) ;; *) echo "Invalid EPISODE_KIND" >&2; exit 2 ;; esac
+# paired: clips and the continuous run from one oracle execution, side by side
+# in the seed directory, so an atomic-vs-full-run comparison differs only in
+# episode boundaries. Two collections of the same seeds do not: cuRobo's
+# planning is stochastic and a seed does not reproduce its trajectory.
+case "$EPISODE_KIND" in atomic|full_run|paired) ;; *) echo "Invalid EPISODE_KIND" >&2; exit 2 ;; esac
 SEED="${SLURM_ARRAY_TASK_ID:?Slurm array index is required}"
 DESTINATION="$OCTVLA_COLLECTION_ROOT/$COLLECTION_PROFILE/seed_$SEED"
 if [ "$EPISODE_KIND" = full_run ]; then

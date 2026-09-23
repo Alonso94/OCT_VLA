@@ -45,6 +45,10 @@ class RemoteObservation:
     #: track_id -> spawned mesh variant. Reported on reset only; empty after a
     #: step, and empty from a server too old to report it.
     model_ids: dict[str, int] = field(default_factory=dict)
+    #: How the scene's positions were drawn ("independent", or "nested_in_3"
+    #: for a two-object scene cut from a three-object layout). Reset only; empty
+    #: from a server too old to report it.
+    layout: str = ""
 
     def frame(self, name: str) -> RGBFrame:
         try:
@@ -73,6 +77,9 @@ class StepResult:
     objects_lifted: int = 0
     #: Objects in the scene, so the three scores can be read as fractions.
     objects_total: int = 0
+    #: Per-object ground-truth transfer stages (tasks/shelf_restock/events.py),
+    #: on the final step only. Diagnostic; never an input to the policy.
+    events: dict = field(default_factory=dict)
 
 
 def _observation(message: protocol.Message) -> RemoteObservation:
@@ -95,6 +102,7 @@ def _observation(message: protocol.Message) -> RemoteObservation:
         context=context_from_json(header["context"]),
         supports=supports_from_json(header.get("supports", [])),
         model_ids={str(k): int(v) for k, v in (header.get("model_ids") or {}).items()},
+        layout=str(header.get("layout", "")),
     )
 
 
@@ -210,6 +218,7 @@ class ShelfRestockEvalClient:
             infeasible_steps=int(message.header.get("infeasible_steps", 0)),
             objects_lifted=int(message.header.get("objects_lifted", 0)),
             objects_total=int(message.header.get("objects_total", 0)),
+            events=dict(message.header.get("events") or {}),
         )
 
     def close(self) -> None:

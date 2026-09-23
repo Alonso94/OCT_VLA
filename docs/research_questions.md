@@ -81,6 +81,16 @@ Before 2026-09-23 these were called `kv`, `kv_adaln`, `kv_tokens` and
    is scored from `checkpoints/last`.
 3. **Oracle ceiling.** Scores are read against each cell's own oracle ceiling,
    not against 100 %.
+4. **Two-object layout.** The spawn sampler reserves 0.15 m per gap in a
+   0.47 m strip, so the leftmost object -- always the first target -- ranges
+   over [-0.49, -0.17] with two objects, [-0.49, -0.32] with three and
+   [-0.49, -0.47] with four. An independently drawn two-object scene puts the
+   first grasp up to 15 cm outside anything training showed. The two-object
+   profile now draws a three-object layout and drops one of the later objects
+   (`layout = "nested_in_3"`), so its first target is identical per seed to the
+   three-object one. The server reports the layout, and the collector drops
+   two-object episodes recorded without it. Four objects stay inside the
+   training support, only denser at its left edge.
 
 ---
 
@@ -179,13 +189,18 @@ transfers per episode [min–max across seeds]:
 Success is 0 at four objects for every arm and seed. At two objects it is at
 most 0.3/20.
 
-**Reading.**
-- **No arm generalises off the trained count,** and conditioning does not change
-  that.
+**The two-object column is confounded and is being re-run** (§3, item 4): its
+first target was drawn up to 15 cm outside the three-object training support.
+Its collapse (T1 | lift about 0.2) may be a target-position shift, not a count
+effect. The collector now drops these episodes; the re-run uses the nested
+layout.
+
+**Reading, four objects only until then.**
+- **No arm transfers its three-object skill to four,** and conditioning does
+  not change that. The four-object first target lies inside the training
+  support, so this is not the position confound.
 - At four objects the encoder-side arms are *worse* than `kv`: ≥1 transfer
   0.40 → 0.18 for both, p = 0.019 (AdaLN) and p = 0.015 (in-context).
-- **Two objects is harder than three for every arm.** The trained count is the
-  best case, both above and below it.
 
 ### 4.4 Q4: control regime
 
@@ -227,8 +242,9 @@ is possible from rates at zero.
 Before changing the conditioning again, three measurements, none needing new
 rollouts.
 
-**Stage-wise survival** (`collect_final_results.py`, STAGES section). Pooled
-over 3 seeds × 20 scenes, three objects, seen identities:
+**Stage-wise survival** (`collect_final_results.py`, STAGES section, which
+prints raw counts, a 95 % Wilson interval and every training seed separately).
+Pooled over 3 seeds × 20 scenes, three objects, seen identities:
 
 | arm | lift | T1 \| lift | T2 \| T1 | T3 \| T2 | task success |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -246,9 +262,11 @@ Reading:
   problem, which conditioning partly repairs.
 - **The weakest link in every arm is the first lift → transfer** (0.54–0.70).
   That points at grasp and release timing, not at object identity.
-- **With two objects even the first transfer collapses** (T1 | lift about 0.2,
-  against about 0.55 with three). That is a distribution shift from the trained
-  count, not compounding.
+- **Later stages rest on small denominators.** `kv_tokens`' T3 | T2 is 14/22,
+  95 % CI [0.43, 0.80], and 0.25, 0.67 and 1.00 on its three seeds; `rgb`'s is
+  2/8, CI [0.07, 0.59]. The stage-wise *shape* is a lead, not a result.
+- With two objects the first transfer collapses (T1 | lift about 0.2), but
+  that scene layout was confounded (§3, item 4) and is being re-run.
 
 **Atomic clips and ACT chunking.** Training cuts each run into three atomic
 clips, and targets past a clip's end are masked (`action_is_pad`). With chunk
@@ -261,8 +279,23 @@ unsupervised actions on average. So the policy executes actions that had no
 target in training, exactly around the switch to the next object.
 
 **The CVAE latent collapses.** ACT's KL term falls to 0.005 by 10 k steps and
-0.000 by 40 k, identically on all three seeds. The latent carries nothing.
-ControlVLA attributes ACT's weakness in low data to exactly this.
+0.000 by 40 k, identically on all three seeds. The latent carries nothing, so
+the decoder is already close to a deterministic policy. Collapse shows the
+latent is *unused*, not that it *hurts*: `rgb_novae` asks whether removing an
+unused stochastic pathway changes optimisation or seed stability, and an
+unchanged result would be unsurprising.
+
+**Where lifted objects fail.** The server now tracks, per object and from
+ground truth never shown to the policy, the first step it was lifted, brought
+over the upper deck and placed, and whether it was still in hand
+(`tasks/shelf_restock/events.py`; in hand means within 0.17 m of an
+end-effector, calibrated on oracle clips, where a carried object sits at
+0.140–0.152 m). Each lifted object that is not restocked at the end is
+classed as dropped before the shelf, carried but never brought over it,
+brought over it and never released (held) or dropped, or placed then lost.
+The collector's FAILURE MODES section counts them. The fix differs by mode: a
+gripper classification head only helps if objects are lost in hand or never
+released. No rollout carries this yet; every rollout from here does.
 
 ### 4.6 The baseline rescue study (running)
 
@@ -270,17 +303,30 @@ Plain RGB ACT, one variable at a time, before any more conditioning:
 
 | study | arm / prefix | what differs | status |
 | --- | --- | --- | --- |
-| continuous runs | `AF-rgb` vs `CF-rgb` | atomic clips vs full runs, recollected with the current code from the **same** 200 seeds, identical export | collection → build → view → train → rollouts queued |
+| continuous runs | `AF-rgb` vs `CF-rgb` | atomic clips vs full runs **from the same oracle executions**, identical export | paired collection → two builds → views → train → rollouts queued |
 | no CVAE | `F-rgb_novae` vs `F-rgb` | `use_vae=false`, same data and recipe | queued |
+| two-object layout | every Stage A cell | the count job re-run on the nested layout | queued |
 
-Both corpora are recollected because the current scene sampler draws one
-random number more per object than the September collection did: same scene
-distribution, but each seed's y positions differ. So the old atomic corpus is
-not a like-for-like control.
+**One collection, two exports.** Collecting the same seeds twice does not
+reproduce a trajectory, since cuRobo's planning is stochastic. So each seed is
+run once (`EPISODE_KIND=paired`) and written both as its atomic clips and as
+the continuous run. The two datasets then differ only in episode boundaries,
+padding and the boundary frames atomic cutting drops. The corpus is new
+rather than the old one re-exported because the current sampler draws one
+more random number per object than the September collection did: same
+distribution, different per-seed scenes.
+
+**The identity partition is declared, not ranked.** The old builder held out
+the two rarest geometries, which a recollection can reshuffle; the evaluation
+tiers are pinned to model ids. Collection now records each scene's model ids,
+and the build holds out `HOLDOUT_MODEL_IDS=0,5,6`: the heldout tier plus the
+novel variant, should the oracle ever collect it.
 
 **Next, only if these do not fix it** (in this order):
 - ACT with two observations and a short chunk (16–24, executing 5–8);
-- a gripper classification head, since lift → transfer is the weakest stage;
+- a gripper classification head, since lift → transfer is the weakest stage --
+  but only if the failure modes put the loss in the gripper (dropped in
+  transit, or never released), not in the reach;
 - a scene-geometric rather than history-based previous-neighbour rule, so the
   oracle's labels are Markov in the observation.
 
@@ -314,6 +360,12 @@ delta. VLA matrices put the backbone first: `P` pi0.5, `S` SmolVLA, `G` GR00T
 
 ## Update log
 
+- **2026-09-23 (late).** Review of the stage-wise result. The two-object
+  profile was spatially confounded (§3, item 4), so it is now nested in the
+  three-object layout and re-run. Atomic vs full-run is now paired from one
+  oracle execution. The identity holdout is declared by model id. Rollouts
+  carry per-object ground-truth failure modes, and the stage table prints
+  counts, Wilson intervals and per-seed rows.
 - **2026-09-23 (night).** Stage-wise diagnostics (§4.5). Conditioned arms fail
   by compounding local error, `rgb` by sequencing; lift → transfer is the
   weakest stage; atomic-clip padding and a collapsed CVAE confirmed. The

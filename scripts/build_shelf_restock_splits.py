@@ -202,6 +202,46 @@ def partition_by_identity(train, val, holdout):
     )
 
 
+def model_ids_of(clip: Path) -> frozenset[int]:
+    """The mesh variants the clip's scene held, as recorded at collection."""
+    recorded = json.loads((clip / "episode.json").read_text()).get("metadata", {}).get("model_ids")
+    if recorded is None:
+        raise SystemExit(
+            f"{clip} records no model_ids; it predates the field, so a declared "
+            "partition cannot be applied -- use --identity-holdout N on it instead"
+        )
+    return frozenset(int(v) for v in recorded.split(",") if v)
+
+
+def partition_by_model_ids(train, val, holdout_ids):
+    """Move every clip whose scene holds a declared held-out variant out of
+    training. Declared, not ranked: `partition_by_identity` holds out the
+    rarest geometries, so a recollection can change *which* identities are
+    held out, and the evaluation tiers are pinned to model ids.
+    """
+    held = frozenset(holdout_ids)
+    counts = {}
+    for clip in train + val:
+        for model_id in model_ids_of(clip):
+            counts[model_id] = counts.get(model_id, 0) + 1
+    print("identity split (declared):")
+    for model_id in sorted(counts):
+        side = "HELD OUT" if model_id in held else "train"
+        print(f"  model_id {model_id}  {counts[model_id]:>4} clips  {side}")
+    missing = held - set(counts)
+    if missing == held:
+        raise SystemExit(f"no held-out model id {sorted(held)} appears in any clip; a typo?")
+    if missing:
+        # Legitimate for a variant the oracle cannot plan (5 has never
+        # collected): declaring it keeps it out of training if it ever does.
+        print(f"  note: held-out model ids {sorted(missing)} appear in no clip")
+    return (
+        [c for c in train if not model_ids_of(c) & held],
+        [c for c in val if not model_ids_of(c) & held],
+        [c for c in train + val if model_ids_of(c) & held],
+    )
+
+
 def main() -> int:
     from oct_vla.data.lerobot_export import export_episodes
 
@@ -219,6 +259,13 @@ def main() -> int:
         "first, so an evaluation can separate 'learned the task' from 'learned "
         "the object'. The seed-based scene split is unaffected and still "
         "provides the IID signal.",
+    )
+    parser.add_argument(
+        "--holdout-model-ids",
+        default="",
+        help="Comma-separated mesh variants to hold out of training, declared "
+        "before export (e.g. 0,6 to match the evaluation's heldout tier). "
+        "Needs clips that record model_ids; excludes --identity-holdout.",
     )
     parser.add_argument("--max-entities", type=int, default=16)
     parser.add_argument("--episode-kind", choices=["any", "atomic", "full_run"], default="any")
@@ -267,6 +314,18 @@ def main() -> int:
 
     blocks = SPLIT_BLOCKS[args.profile]
     grouped = collect_clips(args.canonical_root, blocks)
+    kinds = {
+        json.loads((path / "episode.json").read_text())
+        .get("metadata", {})
+        .get("episode_kind", "atomic_restock")
+        for paths in grouped.values()
+        for path in paths
+    }
+    if args.episode_kind == "any" and len(kinds) > 1:
+        # A paired collection holds each run twice; exporting both would train
+        # on every trajectory twice over and call it one corpus.
+        raise SystemExit(f"{args.canonical_root} mixes episode kinds {sorted(kinds)}; "
+                         "pass --episode-kind atomic or full_run")
     if args.episode_kind != "any":
         expected = "atomic_restock" if args.episode_kind == "atomic" else "full_run"
         grouped = {
@@ -284,7 +343,14 @@ def main() -> int:
     if not train:
         raise SystemExit(f"No train clips found under {args.canonical_root}")
     identity_holdout = []
-    if args.identity_holdout:
+    holdout_model_ids = sorted(int(v) for v in args.holdout_model_ids.split(",") if v.strip())
+    if holdout_model_ids and args.identity_holdout:
+        raise SystemExit("--holdout-model-ids and --identity-holdout are alternatives")
+    if holdout_model_ids:
+        train, val, identity_holdout = partition_by_model_ids(train, val, holdout_model_ids)
+        if not train:
+            raise SystemExit("identity holdout removed every training clip")
+    elif args.identity_holdout:
         train, val, identity_holdout = partition_by_identity(train, val, args.identity_holdout)
         if not train:
             raise SystemExit("identity holdout removed every training clip")
@@ -383,6 +449,7 @@ def main() -> int:
             "count": len(identity_holdout),
             "geometries": sorted({variant_of(c) for c in identity_holdout}),
             "seeds": sorted({seed_of(p) for p in identity_holdout}),
+            "model_ids": holdout_model_ids or None,
         }
         if identity_holdout
         else None,

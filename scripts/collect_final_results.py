@@ -29,10 +29,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import statistics
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -126,8 +127,37 @@ def read(path: Path, prefix: str) -> list[dict]:
             "lift": episode.get("objects_lifted", 0) > 0,
             "lifted": int(episode.get("objects_lifted", 0)),
             "video": episode.get("video") or "",
+            "layout": episode.get("layout") or "",
+            # Per-object ground-truth outcome (tasks/shelf_restock/events.py);
+            # empty for rollouts recorded before the tracker existed.
+            "outcomes": [e["outcome"] for e in (episode.get("events") or {}).values()],
+            # Written under an arm's current name, not a pre-rename alias.
+            "canonical": match["arm"] in ARMS,
         })
     return rows
+
+
+#: Two-object scenes drawn independently put the first target up to 15 cm
+#: outside three-object training (robotwin_env.py); only the nested layout
+#: measures object count alone.
+COUNT_LAYOUT = {"two_object": "nested_in_3"}
+
+
+def drop_superseded(rows: list[dict]) -> tuple[list[dict], int]:
+    """One row per scored scene. A cell re-run under an arm's current name
+    (F-kv-...) after the rename supersedes the same scenes in its alias file
+    (F-entity-...), which would otherwise be counted twice."""
+    def key(r):
+        return (r["arm"], r["train_seed"], r["tier"], r["profile"], r["eval_seed"])
+
+    current = {key(r) for r in rows if r["canonical"]}
+    kept = [r for r in rows if r["canonical"] or key(r) not in current]
+    return kept, len(rows) - len(kept)
+
+
+def drop_confounded_layouts(rows: list[dict]) -> tuple[list[dict], int]:
+    kept = [r for r in rows if r["layout"] == COUNT_LAYOUT.get(r["profile"], r["layout"])]
+    return kept, len(rows) - len(kept)
 
 
 def per_seed(rows: list[dict]) -> dict[int, dict]:
@@ -188,6 +218,14 @@ def load(eval_dir: Path, prefix: str) -> tuple[list[dict], list[str]]:
             rows += read(path, prefix)
         except Rejected as error:
             rejected.append(str(error))
+    rows, superseded = drop_superseded(rows)
+    if superseded:
+        rejected.append(f"{superseded} episode(s) under a pre-rename arm name re-run under "
+                        "the current one; the re-run is kept")
+    rows, confounded = drop_confounded_layouts(rows)
+    if confounded:
+        rejected.append(f"{confounded} two-object episode(s) on the independent layout, "
+                        "whose first target lies outside training; re-run the count job")
     return rows, rejected
 
 
@@ -213,6 +251,11 @@ def row_line(label: str, sub: str, stats: dict[int, dict]) -> tuple[str, dict]:
 
 
 OBJECTS = {"two_object": 2, "three_object": 3, "four_object": 4}
+#: tasks/shelf_restock/events.OUTCOMES without the two that are not failures of
+#: a lifted object; copied rather than imported so this script needs no
+#: simulator-side module, and checked against it by the tests.
+FAILURE_ORDER = ("dropped_before_shelf", "carried_not_reached", "reached_not_placed_held",
+                 "reached_not_placed_dropped", "placed_then_lost")
 
 
 def stage_survival(rows: list[dict], objects: int) -> list[tuple[str, int, int]]:
@@ -235,11 +278,34 @@ def stage_survival(rows: list[dict], objects: int) -> list[tuple[str, int, int]]
     return stages
 
 
-def stage_line(label: str, sub: str, stages) -> str:
-    cells = "  ".join(
-        f"{name} {hit}/{n} ({hit / n:.2f})" if n else f"{name} -/0" for name, hit, n in stages
+def wilson(hit: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    """95% Wilson interval: sound at the small denominators later stages have."""
+    if not n:
+        return (0.0, 1.0)
+    p = hit / n
+    centre = (p + z * z / (2 * n)) / (1 + z * z / n)
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / (1 + z * z / n)
+    return (max(0.0, centre - half), min(1.0, centre + half))
+
+
+def stage_line(label: str, sub: str, stages, *, interval: bool = True) -> str:
+    def cell(name, hit, n):
+        if not n:
+            return f"{name} -/0"
+        lo, hi = wilson(hit, n)
+        return f"{name} {hit}/{n} {hit / n:.2f}" + (f" [{lo:.2f},{hi:.2f}]" if interval else "")
+
+    return f"{label:10} {sub:13} " + "  ".join(cell(*stage) for stage in stages)
+
+
+def failure_modes(rows: list[dict]) -> tuple[Counter, int]:
+    """Outcomes of every object that was lifted but did not stay restocked,
+    and how many episodes carried the tracker at all."""
+    tracked = [r for r in rows if r["outcomes"]]
+    modes = Counter(
+        o for r in tracked for o in r["outcomes"] if o not in ("placed", "never_lifted")
     )
-    return f"{label:10} {sub:13} {cells}"
+    return modes, len(tracked)
 
 
 def header(sub: str) -> str:
@@ -319,9 +385,43 @@ def main() -> int:
                 continue
             stages = stage_survival(chosen, objects)
             print(stage_line(arm, sub, stages))
-            table["stages"][f"{arm}/{sub}"] = [
-                {"stage": name, "reached": hit, "attempted": n} for name, hit, n in stages
-            ]
+            # Per training seed as well: seed variance exceeds every effect this
+            # project has measured, so a pooled rate can hide one seed carrying
+            # the stage.
+            by_seed = {}
+            for seed in sorted({r["train_seed"] for r in chosen}):
+                seed_stages = stage_survival(select(chosen, train_seed=seed), objects)
+                print(stage_line("", f"  s{seed}", seed_stages, interval=False))
+                by_seed[seed] = [
+                    {"stage": name, "reached": hit, "attempted": n}
+                    for name, hit, n in seed_stages
+                ]
+            table["stages"][f"{arm}/{sub}"] = {
+                "pooled": [
+                    {"stage": name, "reached": hit, "attempted": n,
+                     "wilson95": list(wilson(hit, n))}
+                    for name, hit, n in stages
+                ],
+                "per_seed": by_seed,
+            }
+        print()
+
+    # ---- where lifted objects fail -----------------------------------------
+    table["failure_modes"] = {}
+    lines = []
+    for arm in arms:
+        modes, tracked = failure_modes(pick(arm=arm, profile="three_object"))
+        if not tracked:
+            continue
+        total = sum(modes.values())
+        lines.append(f"{arm:10} {tracked:>4} ep  " + "  ".join(
+            f"{mode} {modes[mode]} ({modes[mode] / total:.2f})" for mode in FAILURE_ORDER
+            if modes[mode]
+        ) if total else f"{arm:10} {tracked:>4} ep  no lifted object was lost")
+        table["failure_modes"][arm] = {"episodes": tracked, **{m: modes[m] for m in FAILURE_ORDER}}
+    if lines:
+        print("FAILURE MODES (three objects; objects lifted but not restocked at the end)")
+        print("\n".join(lines))
         print()
 
     # ---- object count, seen identities -----------------------------------

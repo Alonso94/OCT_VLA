@@ -54,6 +54,12 @@ class CollectionError(RuntimeError):
 #: standing in for it.
 PROFILE_NAMES = {2: "two_object", 3: "three_object", 4: "four_object"}
 
+#: What `collect_episode` returns for one run. "paired" writes both from the
+#: same oracle execution: re-running a seed does not reproduce its trajectory
+#: (cuRobo's planning is stochastic), so two separate collections of the same
+#: seeds differ in more than their episode boundaries.
+EPISODE_KINDS = ("atomic", "full_run", "paired")
+
 
 def profile_name(object_count: int) -> str:
     """The collection profile a scene of `object_count` objects belongs to."""
@@ -110,8 +116,8 @@ def collect_episode(
     see `collect_dataset` and `collect_n_atomic_demonstrations`, which sample
     a fresh seed instead.
     """
-    if episode_kind not in ("atomic", "full_run"):
-        raise ValueError("episode_kind must be 'atomic' or 'full_run'")
+    if episode_kind not in EPISODE_KINDS:
+        raise ValueError(f"episode_kind must be one of {EPISODE_KINDS}")
     port.reset(seed)
     task = port.task
 
@@ -205,8 +211,18 @@ def collect_episode(
     # label_at then finds no span for any of them, and build_episode sees zero
     # labelled frames.
     spans = label_spans(records)
+    # Which mesh variants the scene held. Recorded so an identity partition
+    # can be declared by model id before export, rather than rediscovered
+    # from how often each geometry happened to be collected.
+    spawned = getattr(task, "spawned_model_ids", None) or {}
+    run_metadata = {
+        "model_ids": ",".join(str(v) for v in sorted(set(spawned.values()))),
+        **({"paired_run": "true"} if episode_kind == "paired" else {}),
+        **(metadata or {}),
+    }
 
-    if episode_kind == "full_run":
+    episodes: list[Episode] = []
+    if episode_kind in ("full_run", "paired"):
         # Build from the original recorder stream.  Do not reconstruct this by
         # concatenating atomic clips: atomic construction intentionally drops
         # each terminal frame, which would silently remove transfer-boundary
@@ -225,15 +241,16 @@ def collect_episode(
                 "transfers": str(len(records)),
                 "hz": str(hz),
                 "dt": str(port.dt),
-                **(metadata or {}),
+                **run_metadata,
             },
         )
         problems = validate_episode(episode)
         if problems:
             raise CollectionError(f"seed {seed}: full run failed validation: {problems}")
-        return (episode,)
+        if episode_kind == "full_run":
+            return (episode,)
+        episodes.append(episode)
 
-    episodes: list[Episode] = []
     for index, (record, frames) in enumerate(atomic_clips(recorder.frames, records)):
         if not frames:
             raise CollectionError(f"seed {seed}: transfer {index} captured no frames")
@@ -261,7 +278,7 @@ def collect_episode(
                 "compacted": str(record.compacted).lower(),
                 "hz": str(hz),
                 "dt": str(port.dt),
-                **(metadata or {}),
+                **run_metadata,
             },
         )
         problems = validate_episode(episode)
@@ -277,8 +294,16 @@ def _write_clips(
     from oct_vla.data.store import write_episode
 
     reports = []
-    for index, episode in enumerate(episodes):
-        path = write_episode(episode, directory / f"episode_{seed:04d}_{index}")
+    clips = 0
+    for episode in episodes:
+        # A full run is named apart from the clips so a paired collection can
+        # hold both in one seed directory; builders select by metadata.
+        if episode.metadata.get("episode_kind") == "full_run":
+            name, index = f"episode_{seed:04d}_full", "full"
+        else:
+            name, index = f"episode_{seed:04d}_{clips}", clips
+            clips += 1
+        path = write_episode(episode, directory / name)
         report = {
             "seed": seed,
             "clip": index,
@@ -313,8 +338,8 @@ def collect_dataset(
     to attempt matter (e.g. reproducing a known batch); use
     `collect_n_atomic_demonstrations` when only the resulting count matters.
     """
-    if episode_kind not in ("atomic", "full_run"):
-        raise ValueError("episode_kind must be 'atomic' or 'full_run'")
+    if episode_kind not in EPISODE_KINDS:
+        raise ValueError(f"episode_kind must be one of {EPISODE_KINDS}")
     reports = []
     for seed in seeds:
         try:

@@ -25,8 +25,9 @@ def main() -> int:
     )
     parser.add_argument("--seeds", required=True, help="Comma-separated scene seeds")
     parser.add_argument(
-        "--episode-kind", choices=("atomic", "full_run"), default="atomic",
-        help="Store transfer clips (default) or the original continuous shelf-emptying run.",
+        "--episode-kind", choices=("atomic", "full_run", "paired"), default="atomic",
+        help="Store transfer clips (default), the original continuous shelf-emptying "
+        "run, or both from the same oracle execution (paired).",
     )
     args = parser.parse_args()
     # Every profile shares DEFAULT_SPEC and differs only in object_count, so

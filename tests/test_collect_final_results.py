@@ -19,11 +19,14 @@ _spec.loader.exec_module(collect)
 TIER_IDS = {"seen": [1, 2, 3, 4], "heldout": [0, 6], "novel": [5]}
 
 
-def write(tmp_path, name, transfers, *, tier="seen", profile="three_object", pinned=True):
+def write(tmp_path, name, transfers, *, tier="seen", profile="three_object", pinned=True,
+          layout=None):
     ids = TIER_IDS[tier]
+    if layout is None:
+        layout = collect.COUNT_LAYOUT.get(profile, "independent")
     episodes = [
         {"seed": 800 + i, "profile": profile, "success": t >= 3,
-         "transfers_completed": t, "objects_lifted": t,
+         "transfers_completed": t, "objects_lifted": t, "layout": layout,
          **({"model_ids": [ids[0]]} if pinned else {})}
         for i, t in enumerate(transfers)
     ]
@@ -126,3 +129,62 @@ def test_stage_survival_conditions_each_stage_on_the_one_before():
             [(True, 3), (True, 2), (True, 1), (True, 0), (False, 0)]]
     stages = collect.stage_survival(rows, 3)
     assert stages == [("lift", 4, 5), ("T1|lift", 3, 4), ("T2|T1", 2, 3), ("T3|T2", 1, 2)]
+
+
+def test_wilson_interval_brackets_the_rate_and_widens_with_few_trials():
+    lo, hi = collect.wilson(2, 8)
+    assert lo < 0.25 < hi
+    assert (hi - lo) > (lambda b: b[1] - b[0])(collect.wilson(20, 80))
+    assert collect.wilson(0, 0) == (0.0, 1.0)
+
+
+def test_independent_two_object_layout_is_dropped_but_nested_is_kept(tmp_path, capsys,
+                                                                     monkeypatch):
+    for seed in (1000, 1001):
+        write(tmp_path, f"F-rgb-s{seed}-seen", [1, 2])
+        write(tmp_path, f"F-rgb-s{seed}-count", [1, 0], profile="two_object",
+              layout="independent")
+    rows, rejected = collect.load(tmp_path, "F")
+    assert not [r for r in rows if r["profile"] == "two_object"]
+    assert any("independent layout" in line for line in rejected)
+    for seed in (1000, 1001):
+        report = json.loads((tmp_path / f"F-rgb-s{seed}-count.json").read_text())
+        for episode in report["episodes"]:
+            episode["layout"] = "nested_in_3"
+        (tmp_path / f"F-rgb-s{seed}-count.json").write_text(json.dumps(report))
+    rows, rejected = collect.load(tmp_path, "F")
+    assert len([r for r in rows if r["profile"] == "two_object"]) == 4 and not rejected
+
+
+def test_stages_are_reported_per_seed_and_failure_modes_counted(tmp_path, capsys, monkeypatch):
+    for seed, transfers in ((1000, [3, 1]), (1001, [0, 2])):
+        write(tmp_path, f"F-rgb-s{seed}-seen", transfers)
+    report = json.loads((tmp_path / "F-rgb-s1000-seen.json").read_text())
+    report["episodes"][1]["events"] = {
+        "obj_0": {"outcome": "placed"}, "obj_1": {"outcome": "dropped_before_shelf"},
+        "obj_2": {"outcome": "never_lifted"},
+    }
+    (tmp_path / "F-rgb-s1000-seen.json").write_text(json.dumps(report))
+    table, out = run(tmp_path, capsys, monkeypatch)
+    stages = table["stages"]["rgb/all"]
+    assert set(stages["per_seed"]) == {1000, 1001} or set(stages["per_seed"]) == {"1000", "1001"}
+    assert stages["pooled"][0]["reached"] == 3 and stages["pooled"][0]["attempted"] == 4
+    assert table["failure_modes"]["rgb"]["dropped_before_shelf"] == 1
+    assert table["failure_modes"]["rgb"]["episodes"] == 1
+    assert "FAILURE MODES" in out
+
+
+def test_failure_order_matches_the_tracker():
+    from oct_vla.tasks.shelf_restock.events import OUTCOMES
+
+    assert set(collect.FAILURE_ORDER) == set(OUTCOMES) - {"placed", "never_lifted"}
+
+
+def test_a_rerun_under_the_current_arm_name_supersedes_its_alias(tmp_path):
+    write(tmp_path, "F-entity-s1000-count", [1, 1])
+    write(tmp_path, "F-kv-s1000-count", [2, 2])
+    write(tmp_path, "F-entity-s1001-count", [0, 1])
+    rows, rejected = collect.load(tmp_path, "F")
+    by_seed = {s: [r["transfers"] for r in rows if r["train_seed"] == s] for s in (1000, 1001)}
+    assert by_seed == {1000: [2.0, 2.0], 1001: [0.0, 1.0]}
+    assert any("pre-rename" in line for line in rejected)

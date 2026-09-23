@@ -39,6 +39,7 @@ from oct_vla.tasks.shelf_restock.manager import (
     objects_lifted,
     objects_on_upper_shelf,
 )
+from oct_vla.tasks.shelf_restock.events import TransferEvents
 from oct_vla.tasks.shelf_restock.spec import DEFAULT_SPEC, ShelfRestockSpec
 
 # Measured stationary EEF poses in the demonstrations move by a few tenths of
@@ -195,6 +196,11 @@ class _Episode:
     #: (absolute joint targets, commanded directly). Declared at reset rather
     #: than inferred, so a mismatch is an error instead of a misreading.
     control_space: str = "cartesian"
+    #: Ground-truth transfer stages per object, for diagnosing where a transfer
+    #: fails (tasks/shelf_restock/events.py). Reported on the final step only.
+    events: TransferEvents | None = None
+    #: The end-effector state of the latest snapshot, which `events` needs.
+    last_eef: EEFState | None = None
 
 
 def _leashed_reference(commanded: EEFState | None, measured: EEFState) -> EEFState:
@@ -330,6 +336,7 @@ class ShelfRestockEvalServer:
     def _snapshot(self) -> tuple[dict, tuple[protocol.Blob, ...], ObjectScene]:
         observation = self._observe()
         scene = self._scene(observation)
+        self._episode.last_eef = observation.eef
         from oct_vla.data.entity_tokens import shelf_support_entities
         from oct_vla.serve.codec import supports_to_json
 
@@ -402,9 +409,15 @@ class ShelfRestockEvalServer:
             max_steps=max_steps,
             control_space=control_space,
             gripper_encoding=gripper_encoding,
+            events=TransferEvents(self._spec),
         )
         header, blobs, _ = self._snapshot()
         header["model_ids"] = spawned
+        # How the scene's x positions were drawn. The two-object profile's
+        # layout changed so its first target matches three-object training
+        # (robotwin_env.py); the evaluator records this so a result on the old
+        # layout cannot be pooled with one on the new.
+        header["layout"] = getattr(self._port.task, "layout", "independent")
         return header, blobs
 
     def _terminate(
@@ -419,6 +432,7 @@ class ShelfRestockEvalServer:
             detail=detail,
             transfers_completed=len(objects_on_upper_shelf(scene, episode.spec)),
             steps=episode.steps,
+            events=episode.events.report() if episode.events is not None else {},
         )
         return header, blobs
 
@@ -643,6 +657,8 @@ class ShelfRestockEvalServer:
         can never disagree about what counts as success."""
         header, blobs, scene = self._snapshot()
         episode.lifted_ever.update(objects_lifted(scene, episode.spec))
+        if episode.events is not None:
+            episode.events.update(episode.steps, scene, episode.last_eef)
         # Mirror collection's record_placement. Ordered by arrival, and sorted
         # within a step only so that two objects arriving in the same step are
         # recorded deterministically rather than in set order.
@@ -674,6 +690,8 @@ class ShelfRestockEvalServer:
             objects_lifted=len(episode.lifted_ever),
             objects_total=len(scene.objects),
         )
+        if header["done"] and episode.events is not None:
+            header["events"] = episode.events.report()
         return header, blobs
 
     def close(self) -> None:
