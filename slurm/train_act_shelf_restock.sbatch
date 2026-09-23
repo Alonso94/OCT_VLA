@@ -1,21 +1,8 @@
 #!/usr/bin/env bash
-# Train ACT on a shelf-restock dataset. Two roles, selected by the dataset:
-#
-#   RGB + joint deltas      -- a known-good architecture on the same data the
-#                              VLA arms use, to establish that SOMETHING solves
-#                              this task through this pipeline. Without it, a
-#                              zero from a VLA is uninterpretable: it could be
-#                              the policy, the data, or the task.
-#
-#   Privileged state only   -- object tokens as observation.environment_state,
-#                              no cameras. An upper bound: if privileged state
-#                              alone solves the task easily, the vision-based
-#                              comparison has little headroom and the sweep is
-#                              measuring noise (docs/experiment_sweep.md, §7.4).
-#
-# ACT rather than another VLA on purpose: it is small, trains in well under an
-# hour, and is the standard RoboTwin/ALOHA baseline, so a failure here points at
-# the data or the task rather than at an exotic policy.
+# Train ACT on a shelf-restock dataset view: stage 1 (`act`), the budget control
+# (`act` continued from stage 1), or a conditioned arm (`control_act`, with
+# CONDITIONING=kv|kv_adaln|kv_tokens, fine-tuned from stage 1 or from scratch).
+# Arms are queued by slurm/submit_final_experiments.sh; see docs/method.md.
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
@@ -36,11 +23,9 @@ SPLIT_MANIFEST="$DATASET/split_manifest.json"
 EVAL_SPLIT=$("$OCTVLA_POLICY_PYTHON" -c "import json,sys; print(json.load(open(sys.argv[1]))['eval_split'])" "$SPLIT_MANIFEST")
 
 # Refused rather than ignored: this variable once selected a "semantic" arm that
-# nothing read, so that arm trained the entity model under another name. The
-# datasets are v2 (17 columns) with no variant code, and control_act embeds v2
-# only, so there is no semantic path to select until a v3 export exists.
+# nothing read, so that arm trained the entity model under another name.
 if [ "${OBJECT_SEMANTICS:-0}" != 0 ]; then
-  echo "OBJECT_SEMANTICS is not wired: no v3 dataset or embedding exists" >&2
+  echo "OBJECT_SEMANTICS is not wired: there is no semantic entity yet" >&2
   exit 2
 fi
 ACT_POLICY_TYPE="${ACT_POLICY_TYPE:-act}"
@@ -132,7 +117,6 @@ cat > "$OCTVLA_OUTPUT_ROOT/run_metadata/${RUN_NAME}.json" <<JSON
   "conditioning": "${ACT_CONDITIONING:-rgb}",
   "stage": "${ACT_STAGE:-pretrain}",
   "pretrained_from": "${ACT_PRETRAINED:-}",
-  "token_mode": "full",
   "seed": ${TRAIN_SEED:-1000},
   "steps": ${TRAIN_STEPS:-40000},
   "batch_size": ${BATCH_SIZE:-8},

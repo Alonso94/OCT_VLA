@@ -7,7 +7,7 @@ re-planning from scratch toward a moving intermediate waypoint -- the "dense
 waypoint IK used as trajectory planning" anti-pattern the research plan warns
 against, and the thing that drove the arm into configurations whose next
 waypoint could not be planned even when both endpoints planned fine
-(docs/architecture.md).
+(docs/architecture.md (at tag stageA-2026-09-23)).
 
 The oracle is simulation-only and has no reason to imitate the policy's
 interface: it asks cuRobo for one trajectory and executes the interpolated
@@ -73,7 +73,7 @@ def check_contacts(port: NativePort, allow_contact_with: Collection[str] = ()) -
     A cuRobo `Success` is not evidence of a collision-free trajectory --
     trajopt collision avoidance is a soft cost, and executing a "successful"
     plan has been observed to leave the wrist jammed against the shelf
-    (docs/architecture.md). Checking afterwards is the only hard guarantee.
+    (docs/architecture.md (at tag stageA-2026-09-23)). Checking afterwards is the only hard guarantee.
 
     This inspects the state at the moment it is called, so it catches
     sustained contact (a jam) but not a transient brush that has already

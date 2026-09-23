@@ -5,7 +5,7 @@ RoboTwin sizes and loads cuRobo's collision-obstacle cache exactly once, in
 task-specific scene exists -- confirmed live: with no changes here, cuRobo's
 global planner has zero knowledge of this task's shelf or spawned objects,
 so a "successful" plan is not evidence of physical collision safety (see
-docs/architecture.md). ``MotionGen.update_world`` can only ever replace
+docs/architecture.md (at tag stageA-2026-09-23)). ``MotionGen.update_world`` can only ever replace
 obstacles up to the cache size fixed at construction time (a hard cuRobo
 limit when running with CUDA graphs, which RoboTwin does by default), so that
 size must be reserved *before* ``CuroboPlanner.__init__`` runs.

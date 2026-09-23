@@ -4,12 +4,12 @@ Pure data -- no SAPIEN, no RoboTwin. A scene builder instantiates a live
 scene FROM this spec; nothing here depends on it.
 
 `upper_shelf`'s position was corrected by live reachability sweeps against
-the real scene (docs/architecture.md), not derived analytically. The first
+the real scene (docs/architecture.md (at tag stageA-2026-09-23)), not derived analytically. The first
 choice -- center (0.0, 0.10, 1.05), i.e. y=0.10, top_z=1.065 -- failed a
 top-down global plan for *both* arms at every height/standoff tried, even
 though it was deliberately offset in y from the lower shelf/source region to
 avoid the old reference implementation's corridor-collision failure (0/545
-demo collection attempts; docs/shelf_restock_grasp_investigation.md in the
+demo collection attempts; docs/shelf_restock_grasp_investigation.md (at tag stageA-2026-09-23) in the
 old repo). A position/arm sweep found the actual limiting factor was height
 and forward (+y) reach, not which arm or x-position: targets around
 z=0.90-1.00, y=-0.05 to 0.00 landed within 5-10mm of the requested pose for
@@ -38,7 +38,7 @@ def _range(value: tuple[float, float], name: str) -> tuple[float, float]:
 # ~0.10m from the grasp axis to the outside of the hand. Spawning objects
 # closer than that means descending onto one shoves its neighbour -- observed
 # live as panda_hand <-> restock_object_1 during a descent, which the oracle's
-# contact check now rejects outright (docs/architecture.md).
+# contact check now rejects outright (docs/architecture.md (at tag stageA-2026-09-23)).
 #
 # It lives here rather than in robotwin_env because it is task geometry, not
 # simulator wiring: the spawn span in DEFAULT_SPEC is sized directly against
@@ -181,7 +181,7 @@ class ShelfRestockSpec:
 #
 # The upper deck must also not overhang where objects spawn: a top-down grasp
 # puts the wrist links above the object, so an object under the deck cannot be
-# grasped at all (see docs/architecture.md). Beyond that, the deck moved
+# grasped at all (see docs/architecture.md (at tag stageA-2026-09-23)). Beyond that, the deck moved
 # forward from y=-0.02 to y=-0.06 so placements land at y < CROSS_BODY_Y
 # (-0.05, oracle/arms.py): at y=-0.02, every placement past |x|=0.15 fell
 # inside a measured cross-body-unreachable region, making it impossible for

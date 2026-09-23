@@ -222,7 +222,7 @@ def test_no_budget_keeps_everything():
 
 def test_a_split_can_own_several_seed_ranges(tmp_path):
     """The train block was extended into 350-399 once the budget started being
-    counted in runs. The extension is recorded in docs/dataset_protocol.md; this
+    counted in runs. The extension is recorded in docs/data_protocol.md; this
     pins the code to it, because a split that silently ignores its extension
     trains on a third of the data the protocol says it has."""
     m = _splits_module()

@@ -35,7 +35,7 @@ from oct_vla.tasks.shelf_restock.spec import DEFAULT_SPEC, ShelfRestockSpec
 from oct_vla.tasks.shelf_restock.success import check_placement
 
 #: The scene is authored directly in world coordinates, so workcell == world
-#: for this task (docs/architecture.md). Named rather than inlined so the day
+#: for this task (docs/architecture.md (at tag stageA-2026-09-23)). Named rather than inlined so the day
 #: that stops being true has one place to change.
 WORLD_TO_WORKCELL = Transform("world", WORKCELL_FRAME, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0))
 

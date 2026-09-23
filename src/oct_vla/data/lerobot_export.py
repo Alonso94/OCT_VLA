@@ -3,7 +3,7 @@
 The canonical store deliberately uses dependency-free gzip streams of packed
 RGB.  This module is an optional downstream adapter: importing OCT-VLA still
 does not require NumPy, PyAV, or LeRobot.  Run it from the policy environment
-documented in ``docs/setup.md``.
+documented in ``docs/reproducibility.md``.
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ def _require_export_dependencies():
         raise RuntimeError(
             "LeRobot export requires the policy environment with NumPy, PyAV, "
             "and LeRobot installed. "
-            "See docs/setup.md."
+            "See docs/reproducibility.md."
         ) from error
     return np, LeRobotDataset
 
@@ -210,7 +210,7 @@ def _eef_action_vector(episode: Episode, index: int) -> tuple[float, ...]:
     gripper, per arm, in the same 16-d layout as `observation.state`.
 
     The task-space counterpart of `_joint_action_vector`, and it exists for the
-    same reason that one does. Measured in docs/control_space_comparison.md, the
+    same reason that one does. Measured in docs/control_space_comparison.md (at tag stageA-2026-09-23), the
     delta/absolute axis is the largest effect in this project -- absolute joint
     targets lift an object in 13 of 20 episodes where increments manage 0-2. The
     end-effector space had only an incremental encoding, so comparing it against

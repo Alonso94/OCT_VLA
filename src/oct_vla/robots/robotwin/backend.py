@@ -51,7 +51,7 @@ class Contact:
     ('right/panda_hand'), so an arm-vs-arm collision cannot be misread as a
     self-collision. It was: an unqualified 'panda_rightfinger <-> panda_hand'
     from the right arm striking the parked left arm looked exactly like one
-    gripper closing on itself (docs/architecture.md).
+    gripper closing on itself (docs/architecture.md (at tag stageA-2026-09-23)).
     """
 
     side: str
@@ -101,7 +101,7 @@ class NativePort(Protocol):
         Needed because a cuRobo `Success` does not mean the trajectory was
         collision-free -- trajopt collision avoidance is a soft cost, and
         executing a "successful" plan has been observed to leave the arm
-        jammed against scene geometry (docs/architecture.md).
+        jammed against scene geometry (docs/architecture.md (at tag stageA-2026-09-23)).
         """
         ...
 

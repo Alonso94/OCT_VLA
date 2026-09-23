@@ -187,7 +187,7 @@ class ShelfRestockEvalClient:
     def step(self, action: Sequence[float]) -> StepResult:
         """Apply one action in whatever space `reset` declared.
 
-        Cartesian is the 14-D canonical action (docs/canonical_action.md);
+        Cartesian is the 14-D canonical action (docs/data_protocol.md);
         joint is an absolute configuration, whose width follows the embodiment
         and is checked against the robot server-side.
         """

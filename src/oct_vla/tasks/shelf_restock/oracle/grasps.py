@@ -148,7 +148,7 @@ def generate_top_down_grasps(
     Which object axis each 90-degree offset corresponds to (x for 0, y for
     pi/2) is this module's best-effort mapping to the frame convention
     robot.left_plan_path/right_plan_path use internally; it has not yet been
-    confirmed by a live grasp attempt (see docs/architecture.md).
+    confirmed by a live grasp attempt (see docs/architecture.md (at tag stageA-2026-09-23)).
     """
     object_yaw = _object_yaw(obj)
     candidates = []

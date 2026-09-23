@@ -264,7 +264,7 @@ class ShelfRestockTask(Base_Task):
         return positions
 
     def play_once(self) -> None:
-        raise NotImplementedError("ShelfRestockTask has no oracle yet; see docs/architecture.md")
+        raise NotImplementedError("ShelfRestockTask has no oracle yet; see docs/architecture.md (at tag stageA-2026-09-23)")
 
     def check_success(self) -> bool:
         """True once every spawned object has left the lower shelf.
@@ -366,7 +366,7 @@ def _override_head_camera(kwargs: dict[str, Any]) -> None:
 
 def _sapien_pose(position, orientation=(0.0, 0.0, 0.0, 1.0)):
     """Scene geometry is authored directly in world coordinates (workcell ==
-    world for this task; see docs/architecture.md)."""
+    world for this task; see docs/architecture.md (at tag stageA-2026-09-23))."""
     import sapien
 
     from oct_vla.core.frames import Pose

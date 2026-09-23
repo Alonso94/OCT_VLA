@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Export one LeRobot dataset per variant whose episode order encodes the split.
 
-Collection is split-agnostic (docs/slurm_collection.md): every seed of a profile
+Collection is split-agnostic (docs/data_protocol.md): every seed of a profile
 lands under one canonical root, and the split is recovered afterwards from the
 seed recorded for each episode. This script is that recovery step.
 
@@ -31,7 +31,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-#: Reserved seed blocks from docs/dataset_protocol.md. A seed belongs to exactly
+#: Reserved seed blocks from docs/data_protocol.md. A seed belongs to exactly
 #: one split, fixed before collection, so a scene can never move between splits.
 #:
 #: A split may own several ranges. Budgeting by *run* rather than by clip needs

@@ -1,10 +1,12 @@
 # OCT-VLA
 
 Does conditioning a robot policy on object-centric state help over RGB alone?
-Dual-arm Panda, RoboTwin/SAPIEN, LeRobot policies (ACT, pi0.5, SmolVLA, GR00T).
+Dual-arm Panda, RoboTwin/SAPIEN, LeRobot policies (ACT, pi0.5, SmolVLA, GR00T,
+VLA-JEPA).
 
-Read `docs/project_status_2026_09_22.md` first — it is the current state of the
-science and it supersedes `docs/report_2026_09.md`.
+Read `docs/research_questions.md` first: it is the current state of the science.
+The method is `docs/method.md`, the data and evaluation protocol
+`docs/data_protocol.md`, and how to run things `docs/reproducibility.md`.
 
 ## Environment
 
@@ -20,6 +22,11 @@ PYTHONPATH=src "$OCTVLA_POLICY_PYTHON" -m pytest tests/ -q
   NumPy 1.26 / Torch 2.4) because it cannot share an interpreter with the
   policy env. That is why evaluation runs a server and a client.
 - Login nodes have **no GPU**. Anything touching SAPIEN needs a batch job.
+- `/tmp` is **per login node** (alex1 and alex2 differ). Keep any work that must
+  outlive a session on the vault or in git, never in `/tmp`.
+- Storage is the binding constraint: 1 TB of vault for everything, and home
+  allocates 32 MB per file. Runs keep one checkpoint and drop optimiser state;
+  see `docs/reproducibility.md` before adding anything that saves.
 
 ## Rules that were learned the expensive way
 
@@ -32,7 +39,7 @@ predictor, nothing more.
 **A single-seed cell is not a result.** Our headline finding (6/20) scored 0/20
 and 0/20 on two further training seeds. Seed variance exceeds every effect this
 project has measured. Run ≥3 seeds; `scripts/collect_final_results.py` prints
-min–max across seeds and refuses to report a single-seed cell.
+min–max across seeds and flags any single-seed cell as not a result.
 
 **Re-derive every number from `$OCTVLA_OUTPUT_ROOT/{eval,diagnostics}/*.json`.**
 Do not quote a previous document. Doing this has caught real arithmetic errors
@@ -62,16 +69,19 @@ add the assertion that would catch it.
 ## Conventions
 
 - Evaluation: seeds **800–819**, outside every reserved block
-  (`docs/dataset_protocol.md`), 600 steps, `n_action_steps=25`.
+  (`docs/data_protocol.md`), 600 steps, `n_action_steps=25`. Identity tiers are
+  pinned per reset and verified; a rollout that cannot prove its tier is refused.
 - Scoring is atomic: success, ≥1 transfer, ≥1 lift, mean transfers. Report
   against each cell's own oracle ceiling, not against 100 %.
 - Datasets are one **unified** export with per-encoding views projected from it
   (`scripts/project_dataset_view.py`); video is shared by hard link.
-- Object conditioning: `object_injection_mode` ∈ `layerwise` (published
-  ControlVLA, per host attention layer) | `controlvla` (single seam) | `pooled`
-  (weakest, kept so old checkpoints load).
-- Entity tokens: v2 is 17 columns of geometry; v3 is 32, balanced 16 geometric
-  against 16 semantic (`src/oct_vla/data/entity_semantics.py`).
+- Arms: `rgb` (stage 1), `rgb_cont` (budget control), `kv`, `kv_adaln`,
+  `kv_tokens` (stage 2, one config field `object_conditioning`), `scratch_kv`
+  (no stage 1). The method is in `src/oct_vla/policies/conditioning/`.
+- Entity tokens: 17 columns of geometry plus a type one-hot. The 32-column
+  16 geometric + 16 semantic entity is planned as its own change.
+- Removed mechanisms (`controlvla`, `pooled`, 15-D object tokens, the privileged
+  arm) live at git tag `stageA-2026-09-23`; do not reintroduce them on main.
 
 ## Before you commit
 

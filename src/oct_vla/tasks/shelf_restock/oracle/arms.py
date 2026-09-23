@@ -27,7 +27,7 @@ arms; x in -0.15/0.0/0.15, y in -0.20..0.00, z in 0.85/0.95/1.05) returned
 could not plan to `x=-0.15` at those same `y`. Every same-side pose, and
 every pose on the `x=0` centreline, planned successfully -- and the result
 was identical at `num_trajopt_seeds` of 1 and 4, so this is a kinematic
-limit, not planner flakiness (docs/architecture.md).
+limit, not planner flakiness (docs/architecture.md (at tag stageA-2026-09-23)).
 
 The measured boundary is only known to lie between the sampled points:
 failures start somewhere in `y` between -0.10 (success) and -0.05 (failure),

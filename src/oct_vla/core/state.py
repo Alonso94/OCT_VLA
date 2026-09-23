@@ -39,7 +39,7 @@ class ArmJoints:
     """Measured arm joint positions plus the normalized gripper aperture.
 
     Deliberately separate from `ArmState`, which is the Cartesian abstraction
-    and, as docs/canonical_action.md states, carries no joint targets. Joints
+    and, as docs/data_protocol.md states, carries no joint targets. Joints
     are recorded alongside it rather than folded into it because they are
     embodiment-specific: the Cartesian state is comparable across robots, these
     are not.

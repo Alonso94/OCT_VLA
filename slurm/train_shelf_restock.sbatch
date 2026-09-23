@@ -196,7 +196,7 @@ if [ "$TRAIN_VARIANT" = object ]; then
 fi
 
 # The execution horizon is a measured convention (25; see
-# docs/experiment_matrix.md), and the backbones disagree on it -- pi0.5 and
+# docs/experiment_matrix.md (at tag stageA-2026-09-23)), and the backbones disagree on it -- pi0.5 and
 # SmolVLA default to 50, GR00T to 40. Set it at training so the checkpoint
 # carries it and evaluation does not have to remember to override it. Left
 # unset, each backbone keeps its own default.

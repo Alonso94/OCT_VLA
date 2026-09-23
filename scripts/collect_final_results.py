@@ -218,7 +218,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("eval_dir", type=Path, help="Directory of rollout JSONs")
-    parser.add_argument("--prefix", default="F", help="Matrix prefix: F shelf, E easy task")
+    parser.add_argument("--prefix", default="F",
+                        help="Matrix prefix: F, J, D, X (ACT regimes) or PF, SJ, ... (VLAs)")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
 

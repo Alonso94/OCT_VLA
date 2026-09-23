@@ -78,7 +78,7 @@ def test_is_cross_body_limited_rejects_an_invalid_side():
 
 # The exact grid queried live against cuRobo (both arms; nothing executed, so
 # every query started from the same joint configuration). Recorded failures
-# were identical at num_trajopt_seeds 1 and 4. See docs/architecture.md.
+# were identical at num_trajopt_seeds 1 and 4. See docs/architecture.md (at tag stageA-2026-09-23).
 OBSERVED_FAILURES = {
     ("left", 0.15, -0.05),
     ("left", 0.15, 0.0),

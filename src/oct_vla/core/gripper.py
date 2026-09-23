@@ -26,7 +26,7 @@ same 0.39 sigma error.
 
 Thresholding with the bridge's own constant, not a new one: the binary column
 must decode to exactly the command the aperture column already decoded to, or
-the 5/6 oracle replay ceiling in docs/control_space_comparison.md stops being a
+the 5/6 oracle replay ceiling in docs/control_space_comparison.md (at tag stageA-2026-09-23) stops being a
 valid reference for anything trained on it.
 """
 

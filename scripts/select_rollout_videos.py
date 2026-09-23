@@ -20,7 +20,7 @@ So a row averaging 0.4 transfers shows an episode with no transfer, and one
 averaging 1.05 shows a single transfer -- what a viewer should expect to see.
 
     scripts/select_rollout_videos.py $OCTVLA_OUTPUT_ROOT/eval \
-        --dest $HPCVAULT/octvla-rollout-videos/report --table docs/rollouts/final/table.md
+        --dest $HPCVAULT/octvla-rollout-videos/report --table docs/rollout_videos.md
 
 The videos go to the vault, not the repository: the home filesystem allocates
 32 MB per file, so 25 half-megabyte videos cost ~800 MB of a nearly full home

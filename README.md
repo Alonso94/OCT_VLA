@@ -1,70 +1,77 @@
 # OCT-VLA
 
-A research implementation for testing whether object-centric conditioning improves
-few-shot VLA adaptation and compositional generalization over RGB-only adaptation.
-The first experiment targets approximately 25 demonstrations of shelf restocking
-with pretrained π0.5 and LoRA.
+Does conditioning a pretrained robot policy on an explicit **object/entity set**
+help over RGB alone — and does *where* the objects enter the policy change what
+it generalises to?
 
-One demonstration transfers **one selected object from the lower shelf to the
-upper shelf**, optionally compacts it toward a previously placed neighbor, and
-retreats. A deterministic task manager will handle repeated transfers. Both arms
-remain represented throughout the action sequence.
+The testbed is a dual-arm Franka Panda **shelf-restock** task in RoboTwin/SAPIEN
+(move every object from the lower shelf to the upper one). It has a controlled
+object-identity holdout and 2/3/4-object scenes. The policies are ACT, pi0.5,
+SmolVLA, GR00T N1.7 and VLA-JEPA, through LeRobot 0.6.2. Every conditioned
+policy is trained in two stages: an RGB policy first, then the same policy with
+object conditioning added at zero-initialisation, as in ControlVLA.
 
-## Current status
+## Where things stand
 
-Commits 1–3 establish packaging, canonical EEF states, 14-D Cartesian actions,
-frame-labelled geometry, and read-only external dependency discovery through
-`octvla doctor`. Robot control, perception, collection, training, and evaluation
-are **planned, not implemented**. No simulator or policy dependency is imported
-by the package.
-See [architecture](docs/architecture.md) for boundaries, conventions, and gates.
-See [coordinate frames](docs/coordinate_frames.md) and
-[canonical actions](docs/canonical_action.md) for the implemented core API.
+The living scientific state is [docs/research_questions.md](docs/research_questions.md):
+the four questions, what has been measured, and what is running.
 
-## Check this skeleton
+In short, on ACT (3 training seeds, pinned identity tiers):
+- object conditioning helps, most of all on object sizes never seen in training;
+- in-context entity tokens are best on seen objects, and scene AdaLN on held-out
+  ones;
+- no arm generalises to 2 or 4 objects.
 
-Use an existing Python interpreter with pytest and Ruff installed, from the
-repository root:
+All of this is preliminary until the training-budget control (`rgb_cont`)
+finishes. The VLA pipeline is built and smoke-tested but has not been trained.
 
-```bash
-/path/to/existing/environment/bin/python -B -m pytest -q
-/path/to/existing/environment/bin/python -m ruff check .
-/path/to/existing/environment/bin/python -m ruff format --check .
+## How it works
+
+```
+simulator / perception ──► ObjectScene + robot state ──► entity set [N,17] + mask
+                                                                │
+                           kv        ControlVLA's added K/V attention term
+                           kv_adaln  + a pooled scene vector modulating every block
+                           kv_tokens + the entities as tokens in the host's sequence
+                                                                │
+                              stage-1 RGB policy (ACT / pi0.5 / SmolVLA / GR00T / VLA-JEPA)
+                                                                │
+                                                             actions
 ```
 
-Pytest resolves this repository's `src/` explicitly. The import smoke test also
-runs without site-packages, so an old editable installation cannot satisfy it.
-These commands do not install packages or download assets.
+- [docs/method.md](docs/method.md): the entity representation, the three arms,
+  where each attaches in every backbone, and how stage 2 loads stage 1.
+- [docs/data_protocol.md](docs/data_protocol.md): collection, splits and
+  holdouts, control-space views, the entity contract, and the evaluation
+  protocol.
+- [docs/reproducibility.md](docs/reproducibility.md): environments, the cluster,
+  the storage budget, and the pipeline end to end.
 
-The dependency-free package targets Python 3.10–3.12 so shared contracts can run
-in both the existing Python 3.10 simulator and Python 3.12 policy processes.
-This does not imply that their dependency stacks can share one environment.
-Wheel builds use Hatchling; development tools are declared in the `dev` extra.
-See [setup](docs/setup.md) for manual fresh-install guidance, observed dependency
-revisions, path configuration, and the limits of current validation. For an
-installation that was actually executed and validated on a GPU node, with its
-resolved versions and two silently-failing version traps, see
-[verified setup](docs/setup_nhr_alex.md).
+## Code map
 
-See [running experiments](docs/running_experiments.md) for the full path from
-collection through the train/validation split and LoRA finetuning to closed-loop
-evaluation across object counts.
+| path | holds |
+| --- | --- |
+| `src/oct_vla/policies/conditioning/` | the method: entity embedding, KV, AdaLN, tokens, host hooks |
+| `src/oct_vla/policies/control_*/` | one adapter per backbone: where each arm attaches |
+| `src/oct_vla/policies/object_conditioning.py`, `stage_loading.py` | shared config and wiring; verified checkpoint loads |
+| `src/oct_vla/data/` | episodes, entity tokens, LeRobot export, control-space views |
+| `src/oct_vla/tasks/shelf_restock/` | the task: spec, oracle, success, RoboTwin environment |
+| `src/oct_vla/serve/` | the simulator ↔ policy bridge used for every rollout |
+| `scripts/`, `slurm/` | collection, export, training, evaluation, results |
 
-## External resources
+## Running the tests
 
-RoboTwin, SAPIEN, cuRobo, policy dependencies, assets, and datasets remain external.
-Use [.env.example](.env.example) as a local path template; `.env` is ignored.
-Load it explicitly with `octvla doctor --env-file .env`. Without installing the
-package, use `PYTHONPATH=src /path/to/environment/bin/python -B -m oct_vla doctor`.
-Normal commands must never silently install dependencies or download resources.
+```bash
+source ~/octvla/env-leftmost.sh
+PYTHONPATH=src "$OCTVLA_POLICY_PYTHON" -m pytest tests/ -q
+```
 
-Existing environments moved with a repository can contain stale executable
-shebangs and editable source paths. Doctor reports missing plain-path editable
-targets and resolved dependency locations without repairing them. See
-[setup and troubleshooting](docs/setup.md) before reusing an environment.
+`$OCTVLA_POLICY_PYTHON` is the only interpreter with torch and LeRobot. Under a
+bare `python`, every policy test is skipped.
 
-## Development workflow
+The simulator runs in a separate interpreter (`$OCTVLA_ROBOTWIN_PYTHON`), which
+is why rollouts run as a server and a client.
 
-Implement and validate one coherent step at a time. Each step stops for review;
-pushing and proceeding require explicit approval. The old repository remains a
-read-only source of evidence, and local machine paths stay out of tracked files.
+Mechanisms removed in the 2026-09-23 cleanup remain at git tag
+`stageA-2026-09-23`: the `controlvla` and `pooled` injection modes, the 15-D
+object tokens, and the privileged arm.

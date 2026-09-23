@@ -103,7 +103,7 @@ def main() -> int:
         "configuration; the bridge adds it to the measured joints. "
         "'cartesian_absolute' sends the next frame's end-effector pose and lets "
         "the bridge solve IK, which is the task-space arm of the 2x2 in "
-        "docs/control_space_comparison.md section 10.",
+        "docs/control_space_comparison.md (at tag stageA-2026-09-23) section 10.",
     )
     parser.add_argument(
         "--tolerance",

@@ -3,9 +3,7 @@
 # encoded in episode order (scripts/build_shelf_restock_splits.py).
 #
 # A batch job rather than a login-node command because encoding the three
-# camera streams for a few hundred clips takes hours; the privileged variant
-# drops the cameras and finishes in minutes, but shares this script so both
-# variants of a comparison are built by identical code.
+# camera streams for a few hundred clips takes hours.
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16

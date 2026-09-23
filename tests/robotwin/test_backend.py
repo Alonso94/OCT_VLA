@@ -3,7 +3,7 @@
 These exercise the canonical wrapper's own logic (frame conversion, dual-plan-
 before-commit, safety bounds, hold, stop/health latching) deterministically,
 without SAPIEN/cuRobo. They do not substitute for the live actuator check
-against the real simulator described in docs/setup.md and architecture.md's
+against the real simulator described in docs/reproducibility.md and architecture.md's
 acceptance gate 4 ("+x only, -y only, rotation only, gripper only, inactive
 arm must have predictable measured effects").
 """
