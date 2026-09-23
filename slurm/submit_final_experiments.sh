@@ -42,6 +42,7 @@ mkdir -p "$LOGS"
 # PREFIX names the cells (default F) so two matrices cannot collide.
 ARMS="${ARMS:-rgb rgb_cont kv kv_adaln kv_tokens scratch_kv}"
 PREFIX="${PREFIX:-F}"
+JOBS="${JOBS:-seen heldout novel count}"
 declare -A ARM_POLICY=(
   [rgb]=act [rgb_cont]=act [rgb_novae]=act
   [kv]=control_act [kv_adaln]=control_act [kv_tokens]=control_act [scratch_kv]=control_act
@@ -161,11 +162,15 @@ for arm in $ARMS; do
       echo "    train  $train  ($label)"
     fi
     [ "${SKIP_EVAL:-0}" = 1 ] && continue
+    # JOBS selects rollouts, e.g. JOBS=count to re-run only the object-count
+    # job after the two-object layout changed.
     for tier in seen heldout novel; do
+      [[ " $JOBS " == *" $tier "* ]] || continue
       evalj=$(rollout "$cell-$tier" three_object "${TIER[$tier]}" EVAL_MAX_STEPS=600)
       rollouts=$((rollouts + 1))
       echo "    eval   $tier -> $evalj"
     done
+    [[ " $JOBS " == *" count "* ]] || continue
     evalj=$(rollout "$cell-count" two_object,four_object "${TIER[seen]}" \
       EVAL_STEPS_PER_OBJECT=$STEPS_PER_OBJECT)
     rollouts=$((rollouts + 1))
