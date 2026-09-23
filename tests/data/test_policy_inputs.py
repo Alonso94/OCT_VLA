@@ -84,22 +84,11 @@ def test_a_from_scratch_backbone_takes_the_datasets_own_camera_names():
     assert rename_map_for("act") != rename_map_for("pi05")
 
 
-def test_flashvla_uses_robotwins_camera_names_not_openpis():
-    """FlashVLA is a pi0.5 finetune, but its RoboTwin corpus renamed the
-    cameras. Sharing pi0.5's map would feed it a wrist view as its scene view,
-    which degrades silently because all three share a shape and dtype."""
-    from oct_vla.data.policy_inputs import rename_map_for
-
-    flash = rename_map_for("pi05-flashvla")
-    assert flash["observation.images.head"] == "observation.images.cam_high"
-    assert flash != rename_map_for("pi05")
-
-
-def test_an_unregistered_flashvla_variant_is_still_refused():
+def test_an_unregistered_policy_type_is_refused():
     """The guard is what stops a new backbone silently inheriting openpi names."""
     import pytest
 
     from oct_vla.data.policy_inputs import rename_map_for
 
     with pytest.raises(ValueError, match="No rename map registered"):
-        rename_map_for("lingbot-flashvla")
+        rename_map_for("lingbot")

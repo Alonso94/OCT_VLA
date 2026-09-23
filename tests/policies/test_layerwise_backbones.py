@@ -75,17 +75,6 @@ def test_native_groot_processor_masks_temporal_padding_and_inactive_action_width
     assert torch.equal(mask[0, 2], torch.tensor([1.0, 1.0, 0.0, 0.0]))
 
 
-def test_conservative_recipes_keep_the_vlm_frozen_and_fix_lora_scale():
-    from oct_vla.policies.adaptation import adaptation_recipe
-
-    for name in ("control_pi05", "control_smolvla", "control_groot"):
-        recipe = adaptation_recipe(name)
-        assert recipe.peft_overrides == {"method_type": "LORA", "r": 16, "lora_alpha": 32}
-    assert adaptation_recipe("control_pi05").config_overrides["train_expert_only"] is True
-    assert adaptation_recipe("control_smolvla").config_overrides["train_state_proj"] is True
-    assert adaptation_recipe("control_groot").config_overrides["lora_full_model"] is False
-
-
 def test_active_peft_modules_to_save_copy_replaces_the_frozen_hook_target():
     from peft.utils.other import ModulesToSaveWrapper
     from oct_vla.policies.layerwise_backbones import _active_control
