@@ -46,14 +46,15 @@ CELL = re.compile(r"^(?P<prefix>[A-Z]{1,2})-(?P<arm>[a-z_]+)-s(?P<seed>\d+)-(?P<
 #: policy, then what conditioning adds to it, then the ablation that omits
 #: stage one entirely. No `semantic`: its cells trained the entity model under
 #: another name (the flag selecting it was never read).
-ARMS = ("rgb", "rgb_cont", "rgb_novae", "kv", "kv_adaln", "kv_tokens", "scratch_kv")
+ARMS = ("rgb", "rgb_cont", "rgb_novae", "rgb_short", "rgb_hist",
+        "kv", "kv_adaln", "kv_tokens", "scratch_kv")
 #: Arm names used before the 2026-09-23 rename, as they appear in result files.
 ARM_ALIASES = {"entity": "kv", "adaln": "kv_adaln", "incontext": "kv_tokens", "scratch": "scratch_kv"}
 #: What each conditioned arm is paired against. rgb_cont is the fair one: it has
 #: the stage-2 arms' total training steps, so a gain over it is not budget.
 BASELINES = ("rgb", "rgb_cont")
 #: Changes to the baseline policy itself, each paired against rgb.
-BASELINE_ABLATIONS = ("rgb_novae",)
+BASELINE_ABLATIONS = ("rgb_novae", "rgb_short", "rgb_hist")
 CONDITIONED = ("kv", "kv_adaln", "kv_tokens", "scratch_kv")
 #: Q2: each encoder-side arm against KV alone, and against each other.
 MECHANISM_CONTRASTS = (("kv", "kv_adaln"), ("kv", "kv_tokens"), ("kv_adaln", "kv_tokens"))
@@ -63,6 +64,8 @@ ARM_NOTE = {
     "rgb": "stage 1: images and proprioception, no conditioning",
     "rgb_cont": "budget control: rgb continued for the steps stage 2 adds, no conditioning",
     "rgb_novae": "rgb with the CVAE latent off (use_vae=false), 40k steps from scratch",
+    "rgb_short": "rgb with a 20-step chunk executed 8 at a time",
+    "rgb_hist": "rgb_short plus a two-frame observation history (history_act)",
     "kv": "stage 2: ControlVLA's KV term, from the rgb checkpoint",
     "kv_adaln": "stage 2: kv + scene AdaLN on every block (LPWM-inspired)",
     "kv_tokens": "stage 2: kv + entity tokens in the encoder (LPWM-inspired)",
@@ -439,6 +442,8 @@ def main() -> int:
     # ---- paired against rgb ----------------------------------------------
     contrasts = [(b, a) for b in BASELINES for a in CONDITIONED if b in arms and a in arms]
     contrasts += [("rgb", a) for a in BASELINE_ABLATIONS if "rgb" in arms and a in arms]
+    # The history alone: both arms share the short chunk.
+    contrasts += [("rgb_short", "rgb_hist")] if {"rgb_short", "rgb_hist"} <= set(arms) else []
     contrasts += [(b, a) for b, a in MECHANISM_CONTRASTS if b in arms and a in arms]
     if contrasts:
         print("PAIRED over matched (training seed, tier, scene seed) episodes; "

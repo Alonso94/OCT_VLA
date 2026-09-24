@@ -45,6 +45,14 @@ case "$ACT_POLICY_TYPE" in
       ACT_STAGE=continue
     fi
     ;;
+  history_act)
+    # Plain ACT over a short observation history (policies/history_act). A
+    # plugin type, so its package must be discovered; always from scratch.
+    POLICY_ARGS+=(--policy.discover_packages_path=oct_vla.policies
+                  --policy.history_steps="${HISTORY_STEPS:-2}"
+                  --policy.history_stride="${HISTORY_STRIDE:-3}")
+    [ -z "${ACT_PRETRAINED:-}" ] || { echo "history_act trains from scratch" >&2; exit 2; }
+    ;;
   control_act)
     ENTITY_ARGS_TEXT=$("$OCTVLA_POLICY_PYTHON" "$OCTVLA_REPO/scripts/entity_training_args.py" "$DATASET")
     mapfile -t ENTITY_ARGS <<< "$ENTITY_ARGS_TEXT"

@@ -25,6 +25,9 @@ mkdir -p "$LOGS"
 #   scratch_kv  kv trained with no stage 1                     w/o pretrain
 #   rgb_novae   stock ACT with the CVAE latent off (use_vae=false), as rgb
 #               otherwise: 40k steps from scratch. Its KL collapses to 0 anyway
+#   rgb_short   stock ACT with a short chunk (20) executed 8 at a time
+#   rgb_hist    rgb_short plus a two-frame observation history (history_act),
+#               so against rgb_short it isolates the history
 #
 # rgb_cont is the fair baseline: every stage-2 arm trains 40k steps on top of
 # rgb's 40k, so against rgb alone a gain could be the extra training.
@@ -44,12 +47,16 @@ ARMS="${ARMS:-rgb rgb_cont kv kv_adaln kv_tokens scratch_kv}"
 PREFIX="${PREFIX:-F}"
 JOBS="${JOBS:-seen heldout novel count}"
 declare -A ARM_POLICY=(
-  [rgb]=act [rgb_cont]=act [rgb_novae]=act
+  [rgb]=act [rgb_cont]=act [rgb_novae]=act [rgb_short]=act [rgb_hist]=history_act
   [kv]=control_act [kv_adaln]=control_act [kv_tokens]=control_act [scratch_kv]=control_act
 )
 declare -A ARM_CONDITIONING=([kv]=kv [kv_adaln]=kv_adaln [kv_tokens]=kv_tokens [scratch_kv]=kv)
 # Directory suffix per arm, as named before the rename.
-declare -A ARM_SUFFIX=([rgb]="" [rgb_cont]=_cont [rgb_novae]=_novae [kv]="" [kv_adaln]=_adaln [kv_tokens]=_incontext [scratch_kv]=_scratch)
+declare -A ARM_SUFFIX=([rgb]="" [rgb_cont]=_cont [rgb_novae]=_novae [rgb_short]=_short [rgb_hist]="" [kv]="" [kv_adaln]=_adaln [kv_tokens]=_incontext [scratch_kv]=_scratch)
+# Chunk and execution horizon per arm; 50 and 25 otherwise. The rollout uses the
+# horizon the arm trained with, so the short-chunk arms are not scored at 25.
+declare -A ARM_CHUNK=([rgb_short]=20 [rgb_hist]=20)
+declare -A ARM_EXEC=([rgb_short]=8 [rgb_hist]=8)
 # The EE-absolute *view*, not the unified export it derives from: the unified
 # dataset's canonical pair is absolute joint, and absolute EE is the only
 # encoding that has produced a non-zero closed-loop result here.
@@ -120,7 +127,7 @@ rollout() {
   [ "$#" -gt 0 ] && export "$@"
   EVAL_CHECKPOINT="$OCTVLA_OUTPUT_ROOT/$run/checkpoints/last/pretrained_model" \
   EVAL_DATASET="$DATASET" EVAL_SEEDS=800-819 \
-  EVAL_PROFILES="$profiles" EVAL_N_ACTION_STEPS=25 \
+  EVAL_PROFILES="$profiles" EVAL_N_ACTION_STEPS="${ARM_EXEC[$arm]:-25}" \
   EVAL_MODEL_IDS="$ids" EVAL_TAG="$tag" \
   EVAL_VIDEO_DIR="$VIDEO_STAGE/$tag" EVAL_VIDEO_LABEL="$tag" \
     submit "${SB[@]}" --job-name="octvla-$tag" --time=04:00:00 \
@@ -148,10 +155,11 @@ for arm in $ARMS; do
       # scratch arm passes no suffix; the others pass theirs without the "_".
       suffix="${ARM_SUFFIX[$arm]#_}"; [ "$arm" = scratch_kv ] && suffix=""
       # Arms trained from scratch (no stage-1 checkpoint, no dependency on it).
-      from_scratch=$(case "$arm" in scratch_kv|rgb_novae) echo 1 ;; *) echo 0 ;; esac)
+      from_scratch=$(case "$arm" in scratch_kv|rgb_novae|rgb_short|rgb_hist) echo 1 ;; *) echo 0 ;; esac)
       train=$(CONDITIONING="${ARM_CONDITIONING[$arm]:-}" \
         ACT_DATASET="$DATASET" ACT_POLICY_TYPE="${ARM_POLICY[$arm]}" \
-        TRAIN_SEED="$seed" N_ACTION_STEPS=25 RUN_SUFFIX="$suffix" \
+        TRAIN_SEED="$seed" N_ACTION_STEPS="${ARM_EXEC[$arm]:-25}" RUN_SUFFIX="$suffix" \
+        CHUNK_SIZE="${ARM_CHUNK[$arm]:-50}" \
         USE_VAE=$([ "$arm" = rgb_novae ] && echo 0 || echo 1) \
         ACT_PRETRAINED=$([ "$from_scratch" = 1 ] && echo "" || echo "$stage1") \
         submit "${SB[@]}" --job-name="octvla-$cell" --time=04:00:00 \
