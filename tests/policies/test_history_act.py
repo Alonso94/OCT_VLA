@@ -103,3 +103,18 @@ def test_rollout_history_matches_the_training_layout():
             assert torch.equal(call[key][:, 1], frames[step][key]), (step, key)
     policy.reset()
     assert len(policy._history) == 0
+
+
+def test_every_registered_plugin_type_can_be_evaluated():
+    """The evaluator looks up a camera rename map by policy type and refuses an
+    unknown one; history_act's first rollouts all died on exactly that."""
+    from lerobot.configs.policies import PreTrainedConfig
+
+    import oct_vla.policies  # noqa: F401
+    from oct_vla.data.policy_inputs import rename_map_for
+
+    plugin_types = [t for t in PreTrainedConfig.get_known_choices()
+                    if PreTrainedConfig.get_choice_class(t).__module__.startswith("oct_vla.")]
+    assert "history_act" in plugin_types
+    for policy_type in plugin_types:
+        rename_map_for(policy_type)
