@@ -62,6 +62,17 @@ case "$ACT_POLICY_TYPE" in
                   --policy.shift_pad="${SHIFT_PAD:-0}")
     [ -z "${ACT_PRETRAINED:-}" ] || { echo "aug_act trains from scratch" >&2; exit 2; }
     ;;
+  rel_act)
+    # ACT over chunk-relative end-effector positions (policies/rel_act). Its
+    # state and target statistics are fitted on the training split at this
+    # run's chunk size, and travel in the checkpoint. Always from scratch.
+    REL_ARGS_TEXT=$("$OCTVLA_POLICY_PYTHON" "$OCTVLA_REPO/scripts/relative_action_stats.py" \
+      "$DATASET" --chunk "${CHUNK_SIZE:-50}")
+    mapfile -t REL_ARGS <<< "$REL_ARGS_TEXT"
+    [ "${#REL_ARGS[@]}" = 4 ] || { echo "relative_action_stats.py gave ${#REL_ARGS[@]} flags" >&2; exit 2; }
+    POLICY_ARGS+=(--policy.discover_packages_path=oct_vla.policies "${REL_ARGS[@]}")
+    [ -z "${ACT_PRETRAINED:-}" ] || { echo "rel_act trains from scratch" >&2; exit 2; }
+    ;;
   control_act)
     ENTITY_ARGS_TEXT=$("$OCTVLA_POLICY_PYTHON" "$OCTVLA_REPO/scripts/entity_training_args.py" "$DATASET")
     mapfile -t ENTITY_ARGS <<< "$ENTITY_ARGS_TEXT"
@@ -133,7 +144,7 @@ echo "dataset    : $DATASET"
 echo "run        : $RUN_NAME"
 echo "eval_split : $EVAL_SPLIT"
 # The resolved policy flags, so a log shows which arm actually trained.
-echo "policy args: ${POLICY_ARGS[*]}"
+echo "policy args: ${POLICY_ARGS[*]}" | cut -c1-2000
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
 mkdir -p "$OCTVLA_OUTPUT_ROOT/run_metadata"

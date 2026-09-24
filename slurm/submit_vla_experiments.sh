@@ -36,11 +36,26 @@ mkdir -p "$LOGS"
 VIDEO_STAGE="${VIDEO_STAGE:-$HPCVAULT/octvla-rollout-videos/final}"
 
 declare -A LETTER=([pi05]=P [smolvla]=S [groot]=G)
-declare -A DATASET=([F]=three_object_identity_eeabs [J]=three_object_identity_abs)
-# `id_` for the identity corpus: `groot_rgb_full_s1000_eeabs` already exists,
-# trained on the old leftmost corpus, and a bare `eeabs` tag would have had
-# stage 1 "reuse" it.
-declare -A TAG=([F]=id_eeabs [J]=id_abs)
+# CORPUS picks the training data. `paired_full` (the default since 2026-09-24):
+# continuous runs from the paired collection, the format that chains
+# (research_questions.md §4.6). `identity`: the September atomic-clip corpus
+# Stage A used. The tag keeps the two apart on disk -- a run of one must never
+# be "reused" as the other's stage 1.
+CORPUS="${CORPUS:-paired_full}"
+case "$CORPUS" in
+  paired_full)
+    declare -A DATASET=([F]=three_object_paired_full_eeabs [J]=three_object_paired_full_abs)
+    declare -A TAG=([F]=pf_eeabs [J]=pf_abs) ;;
+  identity)
+    # `id_`: `groot_rgb_full_s1000_eeabs` already exists, trained on the old
+    # leftmost corpus, and a bare `eeabs` tag would have had stage 1 reuse it.
+    declare -A DATASET=([F]=three_object_identity_eeabs [J]=three_object_identity_abs)
+    declare -A TAG=([F]=id_eeabs [J]=id_abs) ;;
+  *) echo "CORPUS must be paired_full or identity" >&2; exit 2 ;;
+esac
+for regime in F J; do
+  [ -d "$OCTVLA_DATASET_ROOT/${DATASET[$regime]}" ] || { echo "no dataset ${DATASET[$regime]}" >&2; exit 2; }
+done
 # Must match TIER_IDS in scripts/collect_final_results.py.
 declare -A TIER=([seen]="1,2,3,4" [heldout]="0,6" [novel]="5")
 
