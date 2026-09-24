@@ -19,12 +19,12 @@ the best episode and that is the one this project has already been misled by:
 So a row averaging 0.4 transfers shows an episode with no transfer, and one
 averaging 1.05 shows a single transfer -- what a viewer should expect to see.
 
-    scripts/select_rollout_videos.py $OCTVLA_OUTPUT_ROOT/eval \
-        --dest $HPCVAULT/octvla-rollout-videos/report --table docs/rollout_videos.md
+    scripts/select_rollout_videos.py $OCTVLA_OUTPUT_ROOT/eval --prefix F \
+        --dest docs/videos/F --table /tmp/F.md
 
-The videos go to the vault, not the repository: the home filesystem allocates
-32 MB per file, so 25 half-megabyte videos cost ~800 MB of a nearly full home
-quota. The table, which is what the report cites, stays in the repository.
+docs/rollout_videos.md holds the report's selection (docs/videos/<prefix>/).
+Mind the home quota when choosing --dest: the home filesystem allocates 32 MB
+per file, so 45 half-megabyte videos take ~1.5 GB of it.
 """
 
 from __future__ import annotations
