@@ -52,6 +52,7 @@ def main() -> int:
     from lerobot.policies import make_policy, make_pre_post_processors
     from lerobot.policies.factory import get_policy_class
     from lerobot.processor.rename_processor import rename_stats
+    from lerobot.scripts.lerobot_train import _preprocess_dataset_batch
 
     import oct_vla.policies  # noqa: F401
     from oct_vla.policies.object_conditioning import unwrap_object_conditioning
@@ -83,7 +84,16 @@ def main() -> int:
         loader = torch.utils.data.DataLoader(dataset, batch_size=min(cfg.batch_size, 4),
                                              shuffle=False, num_workers=0)
         raw = next(iter(loader))
-        batch = preprocessor(raw)
+        # Exactly as training prepares a batch: cameras to float32/255 *before*
+        # the processor. Calling the processor on the raw batch fed uint8
+        # frames -- SmolVLA crashed on them, pi0.5 and GR00T silently saw
+        # inputs 255x out of range.
+        batch = _preprocess_dataset_batch(raw, dataset.meta.camera_keys, cfg.rename_map,
+                                          preprocessor)
+        for key in dataset.meta.camera_keys:
+            key = cfg.rename_map.get(key, key)
+            if key in batch:
+                assert batch[key].is_floating_point() and batch[key].max() <= 1.0 + 1e-6, key
 
         stage1_config = PreTrainedConfig.from_pretrained(stage1)
         reference = get_policy_class(stage1_config.type).from_pretrained(

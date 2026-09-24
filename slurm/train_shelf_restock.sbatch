@@ -328,5 +328,8 @@ srun "$OCTVLA_POLICY_PYTHON" -u "${ENTRY[@]}" \
 # (save_freq defaults to the step budget; every evaluation reads `last`), and
 # its optimiser state goes once the run has succeeded -- nothing here resumes.
 # Only this run's own directory, and only after srun returned 0 (set -e).
+# An INIT_CHECK writes no run directory, so there is nothing to prune -- and
+# under pipefail a du on a missing path failed every passing check.
+[ -d "$OUTPUT" ] || exit 0
 rm -rf "$OUTPUT"/checkpoints/*/training_state
-du -sh "$OUTPUT" 2>/dev/null | sed 's/^/kept       : /'
+du -sh "$OUTPUT" | sed 's/^/kept       : /'
