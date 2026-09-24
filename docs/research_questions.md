@@ -556,8 +556,10 @@ GR00T.
 | chaining | `AF-rgb` vs `CF-rgb` | **done** (§4.6) |
 | chunk / history | `CF-rgb_short`, `CF-rgb_hist` | **done** (§4.7): neither beats `CF-rgb` |
 | grasp precision | `CF-rgb_headdrop`, `CF-rgb_shift`, camera diagnostic | **done** (§4.8): precision is a fit limit |
-| Stage A2 | conditioned arms on `CF` | after the history study |
-| Q1–Q4 (VLAs) | `slurm/submit_vla_experiments.sh` | **ready**: all smoke tests pass |
+| chunk-relative actions | `CF-rgb_rel` (50/25) vs `CF-rgb`; `CF-rgb_rel_short` (20/8) vs `CF-rgb_short` × 3 seeds (`policies/rel_act`) | **running** |
+| Stage A2 | `CF`: rgb_cont, kv, kv_adaln, kv_tokens, scratch_kv × 3 seeds, from the `CF-rgb` checkpoints | **running** |
+| Q4 (VLAs), stage 1 | `PF`/`PJ`, `SF`/`SJ`, `GF`/`GJ`: rgb × 3 seeds on the full-run corpus (`CORPUS=paired_full`), seen rollout | **running** |
+| Q1–Q3 (VLAs), stage 2 | `PHASE=stage2` on each backbone's better regime | after stage 1 |
 
 **Storage rules**, since the vault has 1 TB for everything:
 - Every run keeps only its final checkpoint and drops its optimiser state on
@@ -571,6 +573,9 @@ GR00T.
 
 ## Update log
 
+- **2026-09-24 (night).** Submitted Stage A2 (the conditioned arms on the
+  full-run corpus), VLA stage 1 (on the full-run corpus, both regimes) and
+  the chunk-relative ACT arms: 141 jobs.
 - **2026-09-24 (evening).** All full-run ablations in. History hurts (two-object
   success 19 → 6 of 60). The grasp diagnostic (§4.8): the left arm grasps from
   the head camera and misses by 11–13 mm; forcing it onto the wrist camera
