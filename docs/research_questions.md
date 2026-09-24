@@ -445,8 +445,9 @@ stage 2 → rollout, all four arms) found three bugs, now fixed:
 And one design change, made the ACT way: **VLA `kv_tokens` now gates the
 entities and keeps the actions' positions** (`method.md` §2.3). Prepending
 them used to shift every action's RoPE position and let them into the softmax
-at full weight, moving pi0.5's step-0 action chunk by 137 %. GR00T passes all
-checks; SmolVLA's rerun is queued.
+at full weight, moving pi0.5's step-0 action chunk by 137 %; behind the gate it moves
+0.36 % (SmolVLA 3.1 %), and matches stage 1 when the gate is closed. GR00T
+passes all checks; the pi0.5 and SmolVLA smoke reruns are queued.
 
 **Stage A2, gated on RGB chaining:** the conditioned arms on the full-run
 corpus, since Q1–Q3 hold only for atomic training. Then the VLAs (Stage B).

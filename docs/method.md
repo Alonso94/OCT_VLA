@@ -127,8 +127,9 @@ so prepended entities used to push every action N positions along.
 `realign_suffix_positions` puts each action back where stage 1 had it and
 gives the entities the first action's position. Before these two fixes the
 pi0.5 action chunk moved 137 % at step 0 (loss 0.250 → 0.278) and SmolVLA's
-63 %. After them, SmolVLA is exactly stage 1 at a gate of −∞ and moves 3.1 %
-at −4.
+63 %. After them, both are stage 1 at a gate of −∞ (pi0.5 to 1e-7, float
+rounding; SmolVLA exactly) and move 0.36 % (pi0.5) and 3.1 % (SmolVLA) at
+−4. The init check now fails the arm above 10 %.
 
 ## 3. Where each arm attaches
 

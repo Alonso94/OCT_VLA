@@ -36,7 +36,9 @@ sys.path.insert(0, str(ROOT / "src"))
 EXACT = 1e-2
 #: The in-context arm's step-0 deviation above which something is broken, not
 #: merely non-identity (the entity keys take some attention mass by design).
-GROSS = 1.0
+#: Behind the gate (init -4) it measures 0.36 % on pi0.5, 3.1 % on SmolVLA and
+#: 0.16 % on GR00T; before the gate and position fix, pi0.5 moved 137 %.
+GROSS = 0.1
 
 
 def relative(a, b) -> float:
