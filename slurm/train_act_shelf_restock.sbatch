@@ -53,6 +53,15 @@ case "$ACT_POLICY_TYPE" in
                   --policy.history_stride="${HISTORY_STRIDE:-3}")
     [ -z "${ACT_PRETRAINED:-}" ] || { echo "history_act trains from scratch" >&2; exit 2; }
     ;;
+  aug_act)
+    # Stock ACT with training-time image augmentation (policies/aug_act):
+    # HEAD_DROPOUT blanks the head camera per sample, SHIFT_PAD randomly
+    # shifts every camera. Always from scratch.
+    POLICY_ARGS+=(--policy.discover_packages_path=oct_vla.policies
+                  --policy.head_dropout="${HEAD_DROPOUT:-0.0}"
+                  --policy.shift_pad="${SHIFT_PAD:-0}")
+    [ -z "${ACT_PRETRAINED:-}" ] || { echo "aug_act trains from scratch" >&2; exit 2; }
+    ;;
   control_act)
     ENTITY_ARGS_TEXT=$("$OCTVLA_POLICY_PYTHON" "$OCTVLA_REPO/scripts/entity_training_args.py" "$DATASET")
     mapfile -t ENTITY_ARGS <<< "$ENTITY_ARGS_TEXT"

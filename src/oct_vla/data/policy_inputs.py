@@ -68,6 +68,7 @@ _RENAME_MAPS: dict[str, dict[str, str]] = {
     "act": ACT_RENAME_MAP,
     "control_act": ACT_RENAME_MAP,
     "history_act": ACT_RENAME_MAP,
+    "aug_act": ACT_RENAME_MAP,
     "pi05": PI05_RENAME_MAP,
     "control_pi05": PI05_RENAME_MAP,
     "masked_pi05": PI05_RENAME_MAP,

@@ -4,6 +4,7 @@ Importing this package registers the lightweight configuration classes.  Model
 imports remain lazy until LeRobot resolves the selected policy type.
 """
 
+from .aug_act.configuration_aug_act import AugACTConfig
 from .control_act.configuration_control_act import ControlACTConfig
 from .control_groot.configuration_control_groot import ControlGrootConfig
 from .control_pi05.configuration_control_pi05 import ControlPI05Config
@@ -14,6 +15,7 @@ from .masked_pi05.configuration_masked_pi05 import MaskedPI05Config
 from .slim_groot.configuration_slim_groot import SlimGrootConfig
 
 __all__ = [
+    "AugACTConfig",
     "ControlACTConfig",
     "ControlGrootConfig",
     "ControlPI05Config",
