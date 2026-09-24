@@ -20,9 +20,9 @@ So a row averaging 0.4 transfers shows an episode with no transfer, and one
 averaging 1.05 shows a single transfer -- what a viewer should expect to see.
 
     scripts/select_rollout_videos.py $OCTVLA_OUTPUT_ROOT/eval --prefix F \
-        --dest docs/videos/F --table /tmp/F.md
+        --dest docs/videos/stage_a_all_arms --table /tmp/F.md
 
-docs/rollout_videos.md holds the report's selection (docs/videos/<prefix>/).
+docs/rollout_videos.md holds the report's selection (docs/videos/<study>/).
 Mind the home quota when choosing --dest: the home filesystem allocates 32 MB
 per file, so 45 half-megabyte videos take ~1.5 GB of it.
 """
