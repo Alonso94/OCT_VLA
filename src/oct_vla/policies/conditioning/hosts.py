@@ -24,6 +24,8 @@ from types import MethodType
 
 import torch
 
+from .tokens import entity_key_bias, realign_suffix_positions
+
 _ACTIVE_PI = ContextVar("octvla_pi_attention", default=None)
 
 
@@ -120,11 +122,24 @@ def install_smol_kv(model):
     context = ContextVar(f"octvla_smol_{id(host)}", default=None)
     native_interface = host.get_attention_interface()
 
+    def entities():
+        from oct_vla.policies.object_conditioning import unwrap_object_conditioning
+
+        return getattr(unwrap_object_conditioning(model.object_conditioning), "_suffix_entities", None)
+
     def interface(mask, batch, head_dim, query, key, value):
-        output = native_interface(mask, batch, head_dim, query, key, value)
         current = context.get()
+        layout = entities() if current is not None else None
+        # kv_tokens: a self-attention call over a suffix holding entities gets
+        # ACT's gate on the entity keys. Cross-attention layers attend the
+        # prefix only, where there are no entity keys.
+        if layout is not None and not current[3] and current[1]:
+            bias = entity_key_bias(layout, mask.shape[-2], mask.shape[-1], current[1], torch.float32)
+            output = _biased_eager(host, mask, bias, batch, head_dim, query, key, value)
+        else:
+            output = native_interface(mask, batch, head_dim, query, key, value)
         if current is not None:
-            layer_name, steps, calls_to_skip = current
+            layer_name, steps, calls_to_skip, _ = current
             if calls_to_skip[0]:
                 calls_to_skip[0] -= 1
             else:
@@ -174,7 +189,7 @@ def install_smol_kv(model):
                 cache = kwargs.get("past_key_values", args[5] if len(args) > 5 else None)
                 prefix_call = cross and len(inputs_embeds) == 2 and not cache
                 skip = int(bool(prefix_call))
-                token = context.set((branch, steps, [skip]))
+                token = context.set((branch, steps, [skip], cross))
                 try:
                     return native(model_layers, inputs_embeds, layer_idx, *args, **kwargs)
                 finally:
@@ -183,6 +198,40 @@ def install_smol_kv(model):
             return forward
 
         setattr(host, method_name, MethodType(wrap(native, "cross" in method_name), host))
+
+    # kv_tokens: every action keeps its stage-1 RoPE position (tokens.py).
+    native_forward = host.forward
+
+    def forward(*args, position_ids=None, inputs_embeds=None, **kwargs):
+        layout = entities()
+        suffix = inputs_embeds[1] if inputs_embeds is not None else None
+        if layout is not None and suffix is not None:
+            if position_ids is None:
+                raise RuntimeError("entity positions need position_ids by keyword")
+            position_ids = realign_suffix_positions(position_ids, suffix.shape[1], layout)
+        return native_forward(*args, position_ids=position_ids, inputs_embeds=inputs_embeds,
+                              **kwargs)
+
+    host.forward = forward
+
+
+def _biased_eager(host, mask, bias, batch_size, head_dim, query, key, value):
+    """SmolVLM's eager attention (smolvlm_with_expert.eager_attention_forward)
+    with an additive ``bias`` on the scores before its boolean mask."""
+    heads, kv_heads = host.num_attention_heads, host.num_key_value_heads
+    groups = heads // kv_heads
+    length = key.shape[1]
+    key = key[:, :, :, None, :].expand(batch_size, length, kv_heads, groups, head_dim)
+    key = key.reshape(batch_size, length, kv_heads * groups, head_dim)
+    value = value[:, :, :, None, :].expand(batch_size, length, kv_heads, groups, head_dim)
+    value = value.reshape(batch_size, length, kv_heads * groups, head_dim)
+    query = query.to(torch.float32).transpose(1, 2)
+    key = key.to(torch.float32).transpose(1, 2)
+    scores = torch.matmul(query, key.transpose(2, 3)) * head_dim**-0.5 + bias
+    scores = torch.where(mask[:, None, :, :], scores, torch.finfo(torch.float32).min)
+    probs = torch.nn.functional.softmax(scores, dim=-1).to(value.dtype)
+    output = torch.matmul(probs, value.permute(0, 2, 1, 3)).permute(0, 2, 1, 3)
+    return output.reshape(batch_size, -1, kv_heads * groups * head_dim)
 
 
 def install_diffusers_kv(head, control, *, conditioning_owner=None):

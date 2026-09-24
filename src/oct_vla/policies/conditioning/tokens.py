@@ -11,6 +11,10 @@ Where the tokens go, by host:
 * ACT: appended to the encoder sequence, behind a learned logit gate (`extend`).
 * pi0.5, SmolVLA: prepended to the action-expert suffix as their own attention
   block (`prepend_entities`); the hosts read actions back as the last positions.
+  As in ACT, the actions reach the entities through the learned gate
+  (`gate_suffix_mask`), and the entities take no RoPE positions of their own
+  (`realign_suffix_positions`), so every action sits where stage 1 put it.
+  Without both, prepending moved the pi0.5 action chunk by 137 % at step 0.
 * GR00T: prepended to the DiT sequence (in ``control_groot``).
 
 Unlike KV and AdaLN this is **not identity at init**: the new keys enter the
@@ -98,9 +102,13 @@ def prepend_entities(control, embs: Tensor, pad_masks: Tensor, att_masks: Tensor
     """
     tokens = getattr(control, "incontext", None)
     inputs = scene_inputs(control)
+    control._suffix_entities = None
     if tokens is None or inputs is None:
         return embs, pad_masks, att_masks
     entities, padding = tokens.embed(*inputs, embs.shape[0], embs.dtype)
+    # Read by the host's expert-forward wrapper, which sees the masks and
+    # positions the host builds from these pad masks.
+    control._suffix_entities = SuffixEntities(entities.shape[1], ~padding, tokens.gate)
     opens = torch.zeros(padding.shape, dtype=att_masks.dtype, device=att_masks.device)
     opens[:, 0] = 1
     return (
@@ -108,3 +116,50 @@ def prepend_entities(control, embs: Tensor, pad_masks: Tensor, att_masks: Tensor
         torch.cat([~padding, pad_masks], dim=1),
         torch.cat([opens, att_masks], dim=1),
     )
+
+
+class SuffixEntities:
+    """Where the prepended entities sit in the suffix, for the host wrapper."""
+
+    def __init__(self, count: int, real: Tensor, gate: Tensor) -> None:
+        self.count = count
+        self.real = real  # [B, N] True for a real (non-padded) entity
+        self.gate = gate
+
+
+def realign_suffix_positions(position_ids: Tensor, suffix_len: int, layout: SuffixEntities):
+    """Give every action the RoPE position it had with no entities in front.
+
+    The hosts number positions by a cumulative sum over the pad mask, so N real
+    entities push every action N places along. Actions are moved back; the
+    entities share the first action's position. Only the last ``suffix_len``
+    columns (the suffix) change.
+    """
+    n = layout.count
+    positions = position_ids.clone()
+    suffix = positions[:, -suffix_len:]
+    real = layout.real.sum(dim=1, keepdim=True).to(positions.dtype)
+    suffix[:, n:] -= real
+    suffix[:, :n] = suffix[:, n : n + 1]
+    return positions
+
+
+def entity_key_bias(layout: SuffixEntities, rows: int, keys: int, suffix_len: int, dtype):
+    """``[B, 1, rows, keys]`` additive scores: the gate where an action query
+    meets a real entity key, zero elsewhere. The queries are the last ``rows``
+    of the sequence and the keys end with the suffix."""
+    n = layout.count
+    batch = layout.real.shape[0]
+    bias = torch.zeros(batch, 1, rows, keys, dtype=dtype, device=layout.real.device)
+    start = keys - suffix_len
+    actions = rows - (suffix_len - n)
+    gate = layout.gate.to(dtype) * layout.real.to(dtype)  # [B, N]
+    bias[:, 0, actions:, start : start + n] = gate[:, None, :]
+    return bias
+
+
+def gate_suffix_mask(mask4d: Tensor, suffix_len: int, layout: SuffixEntities) -> Tensor:
+    """Add the gate to an additive ``[B, 1, Lq, Lk]`` mask (pi0.5), leaving
+    masked entries masked."""
+    bias = entity_key_bias(layout, mask4d.shape[-2], mask4d.shape[-1], suffix_len, mask4d.dtype)
+    return torch.where(mask4d == 0, mask4d + bias, mask4d)

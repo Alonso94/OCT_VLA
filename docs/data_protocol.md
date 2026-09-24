@@ -61,8 +61,28 @@ stored as its **atomic clips**, one per transfer (`episode_kind =
 atomic_restock`), each keeping only its own frames; the first clip has no
 previous neighbour, later ones do. A successful three-object run gives exactly
 three clips. `EPISODE_KIND=full_run` stores the uncut run instead, under
-`$OCTVLA_COLLECTION_ROOT/full_run/<profile>/`. Training budgets count runs, not
-clips (`--max-runs`).
+`$OCTVLA_COLLECTION_ROOT/full_run/<profile>/`. `EPISODE_KIND=paired` writes
+both from the **same** oracle execution into one seed directory (the full run
+as `episode_<ssss>_full`), so an atomic and a full-run export differ only in
+episode boundaries; the builder then selects one with `--episode-kind` and
+refuses a mixed corpus without it. Re-collecting a seed does not reproduce its
+trajectory (cuRobo plans stochastically), which is why this exists. Training
+budgets count runs, not clips (`--max-runs`).
+
+**Full runs are the training default from 2026-09-24.** On the paired corpus,
+plain RGB ACT trained on full runs beats the same runs cut into atomic clips
+on every training seed (research_questions.md §4.6).
+
+**Identity partition.** Collection records each scene's mesh variants
+(`metadata.model_ids`). The builder holds out a *declared* set
+(`HOLDOUT_MODEL_IDS=0,5,6`, the evaluation's held-out and novel tiers) rather
+than the rarest geometries (`IDENTITY_HOLDOUT=N`, kept for old corpora), since
+a recollection can change which geometries are rarest.
+
+**Count profiles.** `two_object` draws a three-object layout and drops one of
+the later objects (`layout = "nested_in_3"`), so its first target is placed
+exactly as in training; independently drawn, it reached 15 cm outside that
+support. `four_object` is drawn directly and stays inside it.
 
 **On disk (canonical).** Each clip is saved as
 `$OCTVLA_COLLECTION_ROOT/<profile>/seed_<s>/episode_<ssss>_<i>/`. It holds

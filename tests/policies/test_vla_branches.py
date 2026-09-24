@@ -72,3 +72,38 @@ def test_scene_vector_gets_gradient_through_its_zero_projection():
     scene = SceneVector(Config(), 8, 12)
     scene(torch.randn(2, 4, 17), torch.ones(2, 4, dtype=torch.bool), 2).sum().backward()
     assert scene.projection.weight.grad.abs().sum() > 0
+
+
+def _layout(real, gate=-4.0):
+    from oct_vla.policies.conditioning.tokens import SuffixEntities
+
+    real = torch.tensor(real)
+    return SuffixEntities(real.shape[1], real, torch.tensor(gate))
+
+
+def test_actions_keep_their_stage1_positions():
+    from oct_vla.policies.conditioning.tokens import realign_suffix_positions
+
+    # Prefix of 3, then 2 entity slots (row 0: both real; row 1: one padded),
+    # then 3 actions, positioned by the host's cumulative sum over pad masks.
+    pads = torch.tensor([[1, 1, 1, 1, 1, 1, 1, 1], [1, 1, 1, 1, 0, 1, 1, 1]], dtype=torch.long)
+    positions = torch.cumsum(pads, dim=1) - 1
+    fixed = realign_suffix_positions(positions, suffix_len=5, layout=_layout([[1, 1], [1, 0]]))
+    assert fixed[:, -3:].tolist() == [[3, 4, 5], [3, 4, 5]]  # as with no entities
+    assert fixed[:, 3:5].tolist() == [[3, 3], [3, 3]]
+    assert torch.equal(fixed[:, :3], positions[:, :3])
+
+
+def test_the_gate_reaches_only_action_queries_on_real_entity_keys():
+    from oct_vla.policies.conditioning.tokens import entity_key_bias, gate_suffix_mask
+
+    layout = _layout([[1, 0]])
+    # Denoise-step geometry: queries are the suffix (2 entities + 3 actions),
+    # keys are a prefix of 4 plus the suffix.
+    bias = entity_key_bias(layout, rows=5, keys=9, suffix_len=5, dtype=torch.float32)[0, 0]
+    assert bias[2:, 4].tolist() == [-4.0] * 3 and bias[2:, 5].tolist() == [0.0] * 3
+    assert bias[:2].abs().sum() == 0 and bias[:, :4].abs().sum() == 0
+    mask = torch.zeros(1, 1, 5, 9)
+    mask[..., 4] = -1e30  # a masked entry stays masked, not "masked + gate"
+    gated = gate_suffix_mask(mask, 5, layout)
+    assert torch.equal(gated[..., 4], mask[..., 4])

@@ -107,19 +107,36 @@ they are removed again before anything reads the host's output. This is inspired
 by LPWM's `ctx_mode="token"`, with every entity rather than one context vector
 as a token.
 
-**It is not identity at init:** the new keys enter the host's softmax. On ACT a
+**It is not identity at init:** the new keys enter the host's softmax. A
 learned logit gate `b`, initialised to −4, holds the entities to about e⁻⁴ of a
 native token's attention mass. That is small, but the gradient into `b` stays
-alive. The VLA hosts have no additive attention mask to gate through, so there
-the step-0 deviation is measured by the init check (§4) rather than bounded.
+alive; at −∞ the arm is exactly the stage-1 policy, which the tests check.
+
+Every host gets the same gate (since 2026-09-24):
+- **ACT:** a float key-padding mask on the encoder (`EntityTokens.extend`).
+- **pi0.5:** added to the additive 4-D mask, on action queries × real entity
+  keys only (`gate_suffix_mask`), in a wrapper around `paligemma_with_expert.forward`.
+- **SmolVLA:** the same bias, in its self-attention layers, through an eager
+  attention that adds it before the boolean mask (`hosts._biased_eager`); its
+  cross-attention layers attend the prefix only, so hold no entity keys.
+- **GR00T:** its DiT reads no positions from the sequence and takes no mask;
+  the step-0 drift is 0.16 % without a gate.
+
+The VLA hosts also number RoPE positions by a cumulative sum over the pad mask,
+so prepended entities used to push every action N positions along.
+`realign_suffix_positions` puts each action back where stage 1 had it and
+gives the entities the first action's position. Before these two fixes the
+pi0.5 action chunk moved 137 % at step 0 (loss 0.250 → 0.278) and SmolVLA's
+63 %. After them, SmolVLA is exactly stage 1 at a gate of −∞ and moves 3.1 %
+at −4.
 
 ## 3. Where each arm attaches
 
 | backbone | `kv` | `kv_adaln` | `kv_tokens` |
 | --- | --- | --- | --- |
 | ACT (`control_act`) | every decoder cross-attention (LeRobot ACT has **one** decoder layer) | `SceneAdaLN` at all 11 main encoder/decoder sublayers; never the VAE encoder | appended to the encoder sequence behind the gate; stripped before the decoder |
-| pi0.5 (`control_pi05`) | every action-expert attention layer, through Gemma's own query (`hosts.install_pi_kv`) | added to `adarms_cond`, the time vector of every expert layer's adaptive RMSNorm | prepended to the expert suffix as their own attention block |
-| SmolVLA (`control_smolvla`) | every expert attention layer (`hosts.install_smol_kv`) | FiLM on every expert RMSNorm | prepended to the expert suffix |
+| pi0.5 (`control_pi05`) | every action-expert attention layer, through Gemma's own query (`hosts.install_pi_kv`) | added to `adarms_cond`, the time vector of every expert layer's adaptive RMSNorm | prepended to the expert suffix as their own attention block, behind the gate, actions at their stage-1 positions |
+| SmolVLA (`control_smolvla`) | every expert attention layer (`hosts.install_smol_kv`) | FiLM on every expert RMSNorm | prepended to the expert suffix, behind the gate in self-attention layers, actions at their stage-1 positions |
 | GR00T N1.7 (`control_groot`) | every DiT attention layer, before its output projection (`hosts.install_diffusers_kv`) | added to the DiT timestep embedding | prepended to the DiT sequence, stripped from its output |
 | VLA-JEPA (`control_vla_jepa`) | every DiT attention layer (`hosts.install_diffusers_kv`) | — | — |
 

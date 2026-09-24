@@ -20,7 +20,13 @@ from torch import Tensor
 
 from oct_vla.policies.conditioning.adaln import SceneVector
 from oct_vla.policies.conditioning.hosts import install_pi_kv
-from oct_vla.policies.conditioning.tokens import EntityTokens, prepend_entities, scene_inputs
+from oct_vla.policies.conditioning.tokens import (
+    EntityTokens,
+    gate_suffix_mask,
+    prepend_entities,
+    realign_suffix_positions,
+    scene_inputs,
+)
 from oct_vla.policies.masked_loss import masked_loss, padded_fraction
 from oct_vla.policies.object_conditioning import (
     ObjectConditionedPolicyMixin,
@@ -44,6 +50,33 @@ class ControlPI05Pytorch(PI05Pytorch):
             self.object_conditioning.adaln = SceneVector(config, width, width)
         if config.object_conditioning == "kv_tokens":
             self.object_conditioning.incontext = EntityTokens(config, width)
+            self._install_entity_gate()
+
+    def _install_entity_gate(self) -> None:
+        """Gate and position the prepended entities the way ACT does.
+
+        pi0.5 builds its 4-D additive mask and RoPE positions from the suffix
+        pad mask inside `forward` and `denoise_step`; both reach the expert
+        through `paligemma_with_expert.forward`, so that is where they are fixed.
+        """
+        host = self.paligemma_with_expert
+        native = host.forward
+
+        def forward(*args, attention_mask=None, position_ids=None, inputs_embeds=None, **kwargs):
+            control = unwrap_object_conditioning(self.object_conditioning)
+            layout = getattr(control, "_suffix_entities", None)
+            suffix = inputs_embeds[1] if inputs_embeds is not None else None
+            if layout is not None and suffix is not None:
+                if attention_mask is None or position_ids is None:
+                    raise RuntimeError("entity gate needs attention_mask and position_ids by "
+                                       "keyword; upstream's call changed")
+                steps = suffix.shape[1]
+                attention_mask = gate_suffix_mask(attention_mask, steps, layout)
+                position_ids = realign_suffix_positions(position_ids, steps, layout)
+            return native(*args, attention_mask=attention_mask, position_ids=position_ids,
+                          inputs_embeds=inputs_embeds, **kwargs)
+
+        host.forward = forward
 
     def embed_suffix(self, noisy_actions: Tensor, timestep: Tensor):
         action_emb, pad_masks, att_masks, adarms_cond = super().embed_suffix(
