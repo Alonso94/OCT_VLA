@@ -445,10 +445,77 @@ frame, which the full run keeps — part of the difference, by design.
   sequencing and robustness. Mean transfers rise on seen, held-out and four
   objects; success does not.
 
-**Observation history (`CF-rgb_hist`: the same short chunk plus a two-frame
-history; rollouts running).** The three models trained; their first rollouts
-died at startup on an unregistered policy type (fixed, `ff2ecce`) and are
-re-queued. `rgb_hist` against `rgb_short` isolates the history.
+**Observation history (`CF-rgb_hist`: the short chunk plus the current frame
+and one 0.2 s earlier; done).** It makes things worse:
+
+| scope | against `rgb_short` (the history alone) | against `CF-rgb` |
+| --- | --- | --- |
+| 3 objects, seen: success | 7 → 2 of 60 (p = 0.18) | 9 → 2 (p = 0.065) |
+| 2 objects: ≥1 transfer | 33 → 18 (**p = 0.014**) | 34 → 18 (**p = 0.005**) |
+| 2 objects: success | 7 → 6 | 19 → 6 (**p = 0.004**) |
+| 3 objects, novel: ≥1 transfer | 1 → 2 | 24 → 2 (**p < 0.001**) |
+
+Lifts rise (55/60 on seen) but chaining collapses: the second transfer given
+the first is 4/32. This is the known failure of history in behaviour cloning
+(the policy copies its own recent motion instead of reading the scene), not a
+missing-state problem the history could fix. The novel-mesh collapse is
+shared with `rgb_short`, so it belongs to the short chunk.
+
+### 4.8 Grasp precision: why the arm reaches the object and knocks it
+
+The rollout videos show the arm arriving at the right object and then
+knocking it. `scripts/diagnose_camera_reliance.py` measures, for every
+gripper-close event in held-out episodes, the error of the policy's
+predicted grasp point against the oracle's, and how far that prediction moves
+when one camera's frame is swapped for the same camera at another moment.
+`CF-rgb` seed 1000, left arm (the arm that lifts objects off the lower shelf),
+median over 60 samples:
+
+| cell | split | grasp error, horizontal | 3-D | moves if **head** swapped | if **left wrist** swapped |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `CF-rgb` | validation | 11.3–13.2 mm | 18–21 mm | 166–204 mm | 7–34 mm |
+| `CF-rgb` | **training** | 7.3–7.9 mm | 14–20 mm | | |
+| `CF-rgb_headdrop` | validation | 13.7–14.8 mm | 18–20 mm | **14 mm** (at the grasp) | **87 mm** |
+| `CF-rgb_shift` | validation | 13.0–17.6 mm | 21–24 mm | 167–195 mm | 15–28 mm |
+
+(Ranges are over 0, 10 and 20 steps before the close.) The right arm's
+grasps are 3.7 mm off and move with no camera: they happen at a fixed pose.
+
+- **The policy grasps from the head camera.** A 5–7 cm box spans about
+  10–15 pixels there, roughly 5 mm a pixel, and the 8 cm gripper leaves only
+  millimetres of clearance: a centimetre of error is a knock.
+- **Making it use the wrist camera does not make it precise.** Blanking the
+  head camera on half the training samples (`rgb_headdrop`) moved the policy
+  onto the wrist camera, and the grasp error did not fall.
+- **It is not precise even on its own training grasps** (7.6 mm median, 18 mm
+  at the 90th percentile). The limit is the fit: 40 k steps at batch 8 on
+  absolute end-effector targets normalised over the whole workspace, where
+  a centimetre is 0.05 σ. The validation gap (7.6 → 12.7 mm) comes on top.
+
+**Augmentation arms (done)**, both against `CF-rgb`:
+
+| scope | `rgb_headdrop` | `rgb_shift` (12 px) |
+| --- | --- | --- |
+| 3 objects, seen: success | 9 → 3 (p = 0.15) | 9 → 5 (p = 0.42) |
+| 3 objects, seen: T1 \| lift | 24/48 → 15/52 | 24/48 → 23/56 |
+| 2 objects: success | 19 → 16 (p = 0.69) | 19 → 16 (p = 0.61) |
+| 4 objects: ≥1 transfer | 31 → 17 (**p = 0.016**) | 31 → 19 (**p = 0.017**) |
+| 3 objects, novel: ≥1 transfer | 24 → 24 | 24 → **44 (p = 0.001)** |
+
+Neither improves the grasp or the task. Random shift makes the policy far
+more robust on the novel mesh (every seed, 12–16 of 20 with a transfer, against
+2–17), and it is kept in mind as a robustness tool, not a precision one.
+
+**What this points to** (not yet run):
+- **Chunk-relative actions:** predict each chunk as poses relative to the
+  end-effector pose at the chunk's start, executed as absolute targets
+  (UMI's relative trajectory). It removes the workspace-wide normalisation
+  that makes a centimetre 0.05 σ, without the integration the failed delta
+  regimes suffer from.
+- **Fit before generalisation:** longer training and larger batches; the
+  training-set grasp error is the check.
+- **Corrective demonstrations:** some oracle approaches started from an offset
+  pose, so the data pairs an off-centre wrist view with a correction.
 
 **VLA pipeline.** The end-to-end smoke tests (stage 1 → merge → init check →
 stage 2 → rollout, all four arms) found three bugs, now fixed:
@@ -487,7 +554,8 @@ GR00T.
 | Q1, Q2, Q3 (ACT) | `F`: rgb, rgb_cont, rgb_novae, kv, kv_adaln, kv_tokens, scratch_kv; count re-run on the nested layout | **done** (§4.1–4.3) |
 | Q4 (ACT) | `J`, `D`, `X`: rgb × 3 seeds | **done** (§4.4) |
 | chaining | `AF-rgb` vs `CF-rgb` | **done** (§4.6) |
-| chunk / history | `CF-rgb_short` (done, §4.7), `CF-rgb_hist` × 3 seeds | rollouts running |
+| chunk / history | `CF-rgb_short`, `CF-rgb_hist` | **done** (§4.7): neither beats `CF-rgb` |
+| grasp precision | `CF-rgb_headdrop`, `CF-rgb_shift`, camera diagnostic | **done** (§4.8): precision is a fit limit |
 | Stage A2 | conditioned arms on `CF` | after the history study |
 | Q1–Q4 (VLAs) | `slurm/submit_vla_experiments.sh` | **ready**: all smoke tests pass |
 
@@ -503,6 +571,11 @@ GR00T.
 
 ## Update log
 
+- **2026-09-24 (evening).** All full-run ablations in. History hurts (two-object
+  success 19 → 6 of 60). The grasp diagnostic (§4.8): the left arm grasps from
+  the head camera and misses by 11–13 mm; forcing it onto the wrist camera
+  does not help, and it misses by 7.6 mm even on training grasps, so precision
+  is a fit limit. `CF-rgb` remains the best RGB ACT.
 - **2026-09-24 (afternoon).** Short chunk on full runs (§4.7): better single
   transfers and far fewer knock-offs, worse chaining (two-object success
   19 → 7 of 60) and a novel-mesh collapse on every seed. All three VLA smoke

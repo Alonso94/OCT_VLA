@@ -66,6 +66,8 @@ def main() -> int:
                         help="Frames before the close event to predict from")
     parser.add_argument("--max-events", type=int, default=60)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--split", choices=("val", "train"), default="val",
+                        help="train measures fit rather than generalisation")
     parser.add_argument("--out", type=Path)
     args = parser.parse_args()
     leads = [int(v) for v in args.leads.split(",")]
@@ -86,9 +88,9 @@ def main() -> int:
     chunk = config.chunk_size
 
     manifest = json.loads((args.dataset / "split_manifest.json").read_text())
-    first_val, last_val = manifest["val"]["episodes"]
+    first, last = manifest[args.split]["episodes"]
     dataset = LeRobotDataset("local/diag", root=args.dataset,
-                             episodes=list(range(first_val, last_val + 1)))
+                             episodes=list(range(first, last + 1)))
 
     by_episode: dict[int, list[int]] = {}
     for index in range(len(dataset.hf_dataset)):
