@@ -170,7 +170,18 @@ if [ "$TRAIN_VARIANT" = "object" ]; then
     --policy.discover_packages_path=oct_vla.policies
     --policy.object_conditioning="$CONDITIONING"
   )
-  [ -n "$BASE_MODEL" ] && POLICY_ARGS+=(--policy.pretrained_path="$BASE_MODEL")
+  if [ -n "$BASE_MODEL" ]; then
+    POLICY_ARGS+=(--policy.pretrained_path="$BASE_MODEL")
+    # --policy.type starts from the class defaults, so take every field the
+    # checkpoint set away from them. Without this, conditioned SmolVLA ran its
+    # VLM in float32 against a bfloat16 baseline (load_vlm_weights).
+    INHERITED_TEXT=$(HF_HUB_OFFLINE=1 "$OCTVLA_POLICY_PYTHON" "$OCTVLA_REPO/scripts/inherited_policy_args.py" \
+      "$BASE_MODEL" "$OBJECT_POLICY_TYPE")
+    if [ -n "$INHERITED_TEXT" ]; then
+      mapfile -t INHERITED_ARGS <<< "$INHERITED_TEXT"
+      POLICY_ARGS+=("${INHERITED_ARGS[@]}")
+    fi
+  fi
 elif [ -z "$BASE_MODEL" ]; then
   POLICY_ARGS=(--policy.type="$STOCK_POLICY_TYPE" --policy.discover_packages_path=oct_vla.policies)
 elif [ "$STOCK_POLICY_TYPE" = "$BACKBONE" ]; then
