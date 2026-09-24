@@ -416,17 +416,39 @@ The remaining ACT interventions are measured on the `CF` corpus.
 corpus of 75 training runs. The atomic export also drops each clip's terminal
 frame, which the full run keeps — part of the difference, by design.
 
-### 4.7 Running and next
+### 4.7 Short chunk and observation history (full-run corpus)
 
-**Observation history (`CF-rgb_short`, `CF-rgb_hist`, running).** On the
-full-run corpus, 3 seeds each, the usual 4 rollouts:
-- `rgb_short`: chunk 20, executing 8 (padding 2.2 %).
-- `rgb_hist`: the same plus a two-frame history (`policies/history_act`: the
-  current frame and one 0.2 s earlier, each frame's camera tokens with a
-  learned frame embedding, both states in one token).
+**Short chunk (`CF-rgb_short`: chunk 20, executing 8; done).** Against
+`CF-rgb` (chunk 50, executing 25), paired over the same scenes:
 
-`rgb_short` against `CF-rgb` is the chunk change; `rgb_hist` against
-`rgb_short` is the history alone.
+| scope | success | p | ≥1 transfer | p | mean transfers |
+| --- | --- | ---: | --- | ---: | --- |
+| 3 objects, seen | 9 → 7 of 60 | 0.79 | 24 → 35 | 0.061 | 0.70 → 0.93 |
+| 3 objects, held-out | 0 → 0 | — | 3 → 13 | **0.021** | 0.05 → 0.25 |
+| 3 objects, novel | 6 → 0 | **0.031** | 24 → 1 | **< 0.001** | 0.75 → 0.02 |
+| 2 objects | 19 → 7 | **0.004** | 34 → 33 | 1.00 | 0.88 → 0.67 |
+| 4 objects | 0 → 0 | — | 31 → 38 | 0.21 | 0.58 → 0.82 |
+
+- **Single transfers improve.** The first transfer after a lift rises from
+  24/48 to 35/48 on seen objects, and from 31/54 to 38/52 at four objects;
+  held-out objects get transferred at all (13 against 3). Objects placed and
+  then knocked off fall from 65 to 23: re-planning every 8 steps instead of
+  25 disturbs the shelf less.
+- **Chaining gets worse.** The second transfer given the first falls to
+  7/33 at two objects (from 19/34), so two-object success drops 19 → 7.
+- **The novel mesh collapses on every seed:** lifts in 6 of 60 episodes
+  against 42 for `CF-rgb` (3, 1 and 2 of 20 per seed). Execution was checked
+  (horizon 8, chunk 20, meshes pinned to 5). Mesh 5 is the one variant the
+  oracle has never collected; a short-horizon policy apparently cannot start a
+  grasp on an out-of-distribution shape at all. Unexplained.
+- **Net:** a trade, not an improvement: better local manipulation, worse
+  sequencing and robustness. Mean transfers rise on seen, held-out and four
+  objects; success does not.
+
+**Observation history (`CF-rgb_hist`: the same short chunk plus a two-frame
+history; rollouts running).** The three models trained; their first rollouts
+died at startup on an unregistered policy type (fixed, `ff2ecce`) and are
+re-queued. `rgb_hist` against `rgb_short` isolates the history.
 
 **VLA pipeline.** The end-to-end smoke tests (stage 1 → merge → init check →
 stage 2 → rollout, all four arms) found three bugs, now fixed:
@@ -447,7 +469,8 @@ entities and keeps the actions' positions** (`method.md` §2.3). Prepending
 them used to shift every action's RoPE position and let them into the softmax
 at full weight, moving pi0.5's step-0 action chunk by 137 %; behind the gate it moves
 0.36 % (SmolVLA 3.1 %), and matches stage 1 when the gate is closed. GR00T
-passes all checks; the pi0.5 and SmolVLA smoke reruns are queued.
+passes all checks. **All three VLAs now pass the full smoke pipeline**
+(stage 1 → merge → init check for every arm → stage 2 → rollout).
 
 **Stage A2, gated on RGB chaining:** the conditioned arms on the full-run
 corpus, since Q1–Q3 hold only for atomic training. Then the VLAs (Stage B).
@@ -464,9 +487,9 @@ GR00T.
 | Q1, Q2, Q3 (ACT) | `F`: rgb, rgb_cont, rgb_novae, kv, kv_adaln, kv_tokens, scratch_kv; count re-run on the nested layout | **done** (§4.1–4.3) |
 | Q4 (ACT) | `J`, `D`, `X`: rgb × 3 seeds | **done** (§4.4) |
 | chaining | `AF-rgb` vs `CF-rgb` | **done** (§4.6) |
-| history | `CF-rgb_short`, `CF-rgb_hist` × 3 seeds | running |
+| chunk / history | `CF-rgb_short` (done, §4.7), `CF-rgb_hist` × 3 seeds | rollouts running |
 | Stage A2 | conditioned arms on `CF` | after the history study |
-| Q1–Q4 (VLAs) | `slurm/submit_vla_experiments.sh` | after the SmolVLA smoke rerun |
+| Q1–Q4 (VLAs) | `slurm/submit_vla_experiments.sh` | **ready**: all smoke tests pass |
 
 **Storage rules**, since the vault has 1 TB for everything:
 - Every run keeps only its final checkpoint and drops its optimiser state on
@@ -480,6 +503,10 @@ GR00T.
 
 ## Update log
 
+- **2026-09-24 (afternoon).** Short chunk on full runs (§4.7): better single
+  transfers and far fewer knock-offs, worse chaining (two-object success
+  19 → 7 of 60) and a novel-mesh collapse on every seed. All three VLA smoke
+  tests pass. History rollouts re-queued after a missing rename-map entry.
 - **2026-09-24.** Stage A complete; Q1–Q4 answered for ACT on atomic clips
   (header table). Against the budget control, conditioning helps only
   held-out object sizes, through AdaLN; count generalisation is not helped;
