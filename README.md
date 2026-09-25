@@ -26,10 +26,14 @@ RGB policy given the same extra training):
   on continuous runs instead of per-transfer clips teaches ACT to chain
   transfers (1 → 9 of 60 three-object successes), and 40 k more steps double
   that again.
-- **VLAs:** stage 1 (RGB) is done. GR00T learns the task on absolute
-  end-effector control; pi0.5 and SmolVLA do not transfer objects. GR00T
-  stage 2 — does AdaLN's held-out benefit survive on a pretrained VLA — is
-  running.
+- **VLAs, GR00T:** on a pretrained VLA the effect is broader. Against its
+  budget control, KV and AdaLN conditioning raise seen-object success from 9 to
+  31 and 35 of 60, and held-out from 0 to 7 and 11, on every seed. The grasp
+  becomes reliable; what remains is placed objects knocked off later. Entity
+  tokens are unsupported on GR00T (its DiT takes no attention mask).
+- **pi0.5 and SmolVLA** learn the action target offline but transfer nothing
+  closed-loop from RGB; their conditioned stage 2 is running, to see whether
+  object state rescues them.
 
 ## How it works
 

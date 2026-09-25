@@ -27,6 +27,7 @@ seen identities, the two-object scene on the nested layout.
 | `videos/chaining_atomic_clips/` | plain RGB ACT on the paired corpus, atomic clips | `AF` | §4.6 |
 | `videos/full_runs_all_arms/` | every ACT arm on continuous runs: the chaining study's full-run policy (`rgb`), Stage A2, and the baseline ablations | `CF` | §4.6–4.9 |
 | `videos/vla_stage1/` | pi0.5, SmolVLA and GR00T, RGB stage 1, both absolute regimes | `PF` … `GJ` | §4.10 |
+| `videos/groot_stage2/` | GR00T stage 2: the budget control and the conditioned arms, seen and held-out objects | `GF` | §4.11 |
 
 ## Stage A: every arm, atomic clips (`videos/stage_a_all_arms/`, `F`)
 
@@ -164,6 +165,28 @@ RGB only, seen identities, three objects.
 | GR00T N1.7 | absolute EE | 3 objects, all identities | 1001 | 801 | seen | 1 | 2 | no | 0.85, 0.55, 0.15 | [rgb__three_all.mp4](videos/vla_stage1/groot_abs_ee/rgb__three_all.mp4) |
 | GR00T N1.7 | absolute joint | 3 objects, all identities | 1002 | 802 | seen | 0 | 1 | no | 0.25, 0.35, 0.30 | [rgb__three_all.mp4](videos/vla_stage1/groot_abs_joint/rgb__three_all.mp4) |
 
+## GR00T stage 2 (`videos/groot_stage2/`, `GF`)
+
+Absolute EE, full-run corpus. `rgb` is stage 1 (the same video as
+`vla_stage1/groot_abs_ee/`); `rgb_cont` is the budget control, trained 8 k more
+steps; `kv` and `kv_adaln` are the conditioned arms, trained the same 8 k from
+the same checkpoint. `kv_tokens` is unsupported on GR00T (§4.11). What to look
+for: the conditioned arms grasp and carry reliably, and most of what they lose
+is a placed object knocked off later; the control drops objects on the way.
+
+The representative episode is not a success even for `kv_adaln`, whose mean
+is two transfers of three: that is what the rule is for.
+
+| arm | setting | training seed | scene seed | meshes | transfers | lifted | success | row mean transfers (per seed) | video |
+| --- | --- | ---: | ---: | --- | ---: | ---: | --- | --- | --- |
+| rgb | 3 objects, seen identities | 1001 | 801 | seen | 1 | 2 | no | 0.85, 0.55, 0.15 | [rgb__three_all.mp4](videos/vla_stage1/groot_abs_ee/rgb__three_all.mp4) |
+| rgb_cont | 3 objects, seen identities | 1002 | 800 | seen | 1 | 2 | no | 1.10, 0.75, 1.05 | [rgb_cont__three_seen.mp4](videos/groot_stage2/rgb_cont__three_seen.mp4) |
+| rgb_cont | 3 objects, heldout identities | 1000 | 803 | heldout | 0 | 1 | no | 0.35, 0.35, 0.25 | [rgb_cont__three_heldout.mp4](videos/groot_stage2/rgb_cont__three_heldout.mp4) |
+| kv | 3 objects, seen identities | 1002 | 803 | seen | 2 | 2 | no | 1.55, 2.00, 1.70 | [kv__three_seen.mp4](videos/groot_stage2/kv__three_seen.mp4) |
+| kv | 3 objects, heldout identities | 1002 | 803 | heldout | 1 | 2 | no | 0.50, 1.05, 0.85 | [kv__three_heldout.mp4](videos/groot_stage2/kv__three_heldout.mp4) |
+| kv_adaln | 3 objects, seen identities | 1001 | 800 | seen | 2 | 3 | no | 2.00, 2.00, 2.10 | [kv_adaln__three_seen.mp4](videos/groot_stage2/kv_adaln__three_seen.mp4) |
+| kv_adaln | 3 objects, heldout identities | 1000 | 819 | heldout | 1 | 3 | no | 0.65, 1.10, 0.50 | [kv_adaln__three_heldout.mp4](videos/groot_stage2/kv_adaln__three_heldout.mp4) |
+
 ## Regenerating
 
 ```bash
@@ -172,11 +195,14 @@ declare -A DEST=([F]=stage_a_all_arms [AF]=chaining_atomic_clips [CF]=full_runs_
                  [PF]=vla_stage1/pi05_abs_ee [PJ]=vla_stage1/pi05_abs_joint
                  [SF]=vla_stage1/smolvla_abs_ee [SJ]=vla_stage1/smolvla_abs_joint
                  [GF]=vla_stage1/groot_abs_ee [GJ]=vla_stage1/groot_abs_joint)
+# GR00T stage 2 shares prefix GF with its stage 1: select it into its own folder
+# and drop the rgb row's copy, which is vla_stage1/groot_abs_ee/rgb__three_all.mp4.
+#   select_rollout_videos.py ... --prefix GF --dest docs/videos/groot_stage2
 for p in "${!DEST[@]}"; do
   PYTHONPATH=src "$OCTVLA_POLICY_PYTHON" scripts/select_rollout_videos.py \
     "$OCTVLA_OUTPUT_ROOT/eval" --prefix $p --dest docs/videos/${DEST[$p]} --table /tmp/$p.md
 done
 ```
 
-Home allocates 32 MB per file, so these 106 videos take about 3.4 GB of the
+Home allocates 32 MB per file, so these 112 videos take about 3.6 GB of the
 home quota (roughly 45 MB of data).
