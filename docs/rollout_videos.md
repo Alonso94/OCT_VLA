@@ -187,6 +187,25 @@ is two transfers of three: that is what the rule is for.
 | kv_adaln | 3 objects, seen identities | 1001 | 800 | seen | 2 | 3 | no | 2.00, 2.00, 2.10 | [kv_adaln__three_seen.mp4](videos/groot_stage2/kv_adaln__three_seen.mp4) |
 | kv_adaln | 3 objects, heldout identities | 1000 | 819 | heldout | 1 | 3 | no | 0.65, 1.10, 0.50 | [kv_adaln__three_heldout.mp4](videos/groot_stage2/kv_adaln__three_heldout.mp4) |
 
+### GR00T success examples (`videos/groot_stage2/successes/`)
+
+**Not representative: chosen because they succeed.** For each arm and tier
+with any success, the first successful episode (lowest scene seed) of the
+same median training seed the representative video comes from. They show
+what a full restock looks like; the success counts say how often it happens.
+The budget control has no held-out success in 60 episodes, so there is no
+video for it.
+
+| arm | setting | successes /60 | training seed | scene seed | steps to finish | meshes | video |
+| --- | --- | ---: | ---: | ---: | ---: | --- | --- |
+| rgb (stage 1) | 3 objects, seen identities | 4 | 1001 | 800 | 285 | 1, 3, 4 | [rgb__three_seen__success.mp4](videos/groot_stage2/successes/rgb__three_seen__success.mp4) |
+| rgb_cont | 3 objects, seen identities | 9 | 1002 | 802 | 283 | 2, 3, 4 | [rgb_cont__three_seen__success.mp4](videos/groot_stage2/successes/rgb_cont__three_seen__success.mp4) |
+| rgb_cont | 3 objects, heldout identities | **0** | — | — | — | — | none |
+| kv | 3 objects, seen identities | 31 | 1002 | 801 | 296 | 2 | [kv__three_seen__success.mp4](videos/groot_stage2/successes/kv__three_seen__success.mp4) |
+| kv | 3 objects, heldout identities | 7 | 1002 | 814 | 274 | 6 | [kv__three_heldout__success.mp4](videos/groot_stage2/successes/kv__three_heldout__success.mp4) |
+| kv_adaln | 3 objects, seen identities | 35 | 1001 | 801 | 304 | 2 | [kv_adaln__three_seen__success.mp4](videos/groot_stage2/successes/kv_adaln__three_seen__success.mp4) |
+| kv_adaln | 3 objects, heldout identities | 11 | 1000 | 812 | 282 | 0, 6 | [kv_adaln__three_heldout__success.mp4](videos/groot_stage2/successes/kv_adaln__three_heldout__success.mp4) |
+
 ## Regenerating
 
 ```bash
@@ -204,5 +223,5 @@ for p in "${!DEST[@]}"; do
 done
 ```
 
-Home allocates 32 MB per file, so these 112 videos take about 3.6 GB of the
+Home allocates 32 MB per file, so these 118 videos take about 3.8 GB of the
 home quota (roughly 45 MB of data).
