@@ -505,6 +505,32 @@ Neither improves the grasp or the task. Random shift makes the policy far
 more robust on the novel mesh (every seed, 12–16 of 20 with a transfer, against
 2–17), and it is kept in mind as a robustness tool, not a precision one.
 
+**Which part of the grasp is wrong, and does conditioning fix it?** The same
+diagnostic with orientation and close timing added (`--no-swaps`), on every
+full-run arm, 207 left-arm validation grasps each (3 seeds), at the close
+step; per-seed medians averaged, seed range in brackets:
+
+| arm | horizontal | height | 3-D | orientation | close timing |
+| --- | --- | --- | --- | --- | --- |
+| `rgb` (40 k) | 12.2 mm [10.1–15.1] | 10.2 mm [6.3–16.4] | 17.5 mm | 0.6° | +1 step, none off by > 3 |
+| `rgb_cont` (80 k, control) | 8.7 [8.4–9.0] | 3.5 [2.6–4.9] | 10.0 | 0.5° | +1, none > 3 |
+| `kv` | 10.7 [9.2–11.4] | 3.6 [2.3–6.0] | 11.9 | 0.5° | +1, none > 3 |
+| `kv_adaln` | 8.8 [7.6–9.4] | **1.5 [0.9–2.4]** | 9.2 | 0.5° | +1, none > 3 |
+| `kv_tokens` | 8.6 [8.5–8.9] | 3.4 [2.9–3.8] | 9.8 | 0.5° | +1, none > 3 |
+
+- **The miss is position, not orientation or timing.** Orientation is right to
+  half a degree and the close is on time in every one of 1,035 samples.
+- **Training budget buys most of the precision:** 40 k → 80 k steps cuts the
+  3-D error from 17.5 to 10.0 mm, mostly in height (10.2 → 3.5 mm).
+- **Conditioning does not fix the horizontal error.** Every arm stays at
+  8.6–10.7 mm against the control's 8.7; `kv`, the per-entity attention, is the
+  worst. With absolute entity poses the policy gets no more horizontal
+  precision than from pixels.
+- **AdaLN is more precise in height,** 1.5 mm against 3.5, with seed ranges
+  that do not overlap (0.9–2.4 against 2.6–4.9). Small in millimetres, and
+  consistent with its held-out advantage: the pooled scene vector carries the
+  object's size, which sets the grasp height.
+
 **What this points to** (not yet run):
 - **Chunk-relative actions:** predict each chunk as poses relative to the
   end-effector pose at the chunk's start, executed as absolute targets
@@ -513,6 +539,12 @@ more robust on the novel mesh (every seed, 12–16 of 20 with a transfer, agains
   regimes suffer from.
 - **Fit before generalisation:** longer training and larger batches; the
   training-set grasp error is the check.
+- **Gripper-relative object geometry, with a zero-initialised Cartesian
+  residual:** every object's pose in each gripper's frame, feeding a small
+  correction added to the RGB policy's action. The remaining ~9 mm error is
+  horizontal and survives every current mechanism, which receive only
+  absolute poses and must learn the subtraction themselves. Only if GR00T
+  stage 2 leaves the same error.
 - **Corrective demonstrations:** some oracle approaches started from an offset
   pose, so the data pairs an off-centre wrist view with a correction.
 
