@@ -16,14 +16,20 @@ object conditioning added at zero-initialisation, as in ControlVLA.
 The living scientific state is [docs/research_questions.md](docs/research_questions.md):
 the four questions, what has been measured, and what is running.
 
-In short, on ACT (3 training seeds, pinned identity tiers):
-- object conditioning helps, most of all on object sizes never seen in training;
-- in-context entity tokens are best on seen objects, and scene AdaLN on held-out
-  ones;
-- no arm generalises to 2 or 4 objects.
-
-All of this is preliminary until the training-budget control (`rgb_cont`)
-finishes. The VLA pipeline is built and smoke-tested but has not been trained.
+In short (3 training seeds, pinned identity tiers, every arm paired against an
+RGB policy given the same extra training):
+- **ACT**, on atomic clips and again on continuous runs: conditioning adds
+  nothing on seen objects; **scene AdaLN is the one mechanism that helps**, on
+  object sizes never seen in training (0 → 6 and 0 → 7 of 60 successes against
+  the budget control). No arm helps across object count.
+- **Training data format and budget matter more than any mechanism.** Training
+  on continuous runs instead of per-transfer clips teaches ACT to chain
+  transfers (1 → 9 of 60 three-object successes), and 40 k more steps double
+  that again.
+- **VLAs:** stage 1 (RGB) is done. GR00T learns the task on absolute
+  end-effector control; pi0.5 and SmolVLA do not transfer objects. GR00T
+  stage 2 — does AdaLN's held-out benefit survive on a pretrained VLA — is
+  running.
 
 ## How it works
 

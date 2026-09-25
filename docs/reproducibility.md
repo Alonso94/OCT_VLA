@@ -199,12 +199,19 @@ batch 16, 24 h limit):
 
 ```bash
 PHASE=stage1 slurm/submit_vla_experiments.sh           # rgb on F and J, 3 backbones x 3 seeds, seen rollout
-PHASE=stage2 REGIME_pi05=F REGIME_smolvla=J REGIME_groot=F \
-  ARMS="rgb_cont kv kv_adaln" slurm/submit_vla_experiments.sh
+PHASE=stage2 BACKBONES=groot REGIME_groot=F \
+  ARMS="rgb_cont kv kv_adaln kv_tokens" slurm/submit_vla_experiments.sh
 ```
 
-`BACKBONES` defaults to `pi05 smolvla groot`. `vla_jepa` is accepted by the
-training sbatch but not queued by default. `ROLLOUTS` defaults to `seen count`.
+- `CORPUS` selects the training data: `paired_full` (continuous runs, the
+  default) or `identity` (the September atomic clips).
+- `BACKBONES` defaults to `pi05 smolvla groot` in stage 1. **Stage 2 requires it
+  explicitly**: it is only meaningful on a backbone whose RGB stage 1 does the
+  task, which on the current corpus is GR00T alone.
+- `ROLLOUTS` defaults to `seen heldout` in stage 2: held-out identity is the
+  scope where conditioning beat the budget control in ACT. Add `count` to test
+  object count.
+- `vla_jepa` is accepted by the training sbatch but not queued by default.
 
 In stage 2, the following steps are queued for each backbone and seed:
 

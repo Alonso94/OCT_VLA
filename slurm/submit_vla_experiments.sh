@@ -4,8 +4,8 @@
 #
 #   source ~/octvla/env-leftmost.sh
 #   PHASE=stage1 slurm/submit_vla_experiments.sh             # Q4: RGB, both regimes
-#   PHASE=stage2 REGIME_pi05=F REGIME_smolvla=J REGIME_groot=F \
-#     ARMS="rgb_cont kv kv_adaln" slurm/submit_vla_experiments.sh   # Q1-Q3
+#   PHASE=stage2 BACKBONES=groot REGIME_groot=F \
+#     ARMS="rgb_cont kv kv_adaln kv_tokens" slurm/submit_vla_experiments.sh   # Q1-Q2
 #
 # DRY_RUN=1 prints what would be submitted.
 #
@@ -26,7 +26,15 @@ set -euo pipefail
 
 : "${OCTVLA_REPO:?}"; : "${OCTVLA_DATASET_ROOT:?}"; : "${OCTVLA_OUTPUT_ROOT:?}"
 PHASE="${PHASE:?Set PHASE=stage1 or stage2}"
-BACKBONES="${BACKBONES:-pi05 smolvla groot}"
+# Stage 1 defaults to every backbone. Stage 2 must name them: it is only
+# meaningful on a backbone whose stage-1 RGB policy does the task (GR00T, on
+# the full-run corpus; pi0.5 and SmolVLA transfer nothing -- research_questions
+# §4.10), and a default of all three would spend it on two that cannot answer.
+if [ "$PHASE" = stage2 ]; then
+  BACKBONES="${BACKBONES:?stage 2 needs BACKBONES named explicitly, e.g. BACKBONES=groot}"
+else
+  BACKBONES="${BACKBONES:-pi05 smolvla groot}"
+fi
 SEEDS="${SEEDS:-1000 1001 1002}"
 TRAIN_STEPS="${TRAIN_STEPS:-8000}"   # the budget every earlier VLA cell used
 BATCH="${BATCH:-16}"
@@ -114,7 +122,11 @@ if [ "$PHASE" = stage1 ]; then
   done
 elif [ "$PHASE" = stage2 ]; then
   ARMS="${ARMS:?Set ARMS, e.g. \"rgb_cont kv kv_adaln\"}"
-  ROLLOUTS="${ROLLOUTS:-seen count}"
+  # Seen and held-out by default: held-out identity is the one scope where
+  # conditioning beat the budget control in ACT, on both corpora (kv_adaln,
+  # research_questions §4.1 and §4.9). Count is opt-in (ROLLOUTS="seen heldout
+  # count"); no ACT arm helped there.
+  ROLLOUTS="${ROLLOUTS:-seen heldout}"
   for backbone in $BACKBONES; do
     var="REGIME_$backbone"; regime="${!var:?Set $var to F or J, the regime stage 1 favoured}"
     prefix="${LETTER[$backbone]}$regime"

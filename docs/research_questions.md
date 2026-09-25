@@ -635,7 +635,18 @@ GR00T.
 | chunk-relative actions | `CF-rgb_rel`, `CF-rgb_rel_short` | **done** (§4.9): no gain |
 | Stage A2 | `CF`: rgb_cont, kv, kv_adaln, kv_tokens, scratch_kv × 3 seeds | **done** (§4.9): Stage A replicates |
 | Q4 (VLAs), stage 1 | `PF`/`PJ`, `SF`/`SJ`, `GF`/`GJ`: rgb × 3 seeds | **done** (§4.10): GR00T learns, absolute EE; pi0.5 and SmolVLA at zero |
-| Q1–Q3 (VLAs), stage 2 | `PHASE=stage2` on each backbone's better regime | after stage 1 |
+| Q1–Q2 (VLAs), stage 2 | `GF`: rgb_cont, kv, kv_adaln, kv_tokens × 3 seeds, seen + held-out rollouts; GR00T only | **running**. The decisive cell: does `kv_adaln` beat `rgb_cont` on held-out geometry on a pretrained VLA? |
+| Q3 (VLAs) | count rollouts on `rgb_cont` and any arm that beats it | only if GR00T stage 2 finds one |
+| semantics | geometry (16) vs geometry + semantics (16 + 16) on `place_container_plate` (bowl seen, cup held out as a category) | after stage 2; needs a closed-loop evaluator for the built-in task first |
+
+**Not to be used as a result: the current 32-column entity (v3).** Its
+"semantic" half is a hash of the object's rounded size
+(`data/entity_semantics.py`), so it re-encodes geometry. On the shelf task that
+is all a mesh differs by, so semantics cannot add information there at all.
+The planned 16 + 16 entity encodes geometry (position, rotation, size,
+aperture) to 16 and a genuinely semantic descriptor defined for unseen
+categories (entity type plus a fixed category embedding, not a learned id
+lookup) to 16, and is tested on the bowl → cup category holdout.
 
 **Storage rules**, since the vault has 1 TB for everything:
 - Every run keeps only its final checkpoint and drops its optimiser state on
@@ -649,6 +660,11 @@ GR00T.
 
 ## Update log
 
+- **2026-09-25 (later).** Review adopted: GR00T alone goes to stage 2 (pi0.5
+  and SmolVLA beat the constant predictor offline, 0.154 and 0.230 L1 against
+  0.803, but transfer nothing closed-loop, so a conditioning comparison on them
+  would compare failures). Stage-2 rollouts default to seen + held-out; stage 2
+  requires named backbones. GR00T stage 2 submitted.
 - **2026-09-25.** Stage A2, the chunk-relative arms and VLA stage 1 are in
   (141 jobs). The ACT answers replicate on full runs: AdaLN is the only
   mechanism that beats the budget control, on held-out sizes (0 → 7 of 60).
