@@ -9,18 +9,17 @@ report.
 
 ## The four questions, and the Stage A answers
 
-Stage A (ACT, 3 training seeds × 20 pinned scenes per tier, every arm against
-the budget control) is **complete**; the VLAs (Stage B) have not been trained.
-All Stage A arms learned from **atomic clips**; §4.6 shows that training on
-continuous runs changes how well a policy chains transfers, which bounds what
-the Stage A answers can claim (see "Scope" under each).
+Stage A (ACT on atomic clips) and Stage A2 (the same arms on continuous runs,
+§4.9) are **complete**, 3 training seeds × 20 pinned scenes per tier, every
+arm against the budget control. The ACT answers hold on both corpora. VLA
+stage 1 (RGB, both absolute regimes) is complete; stage 2 is not run.
 
 | # | question | ACT (Stage A) | VLAs |
 | --- | --- | --- | --- |
-| Q1 | Is object conditioning useful? | **Only for held-out objects, and only through AdaLN.** Against the budget control, no arm improves seen objects; `kv_adaln` keeps transferring objects of sizes it never saw (§4.1) | not trained |
-| Q2 | Which mechanism: KV, AdaLN, or in-context tokens? | **AdaLN.** It is the only mechanism that beats the budget control anywhere, and it beats tokens on held-out objects (§4.2) | not trained; `kv_tokens` reworked first (§4.7) |
-| Q3 | Does conditioning help compositional generalisation (train on 3, test on 2 and 4)? | **No.** No arm beats the budget control at 2 or 4 objects, and the encoder-side arms are worse than `kv` at 4. The count gap is largely a training-format effect: trained on full runs, plain RGB ACT does better on 2 objects than on 3 (§4.3, §4.6) | not trained |
-| Q4 | Which control regime: absolute joint, joint delta, absolute EE, EE delta? | **Absolute, not delta.** Both delta regimes complete 0 transfers in 180 episodes each. Absolute EE and absolute joint cannot be separated (§4.4) | not trained |
+| Q1 | Is object conditioning useful? | **Only for held-out objects, and only through AdaLN — on both corpora.** Against the budget control no arm improves seen objects; `kv_adaln` succeeds on held-out sizes where the control never does, on atomic clips (0 → 6 of 60, p = 0.031) and again on full runs (0 → 7, p = 0.016), on every seed (§4.1, §4.9) | stage 1 only (§4.10) |
+| Q2 | Which mechanism: KV, AdaLN, or in-context tokens? | **AdaLN**, on both corpora: the only mechanism that beats the budget control anywhere, and it beats tokens on held-out objects (§4.2, §4.9) | not yet |
+| Q3 | Does conditioning help compositional generalisation (train on 3, test on 2 and 4)? | **No**, on both corpora: no arm beats the budget control at 2 or 4 objects. The count gap was largely the training format (§4.3, §4.6) | not yet |
+| Q4 | Which control regime: absolute joint, joint delta, absolute EE, EE delta? | **Absolute, not delta.** Both delta regimes complete 0 transfers in 180 episodes each. Absolute EE and absolute joint cannot be separated (§4.4) | **GR00T: absolute EE ahead of absolute joint** (0.52 against 0.30 mean transfers); pi0.5 and SmolVLA at zero in both (§4.10) |
 
 Status meanings: **answered** = ≥ 3 seeds, the budget control run, the paired
 test stated, on the stated scope. With about 30 paired contrasts per matrix,
@@ -542,6 +541,83 @@ passes all checks. **All three VLAs now pass the full smoke pipeline**
 **Stage A2, gated on RGB chaining:** the conditioned arms on the full-run
 corpus, since Q1–Q3 hold only for atomic training. Then the VLAs (Stage B).
 
+### 4.9 Stage A2: the conditioned arms on full runs (`CF`)
+
+Every arm fine-tuned from its own seed's `CF-rgb` checkpoint, the same recipe
+as Stage A. Mean transfers, mean [min–max] across 3 seeds:
+
+| arm | seen | held-out | novel | seen success /20 |
+| --- | --- | --- | --- | --- |
+| rgb (stage 1) | 0.70 [0.40–0.90] | 0.05 [0.00–0.10] | 0.75 [0.10–1.85] | 3.0 [2–4] |
+| **rgb_cont** (budget control) | 1.38 [1.20–1.50] | 0.30 [0.15–0.45] | 1.07 [0.05–2.55] | 7.0 [6–8] |
+| kv | 1.40 [1.15–1.80] | 0.32 [0.20–0.45] | 1.07 [0.05–2.35] | 7.3 [4–11] |
+| kv_adaln | 1.33 [1.10–1.65] | **0.60 [0.45–0.80]** | 0.77 [0.15–1.80] | 7.3 [6–9] |
+| kv_tokens | **1.62 [1.55–1.70]** | 0.25 [0.15–0.30] | 0.75 [0.10–1.85] | **8.7 [7–10]** |
+| scratch_kv | 0.45 [0.35–0.60] | 0.08 [0.00–0.15] | 0.78 [0.20–1.10] | 0.7 [0–1] |
+
+Paired against `rgb_cont` (60 matched episodes per scope):
+
+| scope | kv | kv_adaln | kv_tokens | scratch_kv |
+| --- | --- | --- | --- | --- |
+| seen success | 21 → 22 (p = 1.0) | 21 → 22 (p = 1.0) | 21 → 26 (p = 0.44) | 21 → 2 (**p < 0.001**) |
+| held-out success | 0 → 0 | 0 → **7 (p = 0.016)** | 0 → 0 | 0 → 1 |
+| novel success | 15 → 15 | 15 → 9 (p = 0.15) | 15 → 8 (**p = 0.039**) | 15 → 4 (**p = 0.007**) |
+| 2 objects, ≥1 transfer | 38 → 38 | 38 → 28 (p = 0.076) | 38 → 38 | 38 → 30 (p = 0.15) |
+| 4 objects, ≥1 transfer | 28 → 21 (p = 0.28) | 28 → 20 (p = 0.13) | 28 → 25 (p = 0.69) | 28 → 19 (p = 0.14) |
+
+**The Stage A answers replicate.**
+- **Q1/Q2:** no mechanism improves seen objects over the budget control;
+  `kv_tokens` is again highest by point estimate (26 against 21 successes) and
+  again not significant. **`kv_adaln` again succeeds on held-out sizes** where
+  the control never does (7 of 60, 1–4 on every seed), and again beats tokens
+  there (7 → 0, p = 0.016). Conditioning from scratch again hurts.
+- **Q3:** no arm beats the control at 2 or 4 objects; four objects stays at
+  0 successes everywhere.
+- **The stages now look like ControlVLA's.** Per-stage survival on seen objects
+  is 0.62–0.76 for the first two transfers and 0.87–0.91 for the third in
+  every stage-2 arm (`rgb_cont`: lift 52/60, then 39/52, 23/39, 21/23). The
+  remaining loss is mostly objects knocked off after placement (55–70 % of
+  lost objects).
+
+**Training budget matters more than any mechanism.** The 40 k extra steps
+alone take `CF-rgb` from 9 to 21 seen successes of 60 (p = 0.012), held-out
+≥1 transfer from 3 to 15 (p = 0.004) and novel successes from 6 to 15
+(p = 0.022). Consistent with §4.8: the policy is fit-limited.
+
+**Full runs against atomic clips, at the stage-2 budget** (`scripts/paired_compare.py`,
+cross-corpus, same scenes): `rgb_cont` 10 → 21 seen successes (p = 0.035),
+3 → 18 at two objects (p = 0.001); `kv_adaln` 10 → 22 seen (p = 0.029), held-out
+unchanged (6 → 7).
+
+**Chunk-relative actions (`rgb_rel`, `rgb_rel_short`): no gain.** Against their
+absolute twins: `rgb_rel` seen success 9 → 4 (p = 0.27), two objects 19 → 9
+(p = 0.041), held-out ≥1 transfer 3 → 13 (p = 0.021); `rgb_rel_short` matches
+`rgb_short` everywhere (smallest p = 0.47). Re-expressing the target did not
+buy precision the task can use; the budget did.
+
+### 4.10 VLA stage 1 (RGB, full-run corpus)
+
+3 seeds × 20 seen-identity scenes, 8 k steps at batch 16 (pi0.5 and SmolVLA
+LoRA, GR00T head only), `n_action_steps` 25:
+
+| backbone | regime | success /20 | ≥1 transfer /20 | mean transfers | lift |
+| --- | --- | --- | --- | --- | --- |
+| GR00T | absolute EE | 1.3 [0–3] | 7.3 [3–11] | 0.52 [0.15–0.85] | 49/60 |
+| GR00T | absolute joint | 0.3 [0–1] | 5.0 [3–6] | 0.30 [0.25–0.35] | 49/60 |
+| SmolVLA | absolute EE | 0 | 0.7 [0–2] | 0.03 | 23/60 |
+| SmolVLA | absolute joint | 0 | 0 | 0 | 16/60 |
+| pi0.5 | absolute EE | 0 | 0 | 0 | 25/60 |
+| pi0.5 | absolute joint | 0 | 0 | 0 | 11/60 |
+
+- **GR00T learns the task,** at about `CF-rgb`'s level on the first transfer
+  (T1 | lift 22/49), and absolute EE is ahead of absolute joint on every
+  measure. It goes to stage 2 on absolute EE.
+- **pi0.5 and SmolVLA do not transfer anything.** The rollouts are
+  mechanically sane (float images, the trained horizon, few infeasible
+  commands; pi0.5's training loss reached 0.081). Whether they learned the
+  action target at all is being checked offline against a constant predictor
+  (`diagnose_action_head.py`) before stage 2 is spent on them.
+
 ## 5. What answers each question
 
 Matrix prefixes: `F` absolute EE, `J` absolute joint, `D` joint delta, `X` EE
@@ -556,9 +632,9 @@ GR00T.
 | chaining | `AF-rgb` vs `CF-rgb` | **done** (§4.6) |
 | chunk / history | `CF-rgb_short`, `CF-rgb_hist` | **done** (§4.7): neither beats `CF-rgb` |
 | grasp precision | `CF-rgb_headdrop`, `CF-rgb_shift`, camera diagnostic | **done** (§4.8): precision is a fit limit |
-| chunk-relative actions | `CF-rgb_rel` (50/25) vs `CF-rgb`; `CF-rgb_rel_short` (20/8) vs `CF-rgb_short` × 3 seeds (`policies/rel_act`) | **running** |
-| Stage A2 | `CF`: rgb_cont, kv, kv_adaln, kv_tokens, scratch_kv × 3 seeds, from the `CF-rgb` checkpoints | **running** |
-| Q4 (VLAs), stage 1 | `PF`/`PJ`, `SF`/`SJ`, `GF`/`GJ`: rgb × 3 seeds on the full-run corpus (`CORPUS=paired_full`), seen rollout | **running** |
+| chunk-relative actions | `CF-rgb_rel`, `CF-rgb_rel_short` | **done** (§4.9): no gain |
+| Stage A2 | `CF`: rgb_cont, kv, kv_adaln, kv_tokens, scratch_kv × 3 seeds | **done** (§4.9): Stage A replicates |
+| Q4 (VLAs), stage 1 | `PF`/`PJ`, `SF`/`SJ`, `GF`/`GJ`: rgb × 3 seeds | **done** (§4.10): GR00T learns, absolute EE; pi0.5 and SmolVLA at zero |
 | Q1–Q3 (VLAs), stage 2 | `PHASE=stage2` on each backbone's better regime | after stage 1 |
 
 **Storage rules**, since the vault has 1 TB for everything:
@@ -573,6 +649,12 @@ GR00T.
 
 ## Update log
 
+- **2026-09-25.** Stage A2, the chunk-relative arms and VLA stage 1 are in
+  (141 jobs). The ACT answers replicate on full runs: AdaLN is the only
+  mechanism that beats the budget control, on held-out sizes (0 → 7 of 60).
+  The budget control itself doubles success (9 → 21); chunk-relative actions
+  do not help. GR00T learns the task on absolute EE; pi0.5 and SmolVLA
+  transfer nothing, which is being checked offline.
 - **2026-09-24 (night).** Submitted Stage A2 (the conditioned arms on the
   full-run corpus), VLA stage 1 (on the full-run corpus, both regimes) and
   the chunk-relative ACT arms: 141 jobs.
