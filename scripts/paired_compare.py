@@ -8,8 +8,9 @@ seed, tier, profile and scene seed, scored by exact McNemar.
 
     paired_compare.py <eval dir> AF-rgb CF-rgb [CF-rgb_cont ...]
 
-Each argument after the directory is PREFIX-ARM; every later cell is paired
-against the first.
+Each argument after the directory is PREFIX-ARM, optionally under a
+subdirectory of it (`exec8/GF-rgb`: the same checkpoints rolled out with a
+different execution horizon); every later cell is paired against the first.
 """
 
 from __future__ import annotations
@@ -42,8 +43,9 @@ def mcnemar(b: int, c: int) -> float:
 
 
 def cell_rows(eval_dir: Path, cell: str) -> dict:
+    subdir, _, cell = cell.rpartition("/")
     prefix, arm = cell.split("-", 1)
-    rows, _ = collect.load(eval_dir, prefix)
+    rows, _ = collect.load(eval_dir / subdir if subdir else eval_dir, prefix)
     return {(r["train_seed"], r["tier"], r["profile"], r["eval_seed"]): r
             for r in rows if r["arm"] == arm}
 

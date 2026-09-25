@@ -12,6 +12,11 @@ it:
 
 * **grasp error**: distance between the grasp position the policy predicts
   for the close step (from its action chunk) and the oracle's actual one;
+* **orientation error**: the angle between the predicted and the oracle's
+  gripper orientation at the close step;
+* **close timing**: the chunk step at which the predicted gripper command first
+  closes, minus the step the oracle closed at (negative = early; a prediction
+  that never closes within the chunk is counted separately);
 * **reliance on camera c**: how far that predicted grasp position moves when
   camera c's frame is replaced by the *same camera* at a random other moment
   of the same episode (in-distribution, wrong content), and when it is blanked.
@@ -68,6 +73,8 @@ def main() -> int:
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--split", choices=("val", "train"), default="val",
                         help="train measures fit rather than generalisation")
+    parser.add_argument("--no-swaps", action="store_true",
+                        help="skip the camera swaps: grasp error and timing only, 7x faster")
     parser.add_argument("--out", type=Path)
     args = parser.parse_args()
     leads = [int(v) for v in args.leads.split(",")]
@@ -102,14 +109,17 @@ def main() -> int:
         return {k: (v.unsqueeze(0) if torch.is_tensor(v) else v) for k, v in item.items()}
 
     @torch.no_grad()
-    def grasp(batch, arm, steps_ahead):
-        """Predicted position of `arm` at `steps_ahead` in the chunk, in metres."""
+    def chunk_of(batch):
+        """The predicted action chunk [C, 16], in raw units."""
         observation = {k: v for k, v in batch.items() if k.startswith("observation.")}
         observation["task"] = batch.get("task", [""])
         observation = pre(observation)
-        actions = post(policy.predict_action_chunk(observation))[0].float().cpu().numpy()
+        return post(policy.predict_action_chunk(observation))[0].float().cpu().numpy()
+
+    def grasp(batch, arm, steps_ahead):
+        """Predicted position of `arm` at `steps_ahead` in the chunk, in metres."""
         offset = ARMS[arm]
-        return actions[steps_ahead, offset : offset + 3]
+        return chunk_of(batch)[steps_ahead, offset : offset + 3]
 
     rows = []
     for episode, indices in sorted(by_episode.items()):
@@ -122,10 +132,22 @@ def main() -> int:
                 if t < 0 or lead >= chunk:
                     continue
                 base_batch = frame(indices[t])
-                base = grasp(base_batch, arm, lead)
+                predicted = chunk_of(base_batch)
+                offset = ARMS[arm]
+                base = predicted[lead, offset : offset + 3]
+                q_hat = predicted[lead, offset + 3 : offset + 7]
+                q_true = actions[close, offset + 3 : offset + 7]
+                dot = abs(float(np.dot(q_hat / np.linalg.norm(q_hat), q_true / np.linalg.norm(q_true))))
+                closes = np.nonzero(predicted[:, offset + GRIPPER] <= 0.5)[0]
                 row = {"episode": episode, "arm": arm, "lead": lead,
                        "error_mm": float(np.linalg.norm(base - truth) * 1000),
-                       "error_xy_mm": float(np.linalg.norm((base - truth)[:2]) * 1000)}
+                       "error_xy_mm": float(np.linalg.norm((base - truth)[:2]) * 1000),
+                       "error_z_mm": float(abs(base[2] - truth[2]) * 1000),
+                       "orientation_deg": float(np.degrees(2 * np.arccos(min(1.0, dot)))),
+                       "close_step_error": int(closes[0]) - lead if len(closes) else None}
+                if args.no_swaps:
+                    rows.append(row)
+                    continue
                 other = indices[rng.choice([i for i in range(len(indices)) if abs(i - t) > 30])]
                 other_batch = frame(other)
                 for camera in cameras:
@@ -144,11 +166,12 @@ def main() -> int:
         if len({(r["episode"], r["arm"]) for r in rows}) >= args.max_events:
             break
 
-    names = [c.rsplit(".", 1)[-1] for c in cameras]
+    names = [] if args.no_swaps else [c.rsplit(".", 1)[-1] for c in cameras]
     summary = {}
     print(f"{len(rows)} (event, lead) samples from "
           f"{len({(r['episode'], r['arm']) for r in rows})} grasps\n")
-    print(f"{'lead':>4} {'n':>4} {'grasp err':>10} {'xy err':>8}  "
+    print(f"{'lead':>4} {'n':>4} {'grasp err':>10} {'xy err':>8} {'z err':>7} {'orient':>7} "
+          f"{'close dt':>8} {'no close':>8}  "
           + "  ".join(f"{'swap ' + n:>16}" for n in names) + "   "
           + "  ".join(f"{'blank ' + n:>17}" for n in names))
     for lead in leads:
@@ -156,11 +179,17 @@ def main() -> int:
         if not sel:
             continue
         med = lambda key: statistics.median(r[key] for r in sel)  # noqa: E731
+        timing = [r["close_step_error"] for r in sel if r["close_step_error"] is not None]
         summary[lead] = {"n": len(sel), "error_mm": med("error_mm"), "error_xy_mm": med("error_xy_mm"),
+                         "error_z_mm": med("error_z_mm"), "orientation_deg": med("orientation_deg"),
+                         "close_step_error": statistics.median(timing) if timing else None,
+                         "never_closes": sum(r["close_step_error"] is None for r in sel),
                          **{f"swap_{n}_mm": med(f"swap_{n}_mm") for n in names},
                          **{f"blank_{n}_mm": med(f"blank_{n}_mm") for n in names}}
         s = summary[lead]
-        print(f"{lead:>4} {len(sel):>4} {s['error_mm']:>8.1f}mm {s['error_xy_mm']:>6.1f}mm  "
+        dt = "-" if s["close_step_error"] is None else f"{s['close_step_error']:+.0f}"
+        print(f"{lead:>4} {len(sel):>4} {s['error_mm']:>8.1f}mm {s['error_xy_mm']:>6.1f}mm "
+              f"{s['error_z_mm']:>5.1f}mm {s['orientation_deg']:>5.1f}° {dt:>8} {s['never_closes']:>8}  "
               + "  ".join(f"{s[f'swap_{n}_mm']:>14.1f}mm" for n in names) + "   "
               + "  ".join(f"{s[f'blank_{n}_mm']:>15.1f}mm" for n in names))
     print("\nmedians; grasp err = predicted vs oracle grasp position; swap/blank = how far the "
