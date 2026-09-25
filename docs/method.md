@@ -119,8 +119,11 @@ Every host gets the same gate (since 2026-09-24):
 - **SmolVLA:** the same bias, in its self-attention layers, through an eager
   attention that adds it before the boolean mask (`hosts._biased_eager`); its
   cross-attention layers attend the prefix only, so hold no entity keys.
-- **GR00T:** its DiT reads no positions from the sequence and takes no mask;
-  the step-0 drift is 0.16 % without a gate.
+- **GR00T: unsupported.** Its DiT takes no attention mask, so the tokens enter
+  ungated. On the smoke test's barely trained stage 1 the step-0 drift was
+  0.16 %; on the real stage-1 checkpoints it is 18–100 %, and the init check
+  refuses the arm. `submit_vla_experiments.sh` refuses `kv_tokens` on GR00T,
+  and it is reported as unsupported there.
 
 The VLA hosts also number RoPE positions by a cumulative sum over the pad mask,
 so prepended entities used to push every action N positions along.
@@ -138,7 +141,7 @@ rounding; SmolVLA exactly) and move 0.36 % (pi0.5) and 3.1 % (SmolVLA) at
 | ACT (`control_act`) | every decoder cross-attention (LeRobot ACT has **one** decoder layer) | `SceneAdaLN` at all 11 main encoder/decoder sublayers; never the VAE encoder | appended to the encoder sequence behind the gate; stripped before the decoder |
 | pi0.5 (`control_pi05`) | every action-expert attention layer, through Gemma's own query (`hosts.install_pi_kv`) | added to `adarms_cond`, the time vector of every expert layer's adaptive RMSNorm | prepended to the expert suffix as their own attention block, behind the gate, actions at their stage-1 positions |
 | SmolVLA (`control_smolvla`) | every expert attention layer (`hosts.install_smol_kv`) | FiLM on every expert RMSNorm | prepended to the expert suffix, behind the gate in self-attention layers, actions at their stage-1 positions |
-| GR00T N1.7 (`control_groot`) | every DiT attention layer, before its output projection (`hosts.install_diffusers_kv`) | added to the DiT timestep embedding | prepended to the DiT sequence, stripped from its output |
+| GR00T N1.7 (`control_groot`) | every DiT attention layer, before its output projection (`hosts.install_diffusers_kv`) | added to the DiT timestep embedding | **unsupported** (ungated; refused by the init check) |
 | VLA-JEPA (`control_vla_jepa`) | every DiT attention layer (`hosts.install_diffusers_kv`) | — | — |
 
 Why the encoder-side arms exist: on ACT, `kv` alone is a single seam, and the

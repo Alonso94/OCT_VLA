@@ -149,6 +149,13 @@ $OCTVLA_POLICY_PYTHON -u scripts/merge_stage1_adapter.py --stage1 $stage1 \
         stage1="$merged"
       fi
       for arm in $ARMS; do
+        # Unsupported on GR00T: its DiT takes no attention mask, so the entity
+        # tokens enter ungated and move a trained stage 1's chunk 18-100 % at
+        # step 0 (research_questions §4.11). The init check refuses it;
+        # refusing here saves the queue.
+        if [ "$arm" = kv_tokens ] && [ "$backbone" = groot ]; then
+          echo "kv_tokens is unsupported on groot" >&2; exit 2
+        fi
         case "$arm" in
           rgb_cont)               arm_env=(TRAIN_VARIANT=rgb) ;;
           kv|kv_adaln|kv_tokens)  arm_env=(TRAIN_VARIANT=object CONDITIONING="$arm") ;;

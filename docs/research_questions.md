@@ -17,7 +17,7 @@ stage 1 (RGB, both absolute regimes) is complete; stage 2 is not run.
 | # | question | ACT (Stage A) | VLAs |
 | --- | --- | --- | --- |
 | Q1 | Is object conditioning useful? | **Only for held-out objects, and only through AdaLN — on both corpora.** Against the budget control no arm improves seen objects; `kv_adaln` succeeds on held-out sizes where the control never does, on atomic clips (0 → 6 of 60, p = 0.031) and again on full runs (0 → 7, p = 0.016), on every seed (§4.1, §4.9) | **GR00T: yes, strongly, on seen and held-out objects.** Against its budget control, seen success 9 → 31 (`kv`) and 9 → 35 of 60 (`kv_adaln`), held-out 0 → 7 and 0 → 11, every seed (§4.11) |
-| Q2 | Which mechanism: KV, AdaLN, or in-context tokens? | **AdaLN**, on both corpora: the only mechanism that beats the budget control anywhere, and it beats tokens on held-out objects (§4.2, §4.9) | **GR00T: AdaLN ≥ KV**, both far above the control; tokens not yet trained (§4.11) |
+| Q2 | Which mechanism: KV, AdaLN, or in-context tokens? | **AdaLN**, on both corpora: the only mechanism that beats the budget control anywhere, and it beats tokens on held-out objects (§4.2, §4.9) | **GR00T: AdaLN ≥ KV**, both far above the control; tokens unsupported on GR00T (§4.11). pi0.5 and SmolVLA stage 2 running |
 | Q3 | Does conditioning help compositional generalisation (train on 3, test on 2 and 4)? | **No**, on both corpora: no arm beats the budget control at 2 or 4 objects. The count gap was largely the training format (§4.3, §4.6) | not yet |
 | Q4 | Which control regime: absolute joint, joint delta, absolute EE, EE delta? | **Absolute, not delta.** Both delta regimes complete 0 transfers in 180 episodes each. Absolute EE and absolute joint cannot be separated (§4.4) | **GR00T: absolute EE ahead of absolute joint** (0.52 against 0.30 mean transfers); pi0.5 and SmolVLA at zero in both (§4.10) |
 
@@ -691,7 +691,7 @@ Paired against `rgb_cont` (60 matched episodes):
   GR00T keeps its backbone frozen and adapts only its head in 16 k steps, so
   exact object poses may substitute for visual precision it never acquires.
 
-**`kv_tokens` did not train:** its init check found GR00T's step-0 chunk moved
+**`kv_tokens` is reported as unsupported on GR00T.** Its init check found GR00T's step-0 chunk moved
 18–100 % from stage 1, above the 10 % bound, and refused all three seeds. The
 GR00T host prepends entity tokens to a DiT that takes no attention mask, so
 the ACT gate was never added there (§2.3 in `method.md`); a barely trained
@@ -719,7 +719,8 @@ GR00T.
 | chunk-relative actions | `CF-rgb_rel`, `CF-rgb_rel_short` | **done** (§4.9): no gain |
 | Stage A2 | `CF`: rgb_cont, kv, kv_adaln, kv_tokens, scratch_kv × 3 seeds | **done** (§4.9): Stage A replicates |
 | Q4 (VLAs), stage 1 | `PF`/`PJ`, `SF`/`SJ`, `GF`/`GJ`: rgb × 3 seeds | **done** (§4.10): GR00T learns, absolute EE; pi0.5 and SmolVLA at zero |
-| Q1–Q2 (VLAs), stage 2 | `GF`: rgb_cont, kv, kv_adaln × 3 seeds, seen + held-out | **done** (§4.11): yes, and on seen objects too. `kv_tokens` refused by its init check; needs the gate on GR00T's DiT |
+| Q1–Q2 (VLAs), stage 2 | `GF`: rgb_cont, kv, kv_adaln × 3 seeds, seen + held-out | **done** (§4.11): yes, and on seen objects too. `kv_tokens` unsupported on GR00T |
+| Q1–Q2, pi0.5 and SmolVLA | `PF`, `SF`: rgb_cont, kv, kv_adaln, kv_tokens × 3 seeds, seen + held-out | **running**: does conditioning rescue backbones whose RGB policy transfers nothing? |
 | Q3 (VLAs) | count rollouts on `rgb_cont` and any arm that beats it | only if GR00T stage 2 finds one |
 | semantics | geometry (16) vs geometry + semantics (16 + 16) on `place_container_plate` (bowl seen, cup held out as a category) | after stage 2; needs a closed-loop evaluator for the built-in task first |
 
