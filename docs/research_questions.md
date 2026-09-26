@@ -702,6 +702,45 @@ rolled out with a shorter execution horizon): executing 8 of the 40-step chunk
 gives 4 → 5 seen successes of 60 (p = 1.0), executing 5 gives 22 → 12 episodes
 with a transfer (p = 0.064).
 
+### 4.12 pi0.5 and SmolVLA: capacity, and a second recipe
+
+The first pi0.5/SmolVLA stage 2 (default recipe) mostly did not run: pi0.5's
+conditioned arms ran out of memory at batch 16 (they cannot use gradient
+checkpointing), `kv_tokens` failed its init check on both (drift 11–26 % at a
+gate of −4), and SmolVLA seed 1000's stage-1 merge refused itself (38 %,
+against 0.7–2 % for the other five). What did run, SmolVLA seeds 1001–1002
+(two seeds: not a result):
+
+| SmolVLA | seen success /40 | seen ≥1 transfer | held-out ≥1 transfer |
+| --- | ---: | ---: | ---: |
+| rgb_cont | 0 | 1 | 0 |
+| kv | 0 | 6 (p = 0.125) | 5 (p = 0.062) |
+| kv_adaln | 3 | 9 (p = 0.021) | 6 (p = 0.031) |
+
+**Capacity confound.** Trainable parameters, budget control against
+conditioned arms:
+
+| backbone | rgb_cont | kv | kv_adaln | increase |
+| --- | ---: | ---: | ---: | ---: |
+| GR00T | 1.62 B | 1.77 B | 1.78 B | +9–10 % |
+| SmolVLA | 0.74 M | 31 M | 66 M | 40–90× |
+| pi0.5 | 1.3 M | 153 M | 158 M | ≈120× |
+
+LeRobot's default LoRA for pi0.5 and SmolVLA adapts only the action expert's
+query/value projections (the VLM is frozen), so the object branch dwarfs the
+budget control. GR00T's result (§4.11) is unaffected; a pi0.5/SmolVLA gain
+under the default recipe could be capacity.
+
+**The `expert_lora` recipe** (`RECIPE=expert_lora`, matrices `PXF`, `SXF`):
+- stage 1: LoRA rank 32 on every attention and MLP projection of the action
+  expert (pi0.5 ≈ 14 M, SmolVLA ≈ 7 M trainable), VLM frozen, no full
+  fine-tuning;
+- stage 2: a low-rank object branch (`object_width` 16: entities embedded at
+  16 and projected up), adding ≈ 7–18 % to the adapter, about GR00T's
+  proportion; tokens gated from −8;
+- pi0.5 stage 2, every arm including the control: batch 8 × 2 accumulation for
+  16 k loop steps (the same 128 k samples and 8 k updates as batch 16).
+
 ## 5. What answers each question
 
 Matrix prefixes: `F` absolute EE, `J` absolute joint, `D` joint delta, `X` EE
@@ -720,7 +759,7 @@ GR00T.
 | Stage A2 | `CF`: rgb_cont, kv, kv_adaln, kv_tokens, scratch_kv × 3 seeds | **done** (§4.9): Stage A replicates |
 | Q4 (VLAs), stage 1 | `PF`/`PJ`, `SF`/`SJ`, `GF`/`GJ`: rgb × 3 seeds | **done** (§4.10): GR00T learns, absolute EE; pi0.5 and SmolVLA at zero |
 | Q1–Q2 (VLAs), stage 2 | `GF`: rgb_cont, kv, kv_adaln × 3 seeds, seen + held-out | **done** (§4.11): yes, and on seen objects too. `kv_tokens` unsupported on GR00T |
-| Q1–Q2, pi0.5 and SmolVLA | `PF`, `SF`: rgb_cont, kv, kv_adaln, kv_tokens × 3 seeds, seen + held-out | **running**: does conditioning rescue backbones whose RGB policy transfers nothing? |
+| Q1–Q2, pi0.5 and SmolVLA | `PXF`, `SXF` (`RECIPE=expert_lora`): stage 1 × 3 seeds, then rgb_cont, kv, kv_adaln, kv_tokens × 3 seeds, seen + held-out | **stage 1 running** (§4.12); the default-recipe stage 2 is abandoned for its capacity confound |
 | Q3 (VLAs) | count rollouts on `rgb_cont` and any arm that beats it | only if GR00T stage 2 finds one |
 | semantics | geometry (16) vs geometry + semantics (16 + 16) on `place_container_plate` (bowl seen, cup held out as a category) | after stage 2; needs a closed-loop evaluator for the built-in task first |
 
@@ -745,6 +784,10 @@ lookup) to 16, and is tested on the bowl → cup category holdout.
 
 ## Update log
 
+- **2026-09-27.** pi0.5/SmolVLA stage 2 under the default recipe was confounded:
+  the object branch outweighed the LoRA budget control 40–120×. New
+  `expert_lora` recipe (expert-wide LoRA, low-rank branch at `object_width`
+  16, ~GR00T's proportion); its stage 1 submitted.
 - **2026-09-25 (evening).** GR00T stage 2: against its budget control, `kv`
   and `kv_adaln` triple to quadruple seen-object success (9 → 31 and 9 → 35 of
   60) and lift held-out success off zero (→ 7 and → 11), on every seed. AdaLN's

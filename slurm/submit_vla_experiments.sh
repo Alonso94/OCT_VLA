@@ -64,10 +64,36 @@ esac
 for regime in F J; do
   [ -d "$OCTVLA_DATASET_ROOT/${DATASET[$regime]}" ] || { echo "no dataset ${DATASET[$regime]}" >&2; exit 2; }
 done
+
+# RECIPE=expert_lora (pi0.5 and SmolVLA): the stage-1 LoRA covers every
+# attention and MLP projection of the action expert at rank 32 (the VLM stays
+# frozen), and the stage-2 object branch is low-rank (object_width 16), so it
+# adds ~7-18 % to the adapter -- about GR00T's +9-10 % -- instead of 40-120x.
+# Tokens start behind a gate of -8: at -4 a trained stage 1 drifted 11-26 %.
+# pi0.5's conditioned arms cannot use gradient checkpointing, so every pi0.5
+# stage-2 arm, the control included, runs batch 8 x 2 accumulation for twice
+# the loop steps: the same 128 k samples and 8 k updates as batch 16.
+RECIPE="${RECIPE:-default}"
+RECIPE_ENV=(); STAGE2_ENV=()
+case "$RECIPE" in
+  default) ;;
+  expert_lora)
+    for regime in F J; do TAG[$regime]="${TAG[$regime]/#pf_/pfx_}"; done
+    # Its own matrices (PXF, SXF), so its rollouts never overwrite the
+    # default-LoRA ones, which share cell names otherwise.
+    LETTER=([pi05]=PX [smolvla]=SX [groot]=GX)
+    RECIPE_ENV=(LORA_SCOPE=expert LORA_R=32 LORA_ALPHA=64)
+    STAGE2_ENV=(OBJECT_WIDTH=16 OBJECT_HEADS=4 TOKENS_GATE=-8) ;;
+  *) echo "RECIPE must be default or expert_lora" >&2; exit 2 ;;
+esac
 # Must match TIER_IDS in scripts/collect_final_results.py.
 declare -A TIER=([seen]="1,2,3,4" [heldout]="0,6" [novel]="5")
 
-submit() { if [ "${DRY_RUN:-0}" = 1 ]; then echo "    would submit: $*" >&2; echo 0; else sbatch --parsable "$@"; fi; }
+submit() {
+  if [ "${DRY_RUN:-0}" = 1 ]; then
+    echo "    would submit: $* [env: BATCH_SIZE=${BATCH_SIZE:-} GRAD_ACCUM=${GRAD_ACCUM:-} TRAIN_STEPS=${TRAIN_STEPS:-} LORA_SCOPE=${LORA_SCOPE:-} LORA_R=${LORA_R:-} OBJECT_WIDTH=${OBJECT_WIDTH:-} TOKENS_GATE=${TOKENS_GATE:-} TRAIN_TAG=${TRAIN_TAG:-}]" >&2; echo 0
+  else sbatch --parsable "$@"; fi
+}
 after() { [ -n "$1" ] && [ "$1" != 0 ] && echo "--dependency=afterok:$1" || true; }
 exists() { [ -d "$OCTVLA_OUTPUT_ROOT/$1/checkpoints/last/pretrained_model" ]; }
 
@@ -90,7 +116,9 @@ train() {  # train NAME AFTER HOURS VAR=VALUE... -> job id
   # never leak into the next cell. (`env VAR=... submit` cannot call a function.)
   local name="$1" dep="$2" hours="$3"; shift 3
   (
-    export "$@" TRAIN_STEPS="$TRAIN_STEPS" BATCH_SIZE="$BATCH" N_ACTION_STEPS=25
+    # Defaults first, the cell's own values after, so a cell can override them
+    # (pi0.5's batch 8 x 2 accumulation under RECIPE=expert_lora).
+    export TRAIN_STEPS="$TRAIN_STEPS" BATCH_SIZE="$BATCH" N_ACTION_STEPS=25 "$@"
     submit "${SB[@]}" --job-name="octvla-$name" --time="$hours:00:00" $(after "$dep") \
       --output="$LOGS/$name-%j.out" --export=ALL slurm/train_shelf_restock.sbatch
   )
@@ -109,7 +137,7 @@ if [ "$PHASE" = stage1 ]; then
         elif [ -e "$OCTVLA_OUTPUT_ROOT/$run" ]; then
           echo "    $run exists without a final checkpoint: resolve first" >&2; exit 2
         else
-          dep=$(train "$prefix-rgb-s$seed" "" 24 BACKBONE="$backbone" TRAIN_VARIANT=rgb \
+          dep=$(train "$prefix-rgb-s$seed" "" 24 BACKBONE="$backbone" TRAIN_VARIANT=rgb "${RECIPE_ENV[@]}" \
             TRAIN_DATASET="${DATASET[$regime]}" TRAIN_SEED="$seed" TRAIN_TAG="${TAG[$regime]}")
           echo "    train  $dep"; jobs=$((jobs + 1))
         fi
@@ -164,7 +192,11 @@ $OCTVLA_POLICY_PYTHON -u scripts/merge_stage1_adapter.py --stage1 $stage1 \
         cell="$prefix-$arm-s$seed"
         tag="${TAG[$regime]}_s2_${arm}"
         common=(BACKBONE="$backbone" TRAIN_DATASET="${DATASET[$regime]}" TRAIN_SEED="$seed"
-                STAGE1_CHECKPOINT="$stage1" TRAIN_TAG="$tag" "${arm_env[@]}")
+                STAGE1_CHECKPOINT="$stage1" TRAIN_TAG="$tag" "${arm_env[@]}" "${RECIPE_ENV[@]}")
+        [ "$arm" != rgb_cont ] && common+=("${STAGE2_ENV[@]}")
+        if [ "$RECIPE" = expert_lora ] && [ "$backbone" = pi05 ]; then
+          common+=(BATCH_SIZE=8 GRAD_ACCUM=2 TRAIN_STEPS=$((TRAIN_STEPS * 2)))
+        fi
         # The init check gates the training: if stage 2 does not start at
         # stage 1, or a branch gets no gradient, nothing trains.
         check=$(train "$cell-check" "$merge_dep" 2 "${common[@]}" INIT_CHECK=1 TRAIN_TAG="${tag}_check")

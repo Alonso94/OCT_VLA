@@ -30,7 +30,7 @@ import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
-from .entity import EntityEmbedding, embed_entities
+from .entity import EntityEmbedding, embed_entities, entity_width
 
 
 class _PooledScene(nn.Module):
@@ -39,12 +39,18 @@ class _PooledScene(nn.Module):
     def __init__(self, config: Any, width: int, heads: int | None = None) -> None:
         super().__init__()
         self.width = width
-        self.embedding = EntityEmbedding(width, config.object_entity_normalizer)
-        self.query = nn.Parameter(torch.randn(1, 1, width) * 0.02)
+        # The pool runs at `object_width`; only the zero-initialised output
+        # projection reaches the host's width, so a small width keeps it low-rank.
+        self.entity_width = entity_width(config, width)
+        self.embedding = EntityEmbedding(self.entity_width, config.object_entity_normalizer)
+        self.query = nn.Parameter(torch.randn(1, 1, self.entity_width) * 0.02)
+        pool_heads = heads or int(config.object_attention_heads)
+        if self.entity_width % pool_heads:
+            pool_heads = int(config.object_attention_heads)
         # The host's dropout, for the same reason the KV branch takes it.
         self.pool = nn.MultiheadAttention(
-            width,
-            heads or int(config.object_attention_heads),
+            self.entity_width,
+            pool_heads,
             dropout=float(getattr(config, "dropout", 0.0) or 0.0),
             batch_first=True,
         )
@@ -73,7 +79,7 @@ class SceneAdaLN(_PooledScene):
         if sites < 1:
             raise ValueError("SceneAdaLN needs at least one modulation site")
         self.sites = int(sites)
-        self.modulation = nn.Linear(width, self.sites * 3 * width)
+        self.modulation = nn.Linear(self.entity_width, self.sites * 3 * width)
         nn.init.zeros_(self.modulation.weight)
         nn.init.zeros_(self.modulation.bias)
 
@@ -105,7 +111,7 @@ class SceneVector(_PooledScene):
     def __init__(self, config: Any, width: int, out_dim: int, *, heads: int | None = None) -> None:
         super().__init__(config, width, heads)
         self.out_dim = int(out_dim)
-        self.projection = nn.Linear(width, self.out_dim)
+        self.projection = nn.Linear(self.entity_width, self.out_dim)
         nn.init.zeros_(self.projection.weight)
         nn.init.zeros_(self.projection.bias)
 

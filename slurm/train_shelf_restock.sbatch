@@ -93,6 +93,32 @@ for gone in OBJECT_ADALN OBJECT_INCONTEXT OBJECT_TOKEN_MODE OBJECT_INJECTION_MOD
             OBJECT_ENTITY_POSITIONAL OBJECT_REPRESENTATION; do
   if [ -n "${!gone:-}" ]; then echo "$gone is gone since the cleanup: set CONDITIONING" >&2; exit 2; fi
 done
+
+# LORA_SCOPE=expert: LoRA on every attention and MLP projection of the action
+# expert (plus the input/output projections LeRobot adapts by default), the
+# VLM frozen. LeRobot's default adapts only the expert's q/v -- 1.3 M of
+# pi0.5's 4.1 B, 0.74 M of SmolVLA's -- which the object branch then
+# outweighed 40-120x (research_questions §4.12).
+LORA_SCOPE="${LORA_SCOPE:-default}"
+case "$LORA_SCOPE" in
+  default) ;;
+  expert)
+    [ "${#PEFT_ARGS[@]}" -gt 0 ] || { echo "LORA_SCOPE=expert needs a LoRA backbone" >&2; exit 2; }
+    COMMON='state_proj|action_in_proj|action_out_proj|action_time_mlp_in|action_time_mlp_out'
+    case "$BACKBONE" in
+      pi05)    EXPERT='.*\.gemma_expert\..*' ;;
+      smolvla) EXPERT='model\.vlm_with_expert\.lm_expert\..*' ;;
+      *) echo "LORA_SCOPE=expert is not defined for $BACKBONE" >&2; exit 2 ;;
+    esac
+    PEFT_ARGS+=("--peft.target_modules=(${EXPERT}\.(self_attn\.(q|k|v|o)_proj|mlp\.(gate|up|down)_proj)|model\.(${COMMON}))")
+    ;;
+  *) echo "LORA_SCOPE must be default or expert" >&2; exit 2 ;;
+esac
+# GRAD_ACCUM: micro-batches per optimiser update. A loop step is one
+# micro-batch, so keep TRAIN_STEPS x BATCH_SIZE (samples) and
+# TRAIN_STEPS / GRAD_ACCUM (updates) equal across the arms being compared.
+ACCUM_ARGS=()
+[ "${GRAD_ACCUM:-1}" != 1 ] && ACCUM_ARGS=(--accelerator.gradient_accumulation.steps="$GRAD_ACCUM")
 CONDITIONING="${CONDITIONING:-}"
 if [ "$TRAIN_VARIANT" = object ]; then
   CONDITIONING="${CONDITIONING:-kv}"
@@ -204,6 +230,11 @@ if [ "$TRAIN_VARIANT" = object ]; then
   ENTITY_ARGS_TEXT=$("$OCTVLA_POLICY_PYTHON" "$OCTVLA_REPO/scripts/entity_training_args.py" "$DATASET")
   mapfile -t ENTITY_ARGS <<< "$ENTITY_ARGS_TEXT"
   POLICY_ARGS+=("${ENTITY_ARGS[@]}")
+  # A low-rank branch (object_width) and the tokens' gate start, for hosts
+  # whose own trainable budget is a small LoRA.
+  [ -n "${OBJECT_WIDTH:-}" ] && POLICY_ARGS+=(--policy.object_width="$OBJECT_WIDTH")
+  [ -n "${OBJECT_HEADS:-}" ] && POLICY_ARGS+=(--policy.object_attention_heads="$OBJECT_HEADS")
+  [ -n "${TOKENS_GATE:-}" ] && POLICY_ARGS+=(--policy.object_tokens_gate_init="$TOKENS_GATE")
 fi
 
 # The execution horizon is a measured convention (25; see
@@ -284,6 +315,10 @@ cat > "$OCTVLA_OUTPUT_ROOT/run_metadata/${RUN_NAME}.json" <<JSON
   "seed": $TRAIN_SEED,
   "steps": ${TRAIN_STEPS:-20000},
   "batch_size": ${BATCH_SIZE:-4},
+  "grad_accum": ${GRAD_ACCUM:-1},
+  "lora_scope": "$LORA_SCOPE",
+  "lora_r": ${LORA_R:-16},
+  "object_width": "${OBJECT_WIDTH:-}",
   "dataset": "$DATASET",
   "job_id": "${SLURM_JOB_ID:-none}"
 }
@@ -323,6 +358,7 @@ srun "$OCTVLA_POLICY_PYTHON" -u "${ENTRY[@]}" \
   "${PRECISION_ARGS[@]}" \
   --policy.push_to_hub=false \
   "${PEFT_ARGS[@]}" \
+  "${ACCUM_ARGS[@]}" \
   --steps="${TRAIN_STEPS:-20000}" \
   --batch_size="${BATCH_SIZE:-4}" \
   --num_workers="${NUM_WORKERS:-8}" \

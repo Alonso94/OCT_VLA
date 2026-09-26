@@ -29,7 +29,7 @@ from typing import Any
 import torch
 from torch import Tensor, nn
 
-from .entity import EntityEmbedding, embed_entities
+from .entity import EntityEmbedding, embed_entities, entity_width
 
 
 class EntityTokens(nn.Module):
@@ -38,8 +38,9 @@ class EntityTokens(nn.Module):
     def __init__(self, config: Any, width: int) -> None:
         super().__init__()
         self.width = width
-        self.embedding = EntityEmbedding(width, config.object_entity_normalizer)
-        self.projection = nn.Linear(width, width)
+        embedded = entity_width(config, width)
+        self.embedding = EntityEmbedding(embedded, config.object_entity_normalizer)
+        self.projection = nn.Linear(embedded, width)
         self.position = nn.Parameter(torch.randn(1, 1, width) * 0.02)
         self.gate_init = float(getattr(config, "object_tokens_gate_init", -4.0))
         self.gate = nn.Parameter(torch.tensor(self.gate_init))

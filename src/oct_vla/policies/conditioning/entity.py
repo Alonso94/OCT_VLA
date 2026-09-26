@@ -16,6 +16,8 @@ entities cannot change any output.
 
 from __future__ import annotations
 
+from typing import Any
+
 import torch
 from torch import Tensor, nn
 
@@ -24,6 +26,11 @@ ENTITY_MASK = "observation.entity_mask"
 TOKEN_DIM = 17
 NUMERIC_DIM = 13
 TYPE_DIM = TOKEN_DIM - NUMERIC_DIM
+
+
+def entity_width(config: Any, host_width: int) -> int:
+    """The width entities are embedded at: `object_width` if set, else the host's."""
+    return int(getattr(config, "object_width", None) or host_width)
 
 
 class EntityEmbedding(nn.Module):

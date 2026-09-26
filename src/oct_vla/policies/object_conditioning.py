@@ -139,6 +139,12 @@ class ObjectConditioningConfig:
     object_attention_heads: int = 8
     #: ACT's token gate starts here (see conditioning/tokens.py).
     object_tokens_gate_init: float = -4.0
+    #: Width the entities are embedded at. None: the host's width, the
+    #: original branch (and what every ACT and GR00T checkpoint holds). Set, it
+    #: makes every projection into the host low-rank -- object_width -> host
+    #: width, LoRA-style -- so on a LoRA-tuned VLA the branch adds a fraction of
+    #: the adapter's size instead of 40-120x it (research_questions §4.12).
+    object_width: int | None = None
 
     # --- accepted only so pre-cleanup checkpoints load; see _migrate_legacy ---
     object_injection_mode: str | None = None
@@ -165,6 +171,12 @@ class ObjectConditioningConfig:
             )
         if self.object_attention_heads <= 0:
             raise ValueError("object_attention_heads must be positive")
+        if self.object_width is not None:
+            if self.object_width <= 0:
+                raise ValueError("object_width must be positive")
+            if self.object_width % self.object_attention_heads:
+                raise ValueError(f"object_attention_heads={self.object_attention_heads} must "
+                                 f"divide object_width={self.object_width} (the AdaLN pool)")
 
     def _migrate_legacy(self) -> None:
         for name, supported in _LEGACY_FIELDS.items():

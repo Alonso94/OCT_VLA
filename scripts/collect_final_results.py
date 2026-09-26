@@ -41,7 +41,7 @@ from aggregate_eval import paired_difference  # noqa: E402
 
 #: `<prefix>-<arm>-s<seed>-<job>`, where job is a tier, or `count` for the
 #: two- and four-object rollouts on seen identities.
-CELL = re.compile(r"^(?P<prefix>[A-Z]{1,2})-(?P<arm>[a-z_]+)-s(?P<seed>\d+)-(?P<job>[a-z]+)$")
+CELL = re.compile(r"^(?P<prefix>[A-Z]{1,3})-(?P<arm>[a-z_]+)-s(?P<seed>\d+)-(?P<job>[a-z]+)$")
 #: Ordered so the table reads as the ControlVLA recipe does: the stage-one
 #: policy, then what conditioning adds to it, then the ablation that omits
 #: stage one entirely. No `semantic`: its cells trained the entity model under

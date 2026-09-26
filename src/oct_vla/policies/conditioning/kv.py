@@ -30,7 +30,7 @@ import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
-from .entity import EntityEmbedding, padding_of, repeat_to
+from .entity import EntityEmbedding, entity_width, padding_of, repeat_to
 
 
 def packed_mha_query(attention: nn.MultiheadAttention, query: Tensor) -> Tensor:
@@ -61,9 +61,12 @@ class KVAttention(nn.Module):
         self.width = width
         self.heads = heads
         self.head_dim = width // heads
-        self.embedding = EntityEmbedding(width, config.object_entity_normalizer)
-        self.to_k = nn.Linear(width, width)
-        self.to_v = nn.Linear(width, width)
+        # Entities at `object_width`, projected up to the host's heads: with a
+        # small width, K and V are rank-limited and the branch stays small.
+        self.entity_width = entity_width(config, width)
+        self.embedding = EntityEmbedding(self.entity_width, config.object_entity_normalizer)
+        self.to_k = nn.Linear(self.entity_width, width)
+        self.to_v = nn.Linear(self.entity_width, width)
         for layer in (self.to_k, self.to_v):
             nn.init.zeros_(layer.weight)
             nn.init.zeros_(layer.bias)
