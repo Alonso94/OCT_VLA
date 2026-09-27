@@ -741,6 +741,20 @@ under the default recipe could be capacity.
 - pi0.5 stage 2, every arm including the control: batch 8 × 2 accumulation for
   16 k loop steps (the same 128 k samples and 8 k updates as batch 16).
 
+**`expert_lora` stage 1 (RGB, seen objects, 3 seeds × 20 scenes).** Logged
+trainable parameters: pi0.5 13.9 M, SmolVLA 7.0 M, as sized.
+
+| backbone | recipe | ≥1 transfer /60 | success /60 | mean transfers | lift /60 |
+| --- | --- | ---: | ---: | --- | ---: |
+| pi0.5 | default LoRA | 0 | 0 | 0.00 | 25 |
+| pi0.5 | **expert LoRA** | **13 (p < 0.001)** | 1 | 0.27 [0.10–0.50] | 52 |
+| SmolVLA | default LoRA | 2 | 0 | 0.03 | 23 |
+| SmolVLA | expert LoRA | 5 (p = 0.45) | 0 | 0.10 [0.05–0.20] | 35 |
+| GR00T | stage 1, for reference | 22 | 4 | 0.52 | 49 |
+
+pi0.5 becomes a working baseline, about half GR00T's stage-1 level; SmolVLA
+improves little. Stage 2 (`PXF`, `SXF`) submitted.
+
 ## 5. What answers each question
 
 Matrix prefixes: `F` absolute EE, `J` absolute joint, `D` joint delta, `X` EE
@@ -759,7 +773,7 @@ GR00T.
 | Stage A2 | `CF`: rgb_cont, kv, kv_adaln, kv_tokens, scratch_kv × 3 seeds | **done** (§4.9): Stage A replicates |
 | Q4 (VLAs), stage 1 | `PF`/`PJ`, `SF`/`SJ`, `GF`/`GJ`: rgb × 3 seeds | **done** (§4.10): GR00T learns, absolute EE; pi0.5 and SmolVLA at zero |
 | Q1–Q2 (VLAs), stage 2 | `GF`: rgb_cont, kv, kv_adaln × 3 seeds, seen + held-out | **done** (§4.11): yes, and on seen objects too. `kv_tokens` unsupported on GR00T |
-| Q1–Q2, pi0.5 and SmolVLA | `PXF`, `SXF` (`RECIPE=expert_lora`): stage 1 × 3 seeds, then rgb_cont, kv, kv_adaln, kv_tokens × 3 seeds, seen + held-out | **stage 1 running** (§4.12); the default-recipe stage 2 is abandoned for its capacity confound |
+| Q1–Q2, pi0.5 and SmolVLA | `PXF`, `SXF` (`RECIPE=expert_lora`): rgb_cont, kv, kv_adaln, kv_tokens × 3 seeds, seen + held-out | **stage 2 running**; stage 1 done (§4.12): pi0.5 now transfers, SmolVLA barely |
 | Q3 (VLAs) | count rollouts on `rgb_cont` and any arm that beats it | only if GR00T stage 2 finds one |
 | semantics | geometry (16) vs geometry + semantics (16 + 16) on `place_container_plate` (bowl seen, cup held out as a category) | after stage 2; needs a closed-loop evaluator for the built-in task first |
 
@@ -784,6 +798,9 @@ lookup) to 16, and is tested on the bowl → cup category holdout.
 
 ## Update log
 
+- **2026-09-28.** `expert_lora` stage 1: pi0.5 goes from 0 to 13 of 60 episodes
+  with a transfer (p < 0.001), SmolVLA from 2 to 5 (p = 0.45). Stage 2
+  submitted for both (102 jobs).
 - **2026-09-27.** pi0.5/SmolVLA stage 2 under the default recipe was confounded:
   the object branch outweighed the LoRA budget control 40–120×. New
   `expert_lora` recipe (expert-wide LoRA, low-rank branch at `object_width`
