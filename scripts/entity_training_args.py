@@ -39,10 +39,18 @@ def entity_training_args(dataset: Path) -> list[str]:
     ):
         if list(info.get("features", {}).get(key, {}).get("shape", [])) != expected:
             raise ValueError(f"Dataset feature {key} disagrees with entity metadata")
-    return [
+    args = [
         f"--policy.object_max_entities={capacity}",
         "--policy.object_entity_normalizer=" + json.dumps(stats.to_dict(), separators=(",", ":")),
     ]
+    # A view with per-object visual features (scripts/add_entity_visual.py).
+    visual = info.get("features", {}).get("observation.entity_visual")
+    if visual is not None:
+        shape = list(visual.get("shape", []))
+        if len(shape) != 2 or shape[0] != capacity:
+            raise ValueError(f"observation.entity_visual is {shape}; expected [{capacity}, D]")
+        args.append(f"--policy.object_visual_dim={shape[1]}")
+    return args
 
 
 def main():

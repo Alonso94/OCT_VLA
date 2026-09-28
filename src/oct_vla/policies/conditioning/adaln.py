@@ -53,7 +53,10 @@ class _PooledScene(nn.Module):
         # The pool runs at `object_width`; only the zero-initialised output
         # projection reaches the host's width, so a small width keeps it low-rank.
         self.entity_width = entity_width(config, width)
-        self.embedding = EntityEmbedding(self.entity_width, config.object_entity_normalizer)
+        self.embedding = EntityEmbedding(
+            self.entity_width, config.object_entity_normalizer,
+            visual_dim=getattr(config, "object_visual_dim", None),
+        )
         if pool == "mean":
             # No query or attention to build: parameters no loss reaches would
             # sit untrained and trip DDP's unused-parameter check.

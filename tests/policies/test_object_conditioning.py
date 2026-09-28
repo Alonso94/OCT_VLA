@@ -290,3 +290,37 @@ def test_a_host_without_the_control_arms_refuses_them(arm):
     config = act_config(object_conditioning=arm)
     with pytest.raises(ValueError, match="does not implement"):
         require_arm(config, CORE_ARMS, "control_act")
+
+
+def test_visual_columns_start_inert_and_are_read_once_trained():
+    """object_visual_dim appends a frozen encoder's per-object feature to each
+    entity; its projection starts at zero, so geometry + vision begins exactly
+    as the geometry-only embedding does."""
+    from oct_vla.policies.conditioning.entity import EntityEmbedding
+
+    torch.manual_seed(0)
+    geometry = EntityEmbedding(8)
+    torch.manual_seed(0)
+    vision = EntityEmbedding(8, visual_dim=4)
+    tokens, visual = torch.randn(2, 3, 17), torch.randn(2, 3, 4)
+    both = torch.cat([tokens, visual], dim=-1)
+    assert torch.equal(vision(both), geometry(tokens))
+    with torch.no_grad():
+        vision.visual_projection.weight.normal_()
+    assert not torch.allclose(vision(both), geometry(tokens))
+    with pytest.raises(ValueError, match="17 geometry columns \\+ 4 visual"):
+        vision(tokens)
+
+
+def test_a_vision_arm_without_visual_inputs_is_refused():
+    policy, _ = _recording_policy()
+    policy.config.object_visual_dim = 4
+    batch = {TOKENS: torch.randn(2, 3, 17), MASK: torch.ones(2, 3, dtype=torch.bool)}
+    with pytest.raises(ValueError, match="needs observation.entity_visual"):
+        policy._set_object_inputs(batch)
+    batch["observation.entity_visual"] = torch.randn(2, 3, 5)
+    with pytest.raises(ValueError, match="expected"):
+        policy._set_object_inputs(batch)
+    batch["observation.entity_visual"] = torch.randn(2, 3, 4)
+    policy._set_object_inputs(batch)
+    assert policy.object_conditioning._inputs[0].shape == (2, 3, 21)

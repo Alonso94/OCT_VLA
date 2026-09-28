@@ -64,7 +64,10 @@ class KVAttention(nn.Module):
         # Entities at `object_width`, projected up to the host's heads: with a
         # small width, K and V are rank-limited and the branch stays small.
         self.entity_width = entity_width(config, width)
-        self.embedding = EntityEmbedding(self.entity_width, config.object_entity_normalizer)
+        self.embedding = EntityEmbedding(
+            self.entity_width, config.object_entity_normalizer,
+            visual_dim=getattr(config, "object_visual_dim", None),
+        )
         self.to_k = nn.Linear(self.entity_width, width)
         self.to_v = nn.Linear(self.entity_width, width)
         for layer in (self.to_k, self.to_v):

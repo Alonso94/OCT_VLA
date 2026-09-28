@@ -44,8 +44,12 @@ class EntityEmbedding(nn.Module):
     the checkpoint.
     """
 
-    def __init__(self, width: int, normalizer: dict | None = None) -> None:
+    def __init__(self, width: int, normalizer: dict | None = None,
+                 visual_dim: int | None = None) -> None:
         super().__init__()
+        #: Columns appended after the geometry: a frozen visual encoder's
+        #: per-object feature (perception/lejepa/entity_visual.py), or none.
+        self.visual_dim = int(visual_dim or 0)
         mean, scale = torch.zeros(NUMERIC_DIM), torch.ones(NUMERIC_DIM)
         if normalizer is not None:
             from oct_vla.data.entity_tokens import EntityTokenNormalizer
@@ -57,6 +61,11 @@ class EntityEmbedding(nn.Module):
         self.register_buffer("numeric_scale", scale)
         self.numeric_projection = nn.Linear(NUMERIC_DIM, width)
         self.type_projection = nn.Linear(TYPE_DIM, width, bias=False)
+        if self.visual_dim:
+            # Zero-initialised: at step 0 the embedding is the geometry-only one
+            # exactly, so geometry + vision starts as the geometry arm does.
+            self.visual_projection = nn.Linear(self.visual_dim, width, bias=False)
+            nn.init.zeros_(self.visual_projection.weight)
         self.activation = nn.GELU()
         self.output_norm = nn.LayerNorm(width)
 
@@ -64,11 +73,17 @@ class EntityEmbedding(nn.Module):
         """``[B, N, TOKEN_DIM]`` (or ``[B, T, N, TOKEN_DIM]``, last step) -> ``[B, N, width]``."""
         if tokens.ndim == 4:
             tokens = tokens[:, -1]
-        if tokens.ndim != 3 or tokens.shape[-1] != TOKEN_DIM:
-            raise ValueError(f"entity tokens must be [B,N,{TOKEN_DIM}] (or [B,T,N,{TOKEN_DIM}])")
+        width = TOKEN_DIM + self.visual_dim
+        if tokens.ndim != 3 or tokens.shape[-1] != width:
+            raise ValueError(f"entity tokens must be [B,N,{width}] (or [B,T,N,{width}]): "
+                             f"{TOKEN_DIM} geometry columns + {self.visual_dim} visual; got "
+                             f"{tuple(tokens.shape)}")
         tokens = tokens.to(self.numeric_projection.weight.dtype)
         numeric = (tokens[..., :NUMERIC_DIM] - self.numeric_mean) / self.numeric_scale
-        embedded = self.numeric_projection(numeric) + self.type_projection(tokens[..., NUMERIC_DIM:])
+        embedded = (self.numeric_projection(numeric)
+                    + self.type_projection(tokens[..., NUMERIC_DIM:TOKEN_DIM]))
+        if self.visual_dim:
+            embedded = embedded + self.visual_projection(tokens[..., TOKEN_DIM:])
         return self.output_norm(self.activation(embedded))
 
 

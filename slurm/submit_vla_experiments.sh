@@ -67,7 +67,15 @@ case "$CORPUS" in
     declare -A DATASET=([F]=three_object_${CORPUS}_eeabs)
     declare -A TAG=([F]=pf${runs}_eeabs)
     [ "$runs" = 19 ] && LETTER=([pi05]=PQ [smolvla]=SQ [groot]=GQ) || LETTER=([pi05]=PH [smolvla]=SH [groot]=GH) ;;
-  *) echo "CORPUS must be paired_full, paired_full_r19, paired_full_r38 or identity" >&2; exit 2 ;;
+  paired_full_vis)
+    # Geometry + LeJEPA visual features (scripts/add_entity_visual.py). Stage 1
+    # is RGB and never reads entities, so the vision arms continue the very
+    # same stage-1 checkpoints the geometry arms did (STAGE1_TAG).
+    declare -A DATASET=([F]=three_object_paired_full_eeabs_vis)
+    declare -A TAG=([F]=pfv_eeabs)
+    declare -A STAGE1_TAG=([F]=pf_eeabs)
+    LETTER=([pi05]=PV [smolvla]=SV [groot]=GV) ;;
+  *) echo "CORPUS must be paired_full, paired_full_r19, paired_full_r38, paired_full_vis or identity" >&2; exit 2 ;;
 esac
 for regime in "${!DATASET[@]}"; do
   [ -d "$OCTVLA_DATASET_ROOT/${DATASET[$regime]}" ] || { echo "no dataset ${DATASET[$regime]}" >&2; exit 2; }
@@ -94,6 +102,12 @@ case "$RECIPE" in
     STAGE2_ENV=(OBJECT_WIDTH=16 OBJECT_HEADS=4 TOKENS_GATE=-8) ;;
   *) echo "RECIPE must be default or expert_lora" >&2; exit 2 ;;
 esac
+# After RECIPE, which may rename the tags.
+# Where a corpus shares another's stage 1; otherwise its own.
+if ! declare -p STAGE1_TAG >/dev/null 2>&1; then
+  declare -A STAGE1_TAG=()
+  for regime in "${!TAG[@]}"; do STAGE1_TAG[$regime]="${TAG[$regime]}"; done
+fi
 # Must match TIER_IDS in scripts/collect_final_results.py.
 declare -A TIER=([seen]="1,2,3,4" [heldout]="0,6" [novel]="5")
 
@@ -106,7 +120,7 @@ after() { [ -n "$1" ] && [ "$1" != 0 ] && echo "--dependency=afterok:$1" || true
 exists() { [ -d "$OCTVLA_OUTPUT_ROOT/$1/checkpoints/last/pretrained_model" ]; }
 
 # stage1_run BACKBONE REGIME SEED -> the stage-1 run directory name
-stage1_run() { echo "${1}_rgb_s${3}_${TAG[$2]}"; }
+stage1_run() { echo "${1}_rgb_s${3}_${STAGE1_TAG[$2]}"; }
 
 # rollout TAG CHECKPOINT DATASET PROFILES MODEL_IDS AFTER [VAR=VALUE...]
 rollout() {

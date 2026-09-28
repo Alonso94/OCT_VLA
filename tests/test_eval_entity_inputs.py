@@ -80,3 +80,30 @@ def test_entity_noise_in_the_live_builder_corrupts_only_the_object_and_is_seeded
     assert not torch.allclose(noisy[0, 0], clean[0, 0])
     torch.testing.assert_close(noisy[0, 1:], clean[0, 1:])  # grippers and decks untouched
     assert torch.equal(noisy, build(EntityNoise(position_mm=5))["observation.entity_tokens"])
+
+
+def test_the_live_builder_adds_visual_features_from_the_head_frame_and_tokens():
+    torch = pytest.importorskip("torch")
+    np = pytest.importorskip("numpy")
+    spec = importlib.util.spec_from_file_location(
+        "eval_entity_policy_visual", Path(__file__).parents[1] / "scripts/eval_shelf_restock_policy.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    pose = Pose((0.1, 0.2, 0.9), (0.0, 0.0, 0.0, 1.0))
+    scene = ObjectScene(0.0, (ObjectState("a", pose, (0.05, 0.04, 0.1), 1.0, 1.0),))
+    eef = EEFState(ArmState(pose, 0.25), ArmState(pose, 0.75))
+    frame = SimpleNamespace(data=bytes(range(12)), height=2, width=2)
+    obs = SimpleNamespace(scene=scene, eef=eef, supports=shelf_support_entities(DEFAULT_SPEC),
+                          frame=lambda name: frame, context=TaskContext("restock", "a"))
+    seen = {}
+
+    def encoder(images, tokens, mask):
+        seen["image"], seen["tokens"] = images[0], np.asarray(tokens[0])
+        return np.ones((1, len(mask[0]), 3), dtype=np.float32)
+
+    batch = module.build_observation(obs, torch=torch, np=np, entity_max_entities=16,
+                                     entity_visual=encoder)
+    assert batch["observation.entity_visual"].shape == (1, 16, 3)
+    assert seen["image"].shape == (2, 2, 3) and seen["image"][0, 0, 1] == 1
+    assert np.allclose(seen["tokens"], batch["observation.entity_tokens"][0].numpy())

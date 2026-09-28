@@ -275,3 +275,24 @@ def test_temporal_neighbours_stay_within_track_and_gap(tmp_path):
     for row in range(len(store)):
         if neighbours[row]:
             assert set(picked[:, row].tolist()) <= set(neighbours[row])
+
+
+def test_token_corners_match_the_object_corners_the_crops_were_built_from():
+    """Training crops came from the scene's objects; policy features come from
+    entity tokens. Both must describe the same box."""
+    from oct_vla.core.frames import Pose
+    from oct_vla.core.objects import ObjectScene, ObjectState
+    from oct_vla.core.state import ArmState, EEFState
+    from oct_vla.data.entity_tokens import build_entity_tokens, shelf_support_entities
+    from oct_vla.perception.lejepa.crops import object_corners
+    from oct_vla.perception.lejepa.entity_visual import token_corners
+    from oct_vla.tasks.shelf_restock.spec import DEFAULT_SPEC
+
+    s, c = np.sin(0.35), np.cos(0.35)
+    pose = Pose((-0.3, -0.25, 0.8), (0.0, 0.0, s, c))
+    obj = ObjectState("obj_0", pose, (0.07, 0.08, 0.065), 1.0, 1.0)
+    arm = ArmState(Pose((0.0, 0.0, 1.0), (0.0, 0.0, 0.0, 1.0)), 0.0)
+    tokens, mask = build_entity_tokens(ObjectScene(0.0, (obj,)), EEFState(arm, arm),
+                                       shelf_support_entities(DEFAULT_SPEC), 16)
+    assert np.allclose(np.sort(token_corners(tokens[0]), axis=0),
+                       np.sort(object_corners(obj), axis=0), atol=1e-9)

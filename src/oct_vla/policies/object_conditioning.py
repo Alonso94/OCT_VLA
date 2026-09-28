@@ -26,6 +26,9 @@ import torch
 from torch import Tensor, nn
 
 from oct_vla.policies.conditioning.entity import ENTITY_MASK, ENTITY_TOKENS, TOKEN_DIM
+
+#: Per-object visual features, when the config asks for them.
+ENTITY_VISUAL = "observation.entity_visual"
 from oct_vla.policies.stage_loading import VerifiedLoadMixin
 
 #: The arms a conditioned policy can be. The first three are nested, each adding
@@ -180,6 +183,10 @@ class ObjectConditioningConfig:
     #: width, LoRA-style -- so on a LoRA-tuned VLA the branch adds a fraction of
     #: the adapter's size instead of 40-120x it (research_questions §4.12).
     object_width: int | None = None
+    #: Width of a per-object visual feature appended to each entity row
+    #: (`observation.entity_visual`; perception/lejepa/entity_visual.py). None:
+    #: geometry only, which every checkpoint so far holds.
+    object_visual_dim: int | None = None
 
     # --- accepted only so pre-cleanup checkpoints load; see _migrate_legacy ---
     object_injection_mode: str | None = None
@@ -257,7 +264,7 @@ class ObjectConditioningConfig:
                 "an entity-conditioned policy cannot also take observation.environment_state: "
                 "both are typed ENV, and ENV normalisation is IDENTITY for the entities"
             )
-        for name in (ENTITY_TOKENS, ENTITY_MASK):
+        for name in (ENTITY_TOKENS, ENTITY_MASK, ENTITY_VISUAL):
             if name in self.input_features:
                 self.input_features[name] = PolicyFeature(
                     type=FeatureType.ENV, shape=self.input_features[name].shape
@@ -359,6 +366,17 @@ class ObjectConditionedPolicyMixin(VerifiedLoadMixin):
         mask = batched(batch.get(ENTITY_MASK), unbatched_ndim=1)
         if tokens is None or mask is None:
             raise ValueError(f"an object-conditioned policy needs {ENTITY_TOKENS} and {ENTITY_MASK}")
+        visual_dim = getattr(self.config, "object_visual_dim", None)
+        if visual_dim:
+            visual = batched(batch.get(ENTITY_VISUAL), unbatched_ndim=2)
+            if visual is None:
+                # Refused, not zero-filled: a vision arm fed no vision would train
+                # and score as the geometry arm under another name.
+                raise ValueError(f"object_visual_dim={visual_dim} needs {ENTITY_VISUAL}")
+            if visual.shape[:-1] != tokens.shape[:-1] or visual.shape[-1] != visual_dim:
+                raise ValueError(f"{ENTITY_VISUAL} is {tuple(visual.shape)}; expected "
+                                 f"{tuple(tokens.shape[:-1])} x {visual_dim}")
+            tokens = torch.cat([tokens, visual.to(tokens.dtype)], dim=-1)
         if self.training and getattr(self.config, "object_conditioning", None) in SHUFFLED_ARMS:
             # The information control: same branch, same capacity, same tensors,
             # but paired with the wrong observation. Training only -- evaluated

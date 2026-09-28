@@ -39,7 +39,8 @@ class EntityTokens(nn.Module):
         super().__init__()
         self.width = width
         embedded = entity_width(config, width)
-        self.embedding = EntityEmbedding(embedded, config.object_entity_normalizer)
+        self.embedding = EntityEmbedding(embedded, config.object_entity_normalizer,
+                                         visual_dim=getattr(config, "object_visual_dim", None))
         self.projection = nn.Linear(embedded, width)
         self.position = nn.Parameter(torch.randn(1, 1, width) * 0.02)
         self.gate_init = float(getattr(config, "object_tokens_gate_init", -4.0))

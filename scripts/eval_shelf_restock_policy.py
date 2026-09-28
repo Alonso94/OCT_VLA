@@ -76,7 +76,7 @@ def state_vector(eef) -> list[float]:
 def build_observation(
     obs, *, torch, np, control_space="cartesian", uint8_images=True,
     state_encoding="position", previous_joints=None, entity_max_entities=None,
-    entity_noise=None, noise_rng=None,
+    entity_noise=None, noise_rng=None, entity_visual=None,
 ):
     """The policy's input batch, laid out exactly as the exporter wrote it.
 
@@ -129,6 +129,13 @@ def build_observation(
             # After building, so the movables keep their order (entity_noise.py).
             tokens, mask = corrupt(tokens, mask, entity_noise, noise_rng)
             tokens, mask = tokens.tolist(), mask.tolist()
+        if entity_visual is not None:
+            # From the live head frame and these very tokens -- noise included,
+            # so a corrupted pose also moves its crop, as a real one would.
+            head = obs.frame("head_camera")
+            image = np.frombuffer(head.data, dtype=np.uint8).reshape(head.height, head.width, 3)
+            visual = entity_visual([image], [tokens], [mask])[0]
+            batch["observation.entity_visual"] = torch.tensor(visual[None], dtype=torch.float32)
         batch["observation.entity_tokens"] = torch.tensor([tokens], dtype=torch.float32)
         batch["observation.entity_mask"] = torch.tensor([mask], dtype=torch.bool)
     batch["task"] = [obs.context.instruction]
@@ -140,7 +147,7 @@ def run_episode(
     seed, profile, max_steps, torch, np, control_space="cartesian",
     uint8_images=True, state_encoding="position", video=None,
     gripper_encoding="measured_aperture",
-    entity_max_entities=None, model_ids=None, entity_noise=None,
+    entity_max_entities=None, model_ids=None, entity_noise=None, entity_visual=None,
 ) -> dict:
     observation = client.reset(seed, profile, control_space=control_space,
                                gripper_encoding=gripper_encoding, model_ids=model_ids)
@@ -178,7 +185,7 @@ def run_episode(
             state_encoding=state_encoding,
             previous_joints=previous_joints,
             entity_max_entities=entity_max_entities,
-            entity_noise=entity_noise, noise_rng=noise_rng,
+            entity_noise=entity_noise, noise_rng=noise_rng, entity_visual=entity_visual,
         )
         if observation.joints is not None:
             previous_joints = joint_vector(observation.joints)
@@ -446,6 +453,20 @@ def main() -> int:
     # Read from the checkpoint: an object-conditioned policy carries its arm.
     conditioning = getattr(config, "object_conditioning", None)
     entity_max_entities = config.object_max_entities if conditioning else None
+    entity_visual = None
+    if getattr(config, "object_visual_dim", None):
+        from oct_vla.perception.lejepa.entity_visual import EntityVisualEncoder
+
+        # The encoder the training view was built with, recorded in that view.
+        source = json.loads((args.dataset_root / "meta" / "info.json").read_text()).get("entity_visual")
+        if not source:
+            raise SystemExit(f"{args.dataset_root} records no entity_visual encoder, but the "
+                             "checkpoint expects visual features")
+        entity_visual = EntityVisualEncoder(source["lejepa_run"],
+                                            device="cuda" if torch.cuda.is_available() else "cpu")
+        if entity_visual.visual_dim != config.object_visual_dim:
+            raise SystemExit(f"encoder gives {entity_visual.visual_dim}-d features; the "
+                             f"checkpoint expects {config.object_visual_dim}")
     if not entity_noise.is_clean and not conditioning:
         # Noise on entities a policy never reads would score a clean rollout
         # under a noisy label.
@@ -489,7 +510,7 @@ def main() -> int:
                     uint8_images=uint8_images, state_encoding=state_encoding,
                     gripper_encoding=gripper_encoding, video=video,
                     entity_max_entities=entity_max_entities, model_ids=model_ids,
-                    entity_noise=entity_noise,
+                    entity_noise=entity_noise, entity_visual=entity_visual,
                 )
                 outcome["evaluation_split"] = args.evaluation_split
                 results.append(outcome)
