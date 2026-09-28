@@ -117,6 +117,7 @@ class RoboTwinNativePort:
         *,
         task_name: str,
         task_config: str = "demo_clean",
+        visual_shift: bool = False,
         plan_attempts: int = 4,
         need_plan: bool = False,
     ) -> None:
@@ -125,6 +126,7 @@ class RoboTwinNativePort:
         self.root = Path(robotwin_root).expanduser().resolve()
         self.task_name = task_name
         self.task_config = task_config
+        self.visual_shift = visual_shift
         #: Builds the class to instantiate, overriding what `task_name` would
         #: resolve to. A factory rather than a class: recording a RoboTwin
         #: built-in subclasses it to intercept `_take_picture`, and defining
@@ -161,6 +163,7 @@ class RoboTwinNativePort:
             self.root,
             task_name=self.task_name,
             task_config=self.task_config,
+            visual_shift=self.visual_shift,
             need_plan=self.need_plan,
         )
         with _chdir(self.root):

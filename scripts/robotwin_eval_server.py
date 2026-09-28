@@ -27,6 +27,8 @@ def main() -> int:
         default=None,
         help="Written once the socket is listening, so a launcher can wait on it",
     )
+    parser.add_argument("--visual-shift", action="store_true",
+                        help="Unseen background textures and random lights (task_config.py)")
     args = parser.parse_args()
 
     def make_port(task_class: str) -> RoboTwinNativePort:
@@ -34,6 +36,7 @@ def main() -> int:
             args.robotwin_root,
             task_name=f"oct_vla.tasks.shelf_restock.robotwin_env:{task_class}",
             task_config="demo_clean",
+            visual_shift=args.visual_shift,
         )
 
     server = ShelfRestockEvalServer(make_port, hz=args.hz)

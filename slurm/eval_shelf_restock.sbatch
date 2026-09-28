@@ -44,9 +44,13 @@ RESULTS="$OCTVLA_OUTPUT_ROOT/eval/${EVAL_TAG:-eval_${SLURM_JOB_ID}}.json"
 rm -f "$READY"
 
 cd "$OCTVLA_ROBOTWIN_ROOT"
+# EVAL_VISUAL_SHIFT=1: the appearance-shift tier (unseen backgrounds, random
+# lights). Told to both processes: the server renders it, the client records it.
+SHIFT_FLAG=()
+[ "${EVAL_VISUAL_SHIFT:-0}" = 1 ] && SHIFT_FLAG=(--visual-shift)
 "$OCTVLA_ROBOTWIN_PYTHON" -u -B "$OCTVLA_REPO/scripts/robotwin_eval_server.py" \
   --robotwin-root "$OCTVLA_ROBOTWIN_ROOT" \
-  --host 127.0.0.1 --port "$EVAL_PORT" --ready-file "$READY" &
+  --host 127.0.0.1 --port "$EVAL_PORT" --ready-file "$READY" "${SHIFT_FLAG[@]}" &
 SERVER_PID=$!
 # Kill the simulator however this script exits, or it survives as an orphan
 # holding a GPU render context for the rest of the allocation.
@@ -108,6 +112,7 @@ echo "eval dataset : $EVAL_DATASET_DIR ($EVAL_REPO_ID)"
   --max-steps "${EVAL_MAX_STEPS:-600}" \
   ${EVAL_STEPS_PER_OBJECT:+--steps-per-object "$EVAL_STEPS_PER_OBJECT"} \
   "${EXEC_FLAG[@]}" \
+  "${SHIFT_FLAG[@]}" \
   "${VIDEO_FLAG[@]}" \
   "${MODEL_FLAG[@]}" \
   --label "${EVAL_TAG:-}" \

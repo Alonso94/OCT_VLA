@@ -286,6 +286,8 @@ def main() -> int:
         "fully closed-loop; the trained default of 50 is 3.3 s of open loop at "
         "15 Hz.",
     )
+    parser.add_argument("--visual-shift", action="store_true",
+                        help="Record that the server renders the appearance-shift tier")
     parser.add_argument("--entity-noise-pos-mm", type=float, default=0.0,
                         help="Gaussian position noise on movable objects, in mm")
     parser.add_argument("--entity-noise-rot-deg", type=float, default=0.0,
@@ -547,8 +549,10 @@ def main() -> int:
                 f"te{args.temporal_ensemble_coeff:g}"
                 if args.temporal_ensemble_coeff is not None else "",
                 "" if entity_noise.is_clean else entity_noise.tag,
+                "vshift" if args.visual_shift else "",
             ) if part
         ),
+        "visual_shift": bool(args.visual_shift),
         "entity_noise": dataclasses.asdict(entity_noise),
         "execution": {
             "n_action_steps": getattr(config, "n_action_steps", None),

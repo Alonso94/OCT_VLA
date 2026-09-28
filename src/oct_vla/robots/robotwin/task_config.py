@@ -47,6 +47,7 @@ def build_dual_franka_setup(
     task_config: str = "demo_clean",
     eval_mode: bool = False,
     need_plan: bool = False,
+    visual_shift: bool = False,
 ) -> dict[str, Any]:
     """Build the keyword arguments RoboTwin's ``setup_demo`` expects.
 
@@ -69,6 +70,18 @@ def build_dual_franka_setup(
     # populated when planning ran, so `need_plan=False` fails there with a bare
     # `IndexError: list index out of range`.
     setup["need_plan"] = need_plan
+    if visual_shift:
+        # The appearance-shift evaluation tier: RoboTwin's unseen background
+        # textures (eval_mode) and random lighting. Geometry stays exactly the
+        # clean scene's -- no clutter (objects the oracle's planning world does
+        # not know), no table-height or head-camera jitter (the shelf layout
+        # and the fixed head camera the object crops assume).
+        setup["domain_randomization"] = {
+            "random_background": True, "cluttered_table": False, "clean_background_rate": 0.0,
+            "random_head_camera_dis": 0, "random_table_height": 0,
+            "random_light": True, "crazy_random_light_rate": 0.0,
+        }
+        setup["eval_mode"] = True
     setup["save_data"] = False
     setup["render_freq"] = 0
 
