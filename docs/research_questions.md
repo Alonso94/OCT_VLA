@@ -753,7 +753,37 @@ trainable parameters: pi0.5 13.9 M, SmolVLA 7.0 M, as sized.
 | GR00T | stage 1, for reference | 22 | 4 | 0.52 | 49 |
 
 pi0.5 becomes a working baseline, about half GR00T's stage-1 level; SmolVLA
-improves little. Stage 2 (`PXF`, `SXF`) submitted.
+improves little.
+
+**`expert_lora` stage 2.** Verified before reading: the branches add +9 % of
+trainable parameters on pi0.5 (13.9 → 15.2 M) and +8–19 % on SmolVLA
+(7.0 → 7.6–8.3 M); every arm saw the same 128 k samples; step-0 drift is 0.0
+for KV and AdaLN and 0.5 % (pi0.5) and 1.4 % (SmolVLA) for tokens, whose init
+checks now pass. pi0.5 has two seeds (seed 1002's stage-1 merge refused itself
+at 5.36 %, just over the 5 % bound; the other five merges changed the chunk by
+0.2–1.2 %), so it is not yet a result.
+
+| arm | pi0.5 seen ≥1 transfer /40 | pi0.5 held-out | SmolVLA seen ≥1 transfer /60 | SmolVLA seen success | SmolVLA held-out |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| rgb_cont | 8 | 3 | 13 | 0 | 3 |
+| kv | 13 (p = 0.33) | 3 | 17 (p = 0.54) | 4 (p = 0.125) | 1 |
+| kv_adaln | 5 (p = 0.58) | 1 | 12 (p = 1.0) | 3 (p = 0.25) | 2 |
+| kv_tokens | 9 (p = 1.0) | 3 | 11 (p = 0.80) | 2 (p = 0.5) | 2 |
+
+**With the branch held to about GR00T's share of trainable parameters,
+conditioning does not measurably help pi0.5 or SmolVLA.** No contrast
+against the budget control reaches p = 0.1; the one nominal difference is
+`kv` over `kv_adaln` on pi0.5 (13 → 5, p = 0.039, two seeds). The earlier
+two-seed SmolVLA gain under the default recipe (`kv_adaln` 3 successes, 9
+episodes with a transfer) does not reappear once the capacity is matched,
+consistent with that gain having been capacity.
+
+**Caveat on "comparable to GR00T".** The proportion matches (+9 %), the
+absolute size does not: GR00T's full-width branch is ~150 M parameters, these
+are ~0.5–1.3 M at `object_width` 16. So this says a small, low-rank entity
+branch does not rescue these backbones; it does not rule out a larger one
+paired against a control given the same extra capacity (e.g. a higher LoRA
+rank).
 
 ## 5. What answers each question
 
@@ -773,7 +803,7 @@ GR00T.
 | Stage A2 | `CF`: rgb_cont, kv, kv_adaln, kv_tokens, scratch_kv × 3 seeds | **done** (§4.9): Stage A replicates |
 | Q4 (VLAs), stage 1 | `PF`/`PJ`, `SF`/`SJ`, `GF`/`GJ`: rgb × 3 seeds | **done** (§4.10): GR00T learns, absolute EE; pi0.5 and SmolVLA at zero |
 | Q1–Q2 (VLAs), stage 2 | `GF`: rgb_cont, kv, kv_adaln × 3 seeds, seen + held-out | **done** (§4.11): yes, and on seen objects too. `kv_tokens` unsupported on GR00T |
-| Q1–Q2, pi0.5 and SmolVLA | `PXF`, `SXF` (`RECIPE=expert_lora`): rgb_cont, kv, kv_adaln, kv_tokens × 3 seeds, seen + held-out | **stage 2 running**; stage 1 done (§4.12): pi0.5 now transfers, SmolVLA barely |
+| Q1–Q2, pi0.5 and SmolVLA | `PXF`, `SXF` (`RECIPE=expert_lora`): rgb_cont, kv, kv_adaln, kv_tokens × 3 seeds, seen + held-out | **done except pi0.5 seed 1002** (merge refused, 5.36 % > 5 %): no arm beats the budget control on either backbone (§4.12) |
 | Q3 (VLAs) | count rollouts on `rgb_cont` and any arm that beats it | only if GR00T stage 2 finds one |
 | semantics | geometry (16) vs geometry + semantics (16 + 16) on `place_container_plate` (bowl seen, cup held out as a category) | after stage 2; needs a closed-loop evaluator for the built-in task first |
 
@@ -798,6 +828,10 @@ lookup) to 16, and is tested on the bowl → cup category holdout.
 
 ## Update log
 
+- **2026-09-28 (later).** `expert_lora` stage 2: with the object branch at
+  GR00T's share of trainable parameters (+8–19 %), no conditioned arm beats the
+  budget control on pi0.5 (two seeds) or SmolVLA (three). The earlier SmolVLA
+  gain looks like capacity. pi0.5 seed 1002's merge refused itself (5.36 %).
 - **2026-09-28.** `expert_lora` stage 1: pi0.5 goes from 0 to 13 of 60 episodes
   with a transfer (p < 0.001), SmolVLA from 2 to 5 (p = 0.45). Stage 2
   submitted for both (102 jobs).
