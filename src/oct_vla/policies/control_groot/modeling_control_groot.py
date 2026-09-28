@@ -27,6 +27,7 @@ from oct_vla.policies.object_conditioning import (
     CONDITIONING,
     KV_ARMS,
     SCENE_POOL,
+    SIGREG_ARMS,
     ObjectConditionedPolicyMixin,
     ObjectConditioning,
     require_arm,
@@ -153,10 +154,57 @@ class ControlGrootPolicy(SlimCheckpointMixin, ObjectConditionedPolicyMixin, Groo
 
     def forward(self, batch: dict[str, Tensor], **kwargs: Any):
         self._set_object_inputs(batch)
+        regularised = self.training and self.config.object_conditioning in SIGREG_ARMS
+        if regularised:
+            self._install_embedding_capture()
+            self._embeddings = []
         try:
-            return super().forward(batch, **kwargs)
+            out = super().forward(batch, **kwargs)
+            if not regularised:
+                return out
+            loss, info = out
+            term = self._object_sigreg()
+            info = dict(info or {})
+            info["object_sigreg"] = float(term.detach())
+            return loss + self.config.object_sigreg_weight * term, info
         finally:
+            self._embeddings = None
             self._clear_object_inputs()
+
+    def _install_embedding_capture(self) -> None:
+        """Record every entity embedding the conditioning computes this forward."""
+        if getattr(self, "_capture_installed", False):
+            return
+        from oct_vla.policies.conditioning.entity import EntityEmbedding
+
+        def hook(module, args, output):
+            if getattr(self, "_embeddings", None) is not None:
+                self._embeddings.append((args[0], output))
+
+        for module in self._control().modules():
+            if isinstance(module, EntityEmbedding):
+                module.register_forward_hook(hook)
+        self._capture_installed = True
+
+    def _object_sigreg(self) -> Tensor:
+        """SIGReg over the *movable* objects' embeddings, averaged over the
+        embedding modules. Only the first entity batch is used: GR00T tiles it
+        whole, and duplicates would bias the Gaussianity test. Supports and
+        grippers are left out -- a fixed shelf is the same point every frame."""
+        from oct_vla.perception.lejepa.sigreg import sigreg
+
+        if not self._embeddings:
+            raise RuntimeError("kv_adaln_sigreg ran no entity embedding: nothing to regularise")
+        unique = self._control()._inputs[0].shape[0]
+        terms = []
+        for tokens, embedded in self._embeddings:
+            tokens, embedded = tokens[:unique], embedded[:unique]
+            movable = tokens[..., 13] > 0.5
+            if int(movable.sum()) >= 2:
+                terms.append(sigreg(embedded[movable].float()))
+        if not terms:
+            raise RuntimeError("no batch held two movable objects to regularise")
+        return torch.stack(terms).mean()
 
     def _get_default_peft_targets(self) -> dict[str, Any]:
         targets = super()._get_default_peft_targets()

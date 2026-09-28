@@ -38,16 +38,19 @@ from oct_vla.policies.stage_loading import VerifiedLoadMixin
 #: scene vector alone, no KV, pooled by attention or by a plain mean -- so the
 #: first isolates global from query-dependent context and the pair isolates a
 #: learned composition from naive aggregation.
-CONDITIONING = ("kv", "kv_adaln", "kv_tokens", "kv_adaln_shuffled", "scene_attn", "scene_mean")
+CONDITIONING = ("kv", "kv_adaln", "kv_tokens", "kv_adaln_shuffled", "scene_attn", "scene_mean",
+                "kv_adaln_sigreg")
 #: The nested arms every host implements.
 CORE_ARMS = ("kv", "kv_adaln", "kv_tokens")
 #: Arms with the per-layer KV branch.
-KV_ARMS = ("kv", "kv_adaln", "kv_tokens", "kv_adaln_shuffled")
+KV_ARMS = ("kv", "kv_adaln", "kv_tokens", "kv_adaln_shuffled", "kv_adaln_sigreg")
 #: Arms with a pooled scene vector, and how each pools.
 SCENE_POOL = {"kv_adaln": "attention", "kv_adaln_shuffled": "attention",
-              "scene_attn": "attention", "scene_mean": "mean"}
+              "scene_attn": "attention", "scene_mean": "mean", "kv_adaln_sigreg": "attention"}
 #: Arms trained on deranged entity sets.
 SHUFFLED_ARMS = ("kv_adaln_shuffled",)
+#: Arms whose object embeddings carry a SIGReg term in the training loss.
+SIGREG_ARMS = ("kv_adaln_sigreg",)
 
 
 def require_arm(config: Any, supported: tuple[str, ...], host: str) -> None:
@@ -187,6 +190,10 @@ class ObjectConditioningConfig:
     #: (`observation.entity_visual`; perception/lejepa/entity_visual.py). None:
     #: geometry only, which every checkpoint so far holds.
     object_visual_dim: int | None = None
+    #: Weight of the SIGReg term on the object embeddings (the kv_adaln_sigreg
+    #: arm): LeJEPA's isotropic-Gaussian regulariser applied to the conditioning's
+    #: own entity space, geometry only -- perception stays outside the policy.
+    object_sigreg_weight: float = 0.05
 
     # --- accepted only so pre-cleanup checkpoints load; see _migrate_legacy ---
     object_injection_mode: str | None = None

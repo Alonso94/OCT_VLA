@@ -124,7 +124,7 @@ if [ "$TRAIN_VARIANT" = object ]; then
   CONDITIONING="${CONDITIONING:-kv}"
   # The controls (kv_adaln_shuffled, scene_attn, scene_mean) are GR00T-only;
   # other hosts refuse them at construction (object_conditioning.require_arm).
-  case "$CONDITIONING" in kv|kv_adaln|kv_tokens|kv_adaln_shuffled|scene_attn|scene_mean) ;; *) echo "Invalid CONDITIONING=$CONDITIONING" >&2; exit 2 ;; esac
+  case "$CONDITIONING" in kv|kv_adaln|kv_tokens|kv_adaln_shuffled|scene_attn|scene_mean|kv_adaln_sigreg) ;; *) echo "Invalid CONDITIONING=$CONDITIONING" >&2; exit 2 ;; esac
   # The KV hooks hold batch context only during forward; checkpoint
   # recomputation would replay them without it (see control_pi05's config).
   [ "$BACKBONE" = pi05 ] && PRECISION_ARGS=(--policy.dtype=bfloat16 --policy.gradient_checkpointing=false)

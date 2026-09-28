@@ -324,3 +324,41 @@ def test_a_vision_arm_without_visual_inputs_is_refused():
     batch["observation.entity_visual"] = torch.randn(2, 3, 4)
     policy._set_object_inputs(batch)
     assert policy.object_conditioning._inputs[0].shape == (2, 3, 21)
+
+
+def test_the_sigreg_term_uses_one_copy_of_the_movable_objects_only():
+    """kv_adaln_sigreg regularises the movable objects' embeddings: GR00T tiles
+    the entity batch, and duplicates or constant supports would bias the test."""
+    from types import SimpleNamespace
+
+    from oct_vla.perception.lejepa.sigreg import sigreg
+    from oct_vla.policies.control_groot.modeling_control_groot import ControlGrootPolicy
+
+    torch.manual_seed(0)
+    unique, entities, width = 8, 5, 6
+    tokens = torch.zeros(unique, entities, 17)
+    tokens[:, :3, 13] = 1.0  # three movables
+    tokens[:, 3:, 16] = 1.0  # two supports
+    embedded = torch.randn(unique, entities, width)
+    embedded[:, 3:] = 5.0  # constant support rows: would dominate if included
+    control = SimpleNamespace(_inputs=(tokens, None))
+    policy = SimpleNamespace(_control=lambda: control,
+                             _embeddings=[(tokens.repeat(2, 1, 1), embedded.repeat(2, 1, 1))])
+    torch.manual_seed(1)
+    term = ControlGrootPolicy._object_sigreg(policy)
+    torch.manual_seed(1)  # the same random directions
+    expected = sigreg(embedded[:, :3].reshape(-1, width))
+    torch.testing.assert_close(term, expected)
+    one_movable = SimpleNamespace(_control=lambda: SimpleNamespace(_inputs=(tokens[:1], None)),
+                                  _embeddings=[(tokens[:1, 2:], embedded[:1, 2:])])
+    with pytest.raises(RuntimeError, match="two movable"):
+        ControlGrootPolicy._object_sigreg(one_movable)
+
+
+def test_a_sigreg_arm_with_no_embeddings_is_an_error_not_a_zero():
+    from types import SimpleNamespace
+
+    from oct_vla.policies.control_groot.modeling_control_groot import ControlGrootPolicy
+
+    with pytest.raises(RuntimeError, match="ran no entity embedding"):
+        ControlGrootPolicy._object_sigreg(SimpleNamespace(_control=lambda: None, _embeddings=[]))
