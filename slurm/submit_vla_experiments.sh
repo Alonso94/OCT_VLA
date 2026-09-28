@@ -185,15 +185,18 @@ elif [ "$PHASE" = stage2 ]; then
       exists "$run1" || { echo "no stage-1 checkpoint for $run1" >&2; exit 2; }
       stage1="$OCTVLA_OUTPUT_ROOT/$run1/checkpoints/last/pretrained_model"
       merge_dep=""
+      # MERGE_ON_FRAME_OUTLIER=verify-fp32[-then-accept]: what one frame over the
+      # merge's per-frame ceiling does (scripts/merge_stage1_adapter.py).
       if [ "$backbone" != groot ]; then
         merged="$OCTVLA_OUTPUT_ROOT/$run1/merged"
         if [ ! -f "$merged/model.safetensors" ]; then
-          merge_dep=$(submit "${SB[@]}" --job-name="octvla-$prefix-merge-s$seed" --time=02:00:00 \
+          merge_dep=$(submit "${SB[@]}" --job-name="octvla-$prefix-merge-s$seed" --time=03:00:00 \
             --output="$LOGS/$prefix-merge-s$seed-%j.out" --export=ALL --wrap="set -euo pipefail
 cd $OCTVLA_REPO; export PYTHONPATH=src HF_HUB_OFFLINE=1
 $OCTVLA_POLICY_PYTHON -u scripts/merge_stage1_adapter.py --stage1 $stage1 \
   --dataset-root $OCTVLA_DATASET_ROOT/${DATASET[$regime]} \
-  --repo-id local/oct-vla-shelf-restock-${DATASET[$regime]#three_object_} --output $merged")
+  --repo-id local/oct-vla-shelf-restock-${DATASET[$regime]#three_object_} --output $merged \
+  --on-frame-outlier ${MERGE_ON_FRAME_OUTLIER:-refuse}")
           echo "$prefix-merge-s$seed -> $merge_dep"; jobs=$((jobs + 1))
         fi
         stage1="$merged"

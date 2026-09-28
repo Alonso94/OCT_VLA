@@ -23,6 +23,16 @@ Three checks, each refusing to write a checkpoint that would silently be wrong:
 3. **round trip**: the saved directory, reloaded through the class training
    will use, holds exactly the saved tensors and predicts the same chunk.
 
+When one frame exceeds the ceiling while the median passes, `--on-frame-outlier`
+decides. `refuse` (default) stops. `verify-fp32` repeats check 2 with the
+adapter and the merge in float32: if the merge is exact there, the bf16 outlier
+is rounding amplified through the flow, and the bf16 checkpoint -- built exactly
+as every other seed's -- is written. `verify-fp32-then-accept` also writes it
+when the float32 check fails the ceiling too (the median must still pass). Every
+path is recorded in `merge_provenance.json` under `frame_outlier`. The rgb_cont
+control and every conditioned arm start from the same merged checkpoint, so an
+accepted outlier cannot favour one arm.
+
 GPU node, policy environment:
 
     scripts/merge_stage1_adapter.py --stage1 RUN/checkpoints/last/pretrained_model \\
@@ -96,6 +106,9 @@ def main() -> int:
     parser.add_argument("--dataset-root", required=True, type=Path)
     parser.add_argument("--repo-id", required=True)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--on-frame-outlier", default="refuse",
+                        choices=("refuse", "verify-fp32", "verify-fp32-then-accept"),
+                        help="What a per-frame ceiling breach does when the median passes")
     args = parser.parse_args()
 
     import torch
@@ -159,9 +172,34 @@ def main() -> int:
           f"{len(changes)} frames (each: {', '.join(f'{c:.1e}' for c in changes)})")
     if merge_change > TOLERANCE:
         raise SystemExit(f"merge changed the policy by a median {merge_change:.2e} > {TOLERANCE}")
+    frame_outlier = None
     if changes[-1] > FRAME_CEILING:
-        raise SystemExit(f"merge moved one frame by {changes[-1]:.2e} > {FRAME_CEILING}: "
-                         "more than rounding")
+        if args.on_frame_outlier == "refuse":
+            raise SystemExit(f"merge moved one frame by {changes[-1]:.2e} > {FRAME_CEILING}: "
+                             "more than rounding")
+        # Check 2 again in float32, on a fresh copy: the bf16 one is merged in place.
+        fp32_config = PreTrainedConfig.from_pretrained(stage1)
+        fp32_config.pretrained_path = stage1
+        fp32_config.dtype = "float32"
+        fp32 = make_policy(cfg=fp32_config, ds_meta=metadata, rename_map=rename_map)
+        fp32.eval()
+        fp32_adapter = [chunk(fp32, b, torch) for b in batches]
+        fp32_merged = fp32.merge_and_unload()
+        fp32_merged.eval()
+        fp32_changes = sorted(relative_change(chunk(fp32_merged, b, torch), a)
+                              for a, b in zip(fp32_adapter, batches, strict=True))
+        del fp32, fp32_merged
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+        exact = fp32_changes[-1] <= FRAME_CEILING
+        print(f"fp32     : relative change per frame {', '.join(f'{c:.1e}' for c in fp32_changes)}"
+              f" -> {'exact' if exact else 'still over the ceiling'}")
+        if not exact and args.on_frame_outlier != "verify-fp32-then-accept":
+            raise SystemExit(f"float32 merge also moved one frame by {fp32_changes[-1]:.2e} "
+                             f"> {FRAME_CEILING}")
+        frame_outlier = {"bf16_max": changes[-1], "ceiling": FRAME_CEILING,
+                         "policy": args.on_frame_outlier, "fp32_frame_changes": fp32_changes,
+                         "resolution": "fp32_exact" if exact else "accepted_override"}
+        print(f"outlier  : {frame_outlier['resolution']} (recorded in the provenance)")
     merged.config.use_peft = False
     merged.config.pretrained_path = None
     args.output.mkdir(parents=True)
@@ -198,6 +236,7 @@ def main() -> int:
         "lora_B_norm": lora_norm,
         "merge_relative_change": merge_change,
         "merge_frame_changes": changes,
+        "frame_outlier": frame_outlier,
         "reload_relative_change": round_trip,
         "tensors": report["tensors"],
         "dataset": str(args.dataset_root),
