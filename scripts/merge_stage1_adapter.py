@@ -14,8 +14,12 @@ Three checks, each refusing to write a checkpoint that would silently be wrong:
 
 1. the stage-1 checkpoint is an adapter, and its base is what its config says;
 2. **functional**: the merged model predicts the same action chunk as the
-   adapter model on a real observation from the training set, from the same
-   noise (bf16 rounding in the merge is the only permitted difference);
+   adapter model on real observations from the training set, from the same
+   noise (bf16 rounding in the merge is the only permitted difference). Judged
+   over `FRAMES` frames, by the median change and a per-frame ceiling: one
+   frame once measured 5.36 % on a sound merge (the other five merges of that
+   batch: 0.2-1.2 %), while a skipped merge or a wrong adapter moves every
+   frame by O(1);
 3. **round trip**: the saved directory, reloaded through the class training
    will use, holds exactly the saved tensors and predicts the same chunk.
 
@@ -40,6 +44,11 @@ sys.path.insert(0, str(ROOT / "src"))
 #: rounding of W + BA across a 10-step flow is ~1e-3 in practice; a wrong
 #: adapter or a skipped merge moves it by O(1).
 TOLERANCE = 5e-2
+#: No single frame may move more than this: far above rounding, far below a
+#: wrong adapter's O(1).
+FRAME_CEILING = 0.25
+#: Frames the merge is judged on: two from each of the first four episodes.
+FRAMES = 8
 
 #: Stage-1 files a merged checkpoint needs beside its weights: the processor
 #: pipelines (normalisation statistics fitted on stage 1's training split, which
@@ -48,18 +57,23 @@ SKIP = {"adapter_config.json", "adapter_model.safetensors", "config.json",
         "model.safetensors", "README.md"}
 
 
-def observation_batch(repo_id: str, root: Path, preprocessor, torch):
-    """One training-split frame, shaped and processed exactly as rollouts are."""
+def observation_batches(repo_id: str, root: Path, preprocessor, torch, frames: int = FRAMES):
+    """Training-split frames, each shaped and processed exactly as rollouts are:
+    at a third and two thirds of each of the first `frames // 2` episodes."""
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-    dataset = LeRobotDataset(repo_id, root=root, episodes=[0])
-    item = dataset[len(dataset) // 2]
-    batch = {}
-    for key, value in item.items():
-        if key.startswith("observation.") and isinstance(value, torch.Tensor):
-            batch[key] = value.unsqueeze(0)
-    batch["task"] = [item["task"]]
-    return preprocessor(batch)
+    batches = []
+    for episode in range(frames // 2):
+        dataset = LeRobotDataset(repo_id, root=root, episodes=[episode])
+        for fraction in (1 / 3, 2 / 3):
+            item = dataset[int(len(dataset) * fraction)]
+            batch = {}
+            for key, value in item.items():
+                if key.startswith("observation.") and isinstance(value, torch.Tensor):
+                    batch[key] = value.unsqueeze(0)
+            batch["task"] = [item["task"]]
+            batches.append(preprocessor(batch))
+    return batches
 
 
 def chunk(policy, batch, torch, seed=0):
@@ -120,7 +134,8 @@ def main() -> int:
             "rename_observations_processor": {"rename_map": rename_map},
         },
     )
-    batch = observation_batch(args.repo_id, args.dataset_root, preprocessor, torch)
+    batches = observation_batches(args.repo_id, args.dataset_root, preprocessor, torch)
+    batch = batches[0]
 
     # The adapter must have trained: a zero adapter passes every check below
     # while the "stage 1" being continued is just the public base model.
@@ -132,14 +147,21 @@ def main() -> int:
     if lora_norm == 0.0:
         raise SystemExit("every lora_B is zero: this adapter never trained")
 
-    with_adapter = chunk(policy, batch, torch)
+    # Every adapter prediction first: merge_and_unload rewrites the policy in place.
+    with_adapter = [chunk(policy, b, torch) for b in batches]
     merged = policy.merge_and_unload()
     merged.eval()
-    after_merge = chunk(merged, batch, torch)
-    merge_change = relative_change(after_merge, with_adapter)
-    print(f"merge    : relative change in predicted chunk {merge_change:.2e}")
+    after = [chunk(merged, b, torch) for b in batches]
+    changes = sorted(relative_change(a, w) for a, w in zip(after, with_adapter, strict=True))
+    merge_change = changes[len(changes) // 2]
+    after_merge = after[0]
+    print(f"merge    : relative change in predicted chunk, median {merge_change:.2e} over "
+          f"{len(changes)} frames (each: {', '.join(f'{c:.1e}' for c in changes)})")
     if merge_change > TOLERANCE:
-        raise SystemExit(f"merge changed the policy by {merge_change:.2e} > {TOLERANCE}")
+        raise SystemExit(f"merge changed the policy by a median {merge_change:.2e} > {TOLERANCE}")
+    if changes[-1] > FRAME_CEILING:
+        raise SystemExit(f"merge moved one frame by {changes[-1]:.2e} > {FRAME_CEILING}: "
+                         "more than rounding")
     merged.config.use_peft = False
     merged.config.pretrained_path = None
     args.output.mkdir(parents=True)
@@ -175,6 +197,7 @@ def main() -> int:
         "lora_alpha": adapter.get("lora_alpha"),
         "lora_B_norm": lora_norm,
         "merge_relative_change": merge_change,
+        "merge_frame_changes": changes,
         "reload_relative_change": round_trip,
         "tensors": report["tensors"],
         "dataset": str(args.dataset_root),
