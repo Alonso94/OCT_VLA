@@ -746,6 +746,20 @@ unchanged): the RGB control collapses, 9 → 2 (p = 0.039); `kv` 31 → 25
 arms beat the control 25 and 24 to 2 (p < 0.001): explicit object state keeps
 the policy working when appearance changes.
 
+**SIGReg on the object embeddings (`kv_adaln_sigreg`, one seed — a lead, not a
+result).** Seed 1000 against `kv_adaln` on the same seed, 20 scenes per tier:
+seen success 11 → 9 (p = 0.75), held-out success 4 → 5, held-out ≥1 transfer
+**5 → 13 (p = 0.008)**. The logged SIGReg term rose from 8 to 34 during
+training, so at weight 0.05 the task loss outpulls it; the embeddings drift
+from isotropy rather than settle there.
+
+**Data fractions, stage 1 (RGB GR00T, fixed 8 k steps).** Mean transfers on
+seen objects: 19 runs 0.40, 38 runs **0.90**, 75 runs 0.52 (success 0, 9, 4 of
+60). Not monotone: at a fixed step budget the 38-run model sees each run twice
+as often (≈ 8 passes against 4), and GR00T is fit-limited like ACT. This curve
+confounds data with passes and is not a data-efficiency result by itself;
+stage 2 on each fraction is paired against its own budget control (running).
+
 ### 4.12 pi0.5 and SmolVLA: capacity, and a second recipe
 
 The first pi0.5/SmolVLA stage 2 (default recipe) mostly did not run: pi0.5's
@@ -872,7 +886,12 @@ lookup) to 16, and is tested on the bowl → cup category holdout.
 
 ## Update log
 
-- **2026-09-29.** GR00T controls (§4.13): the shuffled-entity arm, with the
+- **2026-09-28 (night).** One-seed SIGReg lead on held-out geometry (≥1
+  transfer 5 → 13 of 20, p = 0.008). Data-fraction stage 1 is non-monotone
+  (fixed steps confound data with passes); stage 2 on the fractions submitted.
+  pi0.5 seed 1002: its merge moves one of 8 frames 34 % (seeds 1000/1001: at
+  most 4 %), a real outlier, not a miscalibrated bound.
+- **2026-09-28 (evening).** GR00T controls (§4.13): the shuffled-entity arm, with the
   identical network, falls to the control's level, so the gain is information;
   scene vectors alone do not help, KV does. Robust to 2–5 mm pose noise; the
   RGB control collapses under visual shift while the conditioned arms hold.
