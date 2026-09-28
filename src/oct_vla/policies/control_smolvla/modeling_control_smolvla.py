@@ -23,6 +23,8 @@ from oct_vla.policies.conditioning.adaln import SceneVector
 from oct_vla.policies.conditioning.hosts import install_smol_kv
 from oct_vla.policies.conditioning.tokens import EntityTokens, prepend_entities, scene_inputs
 from oct_vla.policies.object_conditioning import (
+    CORE_ARMS,
+    require_arm,
     ObjectConditionedPolicyMixin,
     ObjectConditioning,
     unwrap_object_conditioning,
@@ -37,6 +39,7 @@ class ControlVLAFlowMatching(VLAFlowMatching):
         # Every suffix projection in SmolVLA is expert_hidden_size wide, and
         # action_in_proj is the one PEFT already targets, so it is the stable
         # place to read that width from.
+        require_arm(config, CORE_ARMS, "control_smolvla")
         self.object_conditioning = ObjectConditioning(
             config, self.action_in_proj.out_features
         )

@@ -187,6 +187,10 @@ $OCTVLA_POLICY_PYTHON -u scripts/merge_stage1_adapter.py --stage1 $stage1 \
         case "$arm" in
           rgb_cont)               arm_env=(TRAIN_VARIANT=rgb) ;;
           kv|kv_adaln|kv_tokens)  arm_env=(TRAIN_VARIANT=object CONDITIONING="$arm") ;;
+          # The information and composition controls (research plan, Phase A).
+          kv_adaln_shuffled|scene_attn|scene_mean)
+            [ "$backbone" = groot ] || { echo "$arm is implemented on groot only" >&2; exit 2; }
+            arm_env=(TRAIN_VARIANT=object CONDITIONING="$arm") ;;
           *) echo "Unknown arm $arm" >&2; exit 2 ;;
         esac
         cell="$prefix-$arm-s$seed"

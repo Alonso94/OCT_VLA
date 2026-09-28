@@ -232,3 +232,61 @@ def test_a_removed_mechanism_is_refused_with_the_tag_to_use(field, value):
 def test_an_unknown_arm_is_refused():
     with pytest.raises(ValueError, match="object_conditioning must be one of"):
         act_config(object_conditioning="adaln")
+
+
+# ------------------------------------------- information and composition controls
+
+
+def test_a_derangement_never_leaves_a_sample_its_own_scene():
+    from oct_vla.policies.object_conditioning import derangement
+
+    torch.manual_seed(0)
+    for size in range(2, 10):
+        for _ in range(50):
+            target = derangement(size)
+            assert sorted(target.tolist()) == list(range(size))
+            assert not (target == torch.arange(size)).any()
+    with pytest.raises(ValueError, match="at least 2"):
+        derangement(1)
+
+
+def _shuffled_policy():
+    policy, _ = _recording_policy()
+    policy.config.object_conditioning = "kv_adaln_shuffled"
+    return policy
+
+
+def test_the_shuffled_arm_trains_on_other_scenes_and_evaluates_on_its_own():
+    """The information control: in training every sample's entities come from a
+    different sample; at evaluation the policy sees its own scene."""
+    policy = _shuffled_policy()
+    tokens = torch.arange(4, dtype=torch.float32)[:, None, None].expand(4, 3, 17).clone()
+    mask = torch.ones(4, 3, dtype=torch.bool)
+    policy.train()
+    policy._set_object_inputs({TOKENS: tokens, MASK: mask})
+    seen = policy.object_conditioning._inputs[0][:, 0, 0]
+    assert sorted(seen.tolist()) == [0.0, 1.0, 2.0, 3.0]
+    assert not (seen == torch.arange(4, dtype=torch.float32)).any()
+    policy.eval()
+    policy._set_object_inputs({TOKENS: tokens, MASK: mask})
+    assert torch.equal(policy.object_conditioning._inputs[0], tokens)
+
+
+def test_other_arms_are_never_shuffled():
+    policy, _ = _recording_policy()
+    policy.config.object_conditioning = "kv_adaln"
+    tokens = torch.randn(4, 3, 17)
+    policy.train()
+    policy._set_object_inputs({TOKENS: tokens, MASK: torch.ones(4, 3, dtype=torch.bool)})
+    assert torch.equal(policy.object_conditioning._inputs[0], tokens)
+
+
+@pytest.mark.parametrize("arm", ["kv_adaln_shuffled", "scene_attn", "scene_mean"])
+def test_a_host_without_the_control_arms_refuses_them(arm):
+    """ACT (and pi0.5, SmolVLA, VLA-JEPA) implement only the nested arms; building
+    a control there must fail, not silently train a different arm."""
+    from oct_vla.policies.object_conditioning import CORE_ARMS, require_arm
+
+    config = act_config(object_conditioning=arm)
+    with pytest.raises(ValueError, match="does not implement"):
+        require_arm(config, CORE_ARMS, "control_act")

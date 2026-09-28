@@ -24,8 +24,12 @@ from oct_vla.policies.conditioning.adaln import SceneVector
 from oct_vla.policies.conditioning.hosts import install_diffusers_kv
 from oct_vla.policies.conditioning.tokens import EntityTokens, scene_inputs
 from oct_vla.policies.object_conditioning import (
+    CONDITIONING,
+    KV_ARMS,
+    SCENE_POOL,
     ObjectConditionedPolicyMixin,
     ObjectConditioning,
+    require_arm,
     unwrap_object_conditioning,
 )
 from oct_vla.policies.slim_groot.modeling_slim_groot import GROOT_BACKBONE
@@ -52,22 +56,27 @@ class ControlGrootPolicy(SlimCheckpointMixin, ObjectConditionedPolicyMixin, Groo
 
     def __init__(self, config: ControlGrootConfig, **kwargs: Any) -> None:
         super().__init__(config, **kwargs)
+        arm = config.object_conditioning
+        require_arm(config, CONDITIONING, "control_groot")
         head = self._groot_model.action_head
         head.object_conditioning = ObjectConditioning(config, head.input_embedding_dim)
-        self._object_hooks = install_diffusers_kv(
-            head.model, head.object_conditioning, conditioning_owner=head
+        # KV for the arms that carry it; the scene_* controls have none, so the
+        # pooled scene vector is their only path.
+        self._object_hooks = (
+            install_diffusers_kv(head.model, head.object_conditioning, conditioning_owner=head)
+            if arm in KV_ARMS else []
         )
         self._branch_hooks = []
         self._incontext_count = 0
-        if config.object_conditioning == "kv_adaln":
-            self._install_adaln(config, head)
-        if config.object_conditioning == "kv_tokens":
+        if arm in SCENE_POOL:
+            self._install_adaln(config, head, pool=SCENE_POOL[arm])
+        if arm == "kv_tokens":
             self._install_incontext(config, head)
 
     def _control(self):
         return unwrap_object_conditioning(self._groot_model.action_head.object_conditioning)
 
-    def _install_adaln(self, config, head) -> None:
+    def _install_adaln(self, config, head, *, pool: str = "attention") -> None:
         """Add the pooled scene to the DiT's timestep embedding.
 
         `temb` is what every block's AdaLayerNorm and the output norm are
@@ -77,7 +86,7 @@ class ControlGrootPolicy(SlimCheckpointMixin, ObjectConditionedPolicyMixin, Groo
         """
         encoder = head.model.timestep_encoder
         dim = encoder.timestep_embedder.linear_2.out_features
-        head.object_conditioning.adaln = SceneVector(config, head.input_embedding_dim, dim)
+        head.object_conditioning.adaln = SceneVector(config, head.input_embedding_dim, dim, pool=pool)
 
         def hook(module, args, output):
             control = self._control()

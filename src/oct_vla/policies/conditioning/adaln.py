@@ -34,15 +34,30 @@ from .entity import EntityEmbedding, embed_entities, entity_width
 
 
 class _PooledScene(nn.Module):
-    """Entity embedding plus a one-query attention pool, shared by both forms."""
+    """Entity embedding plus a scene pool, shared by both forms.
 
-    def __init__(self, config: Any, width: int, heads: int | None = None) -> None:
+    ``pool="attention"`` (the method): a learned query attends over the entities.
+    ``pool="mean"`` (the naive-aggregation control): the average of the entity
+    embeddings, with no query and no attention -- so a gain the attention pool
+    shows and this does not comes from learning *how* to combine the entities.
+    """
+
+    def __init__(
+        self, config: Any, width: int, heads: int | None = None, *, pool: str = "attention"
+    ) -> None:
         super().__init__()
+        if pool not in ("attention", "mean"):
+            raise ValueError(f"pool must be 'attention' or 'mean', got {pool!r}")
         self.width = width
+        self.pool_mode = pool
         # The pool runs at `object_width`; only the zero-initialised output
         # projection reaches the host's width, so a small width keeps it low-rank.
         self.entity_width = entity_width(config, width)
         self.embedding = EntityEmbedding(self.entity_width, config.object_entity_normalizer)
+        if pool == "mean":
+            # No query or attention to build: parameters no loss reaches would
+            # sit untrained and trip DDP's unused-parameter check.
+            return
         self.query = nn.Parameter(torch.randn(1, 1, self.entity_width) * 0.02)
         pool_heads = heads or int(config.object_attention_heads)
         if self.entity_width % pool_heads:
@@ -59,6 +74,10 @@ class _PooledScene(nn.Module):
         """``[B, width]`` scene summaries and a ``[B]`` flag for empty scenes."""
         memory, padding = embed_entities(self.embedding, tokens, mask, batch)
         empty = padding.all(dim=1)
+        if self.pool_mode == "mean":
+            real = (~padding).to(memory.dtype)[..., None]
+            mean = (memory * real).sum(dim=1) / real.sum(dim=1).clamp_min(1.0)
+            return F.silu(mean), empty
         safe = padding.clone()
         if empty.any():
             safe[empty, 0] = False
@@ -108,8 +127,11 @@ class SceneVector(_PooledScene):
     (scale, shift) pairs.
     """
 
-    def __init__(self, config: Any, width: int, out_dim: int, *, heads: int | None = None) -> None:
-        super().__init__(config, width, heads)
+    def __init__(
+        self, config: Any, width: int, out_dim: int, *, heads: int | None = None,
+        pool: str = "attention",
+    ) -> None:
+        super().__init__(config, width, heads, pool=pool)
         self.out_dim = int(out_dim)
         self.projection = nn.Linear(self.entity_width, self.out_dim)
         nn.init.zeros_(self.projection.weight)

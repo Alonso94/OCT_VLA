@@ -188,3 +188,15 @@ def test_a_rerun_under_the_current_arm_name_supersedes_its_alias(tmp_path):
     by_seed = {s: [r["transfers"] for r in rows if r["train_seed"] == s] for s in (1000, 1001)}
     assert by_seed == {1000: [2.0, 2.0], 1001: [0.0, 1.0]}
     assert any("pre-rename" in line for line in rejected)
+
+
+def test_the_control_arms_are_paired_against_their_counterparts(tmp_path, capsys, monkeypatch):
+    for seed in (1000, 1001):
+        for arm, transfers in (("rgb_cont", [0, 1]), ("kv", [1, 1]), ("kv_adaln", [2, 1]),
+                               ("kv_adaln_shuffled", [0, 1]), ("scene_attn", [1, 2]),
+                               ("scene_mean", [0, 0])):
+            write(tmp_path, f"F-{arm}-s{seed}-seen", transfers)
+    table, _ = run(tmp_path, capsys, monkeypatch)
+    # One tier here, so the scope is the pooled three-object one.
+    assert {"kv_adaln_shuffled->kv_adaln/three_object", "scene_mean->scene_attn/three_object",
+            "scene_attn->kv/three_object", "rgb_cont->scene_mean/three_object"} <= set(table["paired"])

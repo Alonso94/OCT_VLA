@@ -21,6 +21,7 @@ from torch import Tensor
 
 from oct_vla.policies.conditioning.hosts import install_diffusers_kv
 from oct_vla.policies.object_conditioning import (
+    require_arm,
     ObjectConditionedPolicyMixin,
     ObjectConditioning,
 )
@@ -169,6 +170,7 @@ class ControlVLAJEPAPolicy(ObjectConditionedPolicyMixin, VLAJEPAPolicy):
         self.model = ControlVLAJEPAModel(config)
         self.reset()
         head = self.model.action_model
+        require_arm(config, ("kv",), "control_vla_jepa")
         head.object_conditioning = ObjectConditioning(config, head.input_embedding_dim)
         # KV in every DiT attention layer. The head repeats its batch r times
         # for flow matching with `Tensor.repeat` (whole-batch tiling), which

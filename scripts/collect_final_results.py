@@ -48,7 +48,8 @@ CELL = re.compile(r"^(?P<prefix>[A-Z]{1,3})-(?P<arm>[a-z_]+)-s(?P<seed>\d+)-(?P<
 #: another name (the flag selecting it was never read).
 ARMS = ("rgb", "rgb_cont", "rgb_novae", "rgb_short", "rgb_hist", "rgb_headdrop", "rgb_shift",
         "rgb_rel", "rgb_rel_short",
-        "kv", "kv_adaln", "kv_tokens", "scratch_kv")
+        "kv", "kv_adaln", "kv_tokens", "scratch_kv",
+        "kv_adaln_shuffled", "scene_attn", "scene_mean")
 #: Arm names used before the 2026-09-23 rename, as they appear in result files.
 ARM_ALIASES = {"entity": "kv", "adaln": "kv_adaln", "incontext": "kv_tokens", "scratch": "scratch_kv"}
 #: What each conditioned arm is paired against. rgb_cont is the fair one: it has
@@ -57,9 +58,16 @@ BASELINES = ("rgb", "rgb_cont")
 #: Changes to the baseline policy itself, each paired against rgb.
 BASELINE_ABLATIONS = ("rgb_novae", "rgb_short", "rgb_hist", "rgb_headdrop", "rgb_shift",
                       "rgb_rel", "rgb_rel_short")
-CONDITIONED = ("kv", "kv_adaln", "kv_tokens", "scratch_kv")
+CONDITIONED = ("kv", "kv_adaln", "kv_tokens", "scratch_kv",
+               "kv_adaln_shuffled", "scene_attn", "scene_mean")
 #: Q2: each encoder-side arm against KV alone, and against each other.
-MECHANISM_CONTRASTS = (("kv", "kv_adaln"), ("kv", "kv_tokens"), ("kv_adaln", "kv_tokens"))
+MECHANISM_CONTRASTS = (("kv", "kv_adaln"), ("kv", "kv_tokens"), ("kv_adaln", "kv_tokens"),
+                       # Information: the same branch trained on the wrong scenes.
+                       ("kv_adaln_shuffled", "kv_adaln"),
+                       # Composition: a learned pool against a plain mean, and the
+                       # global scene vector against query-dependent KV.
+                       ("scene_mean", "scene_attn"), ("scene_attn", "kv"),
+                       ("scene_attn", "kv_adaln"))
 TIERS = ("seen", "heldout", "novel")
 PROFILES = ("two_object", "three_object", "four_object")
 ARM_NOTE = {
@@ -76,6 +84,9 @@ ARM_NOTE = {
     "kv_adaln": "stage 2: kv + scene AdaLN on every block (LPWM-inspired)",
     "kv_tokens": "stage 2: kv + entity tokens in the encoder (LPWM-inspired)",
     "scratch_kv": "w/o pretrain: kv with no stage 1 -- ControlVLA's failing ablation",
+    "kv_adaln_shuffled": "kv_adaln trained on another scene's entities: same capacity, wrong information",
+    "scene_attn": "attention-pooled scene vector only, no KV (GR00T)",
+    "scene_mean": "mean-pooled scene vector only, no KV: naive aggregation (GR00T)",
 }
 #: The variants each tier must be pinned to, per matrix. Checked against what a
 #: rollout requested, so a file whose name and pin disagree is refused rather

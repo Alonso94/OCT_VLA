@@ -41,6 +41,17 @@ EXACT = 1e-2
 GROSS = 0.1
 
 
+#: The branches each arm must have and must reach with gradient.
+REQUIRED_BRANCHES = {
+    "kv": ("layers",),
+    "kv_adaln": ("layers", "adaln"),
+    "kv_tokens": ("layers", "incontext"),
+    "kv_adaln_shuffled": ("layers", "adaln"),
+    "scene_attn": ("adaln",),
+    "scene_mean": ("adaln",),
+}
+
+
 def relative(a, b) -> float:
     return float((a.float() - b.float()).abs().max() / b.float().abs().max().clamp_min(1e-6))
 
@@ -147,13 +158,19 @@ def main() -> int:
         if report["chunk_relative_change"] > tolerance:
             failures.append(f"stage 2 does not start at stage 1: chunk change "
                             f"{report['chunk_relative_change']:.3e} > {tolerance}")
-        # The branch each arm adds, by its state-dict name (object_conditioning.py).
-        added = {"kv": "layers", "kv_adaln": "adaln", "kv_tokens": "incontext"}.get(arm)
+        # The branches each arm must have, by state-dict name (object_conditioning.py).
+        # The scene_* controls have no KV, so their `layers` ModuleDict is empty.
+        required = REQUIRED_BRANCHES.get(arm, ())
+        for name in required:
+            if name not in grads or not any(True for _ in getattr(control, name).parameters()):
+                failures.append(f"{name}: the {arm} arm has no {name} branch")
         for name, g in grads.items():
-            required = name in ("layers", added)
+            parameters = sum(1 for _ in getattr(control, name).parameters())
+            if parameters == 0 and name not in required:
+                continue  # an empty branch this arm does not use
             if g["trainable"] == 0:
                 failures.append(f"{name}: no trainable parameters (PEFT did not keep it)")
-            elif required and g["nonzero"] == 0:
+            elif name in required and g["nonzero"] == 0:
                 failures.append(f"{name}: no gradient reached the {arm} branch")
         report["failures"] = failures
         target = Path(cfg.output_dir).parent / "run_metadata" / f"{cfg.job_name}_init_check.json"

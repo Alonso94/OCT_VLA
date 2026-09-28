@@ -243,3 +243,9 @@ def test_default_checkpoint_has_neither_branch(tmp_path):
     policy.save_pretrained(tmp_path)
     restored = ControlACTPolicy.from_pretrained(tmp_path)
     assert restored.config.object_conditioning == "kv"
+
+
+@pytest.mark.parametrize("arm", ["kv_adaln_shuffled", "scene_attn", "scene_mean"])
+def test_act_refuses_the_groot_only_control_arms(arm):
+    with pytest.raises(ValueError, match="control_act does not implement"):
+        ControlACTPolicy(config(object_conditioning=arm))

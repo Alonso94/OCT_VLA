@@ -22,13 +22,48 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import torch
 from torch import Tensor, nn
 
 from oct_vla.policies.conditioning.entity import ENTITY_MASK, ENTITY_TOKENS, TOKEN_DIM
 from oct_vla.policies.stage_loading import VerifiedLoadMixin
 
-#: The arms a conditioned policy can be. Nested: each adds one path to ``kv``.
-CONDITIONING = ("kv", "kv_adaln", "kv_tokens")
+#: The arms a conditioned policy can be. The first three are nested, each adding
+#: one path to ``kv``. The last three are controls, implemented on GR00T only:
+#: ``kv_adaln_shuffled`` is ``kv_adaln`` trained on another scene's entities (same
+#: capacity, wrong information); ``scene_attn`` and ``scene_mean`` are the pooled
+#: scene vector alone, no KV, pooled by attention or by a plain mean -- so the
+#: first isolates global from query-dependent context and the pair isolates a
+#: learned composition from naive aggregation.
+CONDITIONING = ("kv", "kv_adaln", "kv_tokens", "kv_adaln_shuffled", "scene_attn", "scene_mean")
+#: The nested arms every host implements.
+CORE_ARMS = ("kv", "kv_adaln", "kv_tokens")
+#: Arms with the per-layer KV branch.
+KV_ARMS = ("kv", "kv_adaln", "kv_tokens", "kv_adaln_shuffled")
+#: Arms with a pooled scene vector, and how each pools.
+SCENE_POOL = {"kv_adaln": "attention", "kv_adaln_shuffled": "attention",
+              "scene_attn": "attention", "scene_mean": "mean"}
+#: Arms trained on deranged entity sets.
+SHUFFLED_ARMS = ("kv_adaln_shuffled",)
+
+
+def require_arm(config: Any, supported: tuple[str, ...], host: str) -> None:
+    """Refuse an arm a host does not implement, rather than build it silently as
+    a different one -- how the old `semantic` arm trained the entity model."""
+    if config.object_conditioning not in supported:
+        raise ValueError(f"{host} does not implement object_conditioning="
+                         f"{config.object_conditioning!r}; it supports {supported}")
+
+
+def derangement(size: int, device=None) -> Tensor:
+    """A random permutation of ``range(size)`` with no fixed point: every sample
+    gets another sample's entities, never its own."""
+    if size < 2:
+        raise ValueError(f"a derangement needs at least 2 samples, got {size}")
+    order = torch.randperm(size, device=device)
+    target = torch.empty_like(order)
+    target[order] = order.roll(-1)
+    return target
 
 #: Checkpoints written before the 2026-09-23 cleanup carry these fields. Each is
 #: accepted only at the one value the code still implements (None = any value,
@@ -324,6 +359,12 @@ class ObjectConditionedPolicyMixin(VerifiedLoadMixin):
         mask = batched(batch.get(ENTITY_MASK), unbatched_ndim=1)
         if tokens is None or mask is None:
             raise ValueError(f"an object-conditioned policy needs {ENTITY_TOKENS} and {ENTITY_MASK}")
+        if self.training and getattr(self.config, "object_conditioning", None) in SHUFFLED_ARMS:
+            # The information control: same branch, same capacity, same tensors,
+            # but paired with the wrong observation. Training only -- evaluated
+            # on its own scene, it shows what the entity *information* bought.
+            target = derangement(tokens.shape[0], device=tokens.device)
+            tokens, mask = tokens[target], mask[target]
         self.object_conditioning.set_inputs(tokens, mask)
 
     def _clear_object_inputs(self) -> None:

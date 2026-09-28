@@ -107,3 +107,33 @@ def test_the_gate_reaches_only_action_queries_on_real_entity_keys():
     mask[..., 4] = -1e30  # a masked entry stays masked, not "masked + gate"
     gated = gate_suffix_mask(mask, 5, layout)
     assert torch.equal(gated[..., 4], mask[..., 4])
+
+
+def test_the_mean_pool_is_zero_at_init_gets_gradient_and_has_no_attention():
+    """scene_mean, the naive-aggregation control: the average of the entity
+    embeddings, with no query or attention parameters left untrained."""
+    scene = SceneVector(Config(), 8, 12, pool="mean")
+    assert not hasattr(scene, "pool") and not hasattr(scene, "query")
+    tokens = torch.randn(2, 4, 17)
+    mask = torch.tensor([[True, True, False, False], [False] * 4])
+    assert torch.equal(scene(tokens, mask, 2), torch.zeros(2, 12))
+    scene(tokens, torch.ones(2, 4, dtype=torch.bool), 2).sum().backward()
+    assert scene.projection.weight.grad.abs().sum() > 0
+    for p in scene.parameters():
+        assert p.requires_grad
+    # Padding does not enter the mean: changing a padded row changes nothing.
+    with torch.no_grad():
+        scene.projection.weight.normal_()
+    altered = tokens.clone()
+    altered[0, 3] += 100.0
+    assert torch.allclose(scene(tokens, mask, 2), scene(altered, mask, 2))
+
+
+def test_the_mean_and_attention_pools_differ():
+    torch.manual_seed(0)
+    tokens, mask = torch.randn(2, 4, 17), torch.ones(2, 4, dtype=torch.bool)
+    mean, attention = SceneVector(Config(), 8, 12, pool="mean"), SceneVector(Config(), 8, 12)
+    attention.embedding.load_state_dict(mean.embedding.state_dict())
+    assert not torch.allclose(mean.pooled(tokens, mask, 2)[0], attention.pooled(tokens, mask, 2)[0])
+    with pytest.raises(ValueError, match="pool must be"):
+        SceneVector(Config(), 8, 12, pool="max")

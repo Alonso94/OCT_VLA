@@ -16,7 +16,12 @@ from lerobot.policies.act.modeling_act import ACTPolicy
 from oct_vla.policies.conditioning.adaln import SceneAdaLN
 from oct_vla.policies.conditioning.kv import packed_mha_query
 from oct_vla.policies.conditioning.tokens import EntityTokens
-from oct_vla.policies.object_conditioning import ObjectConditionedPolicyMixin, ObjectConditioning
+from oct_vla.policies.object_conditioning import (
+    CORE_ARMS,
+    ObjectConditionedPolicyMixin,
+    ObjectConditioning,
+    require_arm,
+)
 
 from .configuration_control_act import ControlACTConfig
 
@@ -45,6 +50,7 @@ class ControlACTPolicy(ObjectConditionedPolicyMixin, ACTPolicy):
 
     def __init__(self, config, **kwargs):
         super().__init__(config, **kwargs)
+        require_arm(config, CORE_ARMS, "control_act")
         conditioning = ObjectConditioning(config, config.dim_model)
         self.model.object_conditioning = conditioning
         self._object_hooks = []

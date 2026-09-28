@@ -29,6 +29,8 @@ from oct_vla.policies.conditioning.tokens import (
 )
 from oct_vla.policies.masked_loss import masked_loss, padded_fraction
 from oct_vla.policies.object_conditioning import (
+    CORE_ARMS,
+    require_arm,
     ObjectConditionedPolicyMixin,
     ObjectConditioning,
     unwrap_object_conditioning,
@@ -44,6 +46,7 @@ class ControlPI05Pytorch(PI05Pytorch):
         super().__init__(config, rtc_processor=rtc_processor)
         # The action expert's width; the config states it only as a variant name.
         width = self.action_in_proj.out_features
+        require_arm(config, CORE_ARMS, "control_pi05")
         self.object_conditioning = ObjectConditioning(config, width)
         install_pi_kv(self)
         if config.object_conditioning == "kv_adaln":
