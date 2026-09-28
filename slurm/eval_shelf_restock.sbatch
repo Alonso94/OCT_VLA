@@ -76,6 +76,10 @@ MODEL_FLAG=()
 EXEC_FLAG=()
 [ -n "${EVAL_N_ACTION_STEPS:-}" ] && EXEC_FLAG+=(--n-action-steps "$EVAL_N_ACTION_STEPS")
 [ -n "${EVAL_TEMPORAL_ENSEMBLE_COEFF:-}" ] && EXEC_FLAG+=(--temporal-ensemble-coeff "$EVAL_TEMPORAL_ENSEMBLE_COEFF")
+# Object-state noise for the robustness sweep (src/oct_vla/data/entity_noise.py).
+[ -n "${EVAL_ENTITY_NOISE_POS_MM:-}" ] && EXEC_FLAG+=(--entity-noise-pos-mm "$EVAL_ENTITY_NOISE_POS_MM")
+[ -n "${EVAL_ENTITY_NOISE_ROT_DEG:-}" ] && EXEC_FLAG+=(--entity-noise-rot-deg "$EVAL_ENTITY_NOISE_ROT_DEG")
+[ -n "${EVAL_ENTITY_DROPOUT:-}" ] && EXEC_FLAG+=(--entity-dropout "$EVAL_ENTITY_DROPOUT")
 
 VIDEO_FLAG=()
 if [ -n "${EVAL_VIDEO_DIR:-}" ]; then

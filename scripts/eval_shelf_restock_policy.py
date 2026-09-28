@@ -13,6 +13,7 @@ density rather than to any change in the policy or its conditioning.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import sys
 from pathlib import Path
@@ -75,6 +76,7 @@ def state_vector(eef) -> list[float]:
 def build_observation(
     obs, *, torch, np, control_space="cartesian", uint8_images=True,
     state_encoding="position", previous_joints=None, entity_max_entities=None,
+    entity_noise=None, noise_rng=None,
 ):
     """The policy's input batch, laid out exactly as the exporter wrote it.
 
@@ -121,6 +123,12 @@ def build_observation(
         if not supports:
             raise ValueError("entity inputs need support geometry from an updated simulator server")
         tokens, mask = build_entity_tokens(obs.scene, obs.eef, supports, entity_max_entities)
+        if entity_noise is not None and not entity_noise.is_clean:
+            from oct_vla.data.entity_noise import corrupt
+
+            # After building, so the movables keep their order (entity_noise.py).
+            tokens, mask = corrupt(tokens, mask, entity_noise, noise_rng)
+            tokens, mask = tokens.tolist(), mask.tolist()
         batch["observation.entity_tokens"] = torch.tensor([tokens], dtype=torch.float32)
         batch["observation.entity_mask"] = torch.tensor([mask], dtype=torch.bool)
     batch["task"] = [obs.context.instruction]
@@ -132,11 +140,14 @@ def run_episode(
     seed, profile, max_steps, torch, np, control_space="cartesian",
     uint8_images=True, state_encoding="position", video=None,
     gripper_encoding="measured_aperture",
-    entity_max_entities=None, model_ids=None,
+    entity_max_entities=None, model_ids=None, entity_noise=None,
 ) -> dict:
     observation = client.reset(seed, profile, control_space=control_space,
                                gripper_encoding=gripper_encoding, model_ids=model_ids)
     policy.reset()
+    # Seeded by the scene, so every checkpoint scored at this noise level on this
+    # scene starts from the same noise stream.
+    noise_rng = np.random.default_rng([seed, 7919])
     result = {
         "seed": seed, "profile": profile, "success": False, "steps": 0,
         "transfers_completed": 0, "reason": "step_limit", "detail": "",
@@ -167,6 +178,7 @@ def run_episode(
             state_encoding=state_encoding,
             previous_joints=previous_joints,
             entity_max_entities=entity_max_entities,
+            entity_noise=entity_noise, noise_rng=noise_rng,
         )
         if observation.joints is not None:
             previous_joints = joint_vector(observation.joints)
@@ -267,6 +279,12 @@ def main() -> int:
         "fully closed-loop; the trained default of 50 is 3.3 s of open loop at "
         "15 Hz.",
     )
+    parser.add_argument("--entity-noise-pos-mm", type=float, default=0.0,
+                        help="Gaussian position noise on movable objects, in mm")
+    parser.add_argument("--entity-noise-rot-deg", type=float, default=0.0,
+                        help="Random-axis rotation noise on movable objects, in degrees")
+    parser.add_argument("--entity-dropout", type=float, default=0.0,
+                        help="Probability, per object and step, that it goes unobserved")
     parser.add_argument(
         "--temporal-ensemble-coeff",
         type=float,
@@ -295,6 +313,10 @@ def main() -> int:
         seeds = [int(v) for v in args.seeds.split(",") if v.strip()]
     profiles = [p.strip() for p in args.profiles.split(",") if p.strip()]
     model_ids = tuple(int(v) for v in args.model_ids.split(",") if v.strip()) or None
+    from oct_vla.data.entity_noise import EntityNoise
+
+    entity_noise = EntityNoise(args.entity_noise_pos_mm, args.entity_noise_rot_deg,
+                               args.entity_dropout)
 
     if args.max_steps <= 0 or (args.steps_per_object is not None and args.steps_per_object <= 0):
         parser.error("step budgets must be positive")
@@ -424,6 +446,10 @@ def main() -> int:
     # Read from the checkpoint: an object-conditioned policy carries its arm.
     conditioning = getattr(config, "object_conditioning", None)
     entity_max_entities = config.object_max_entities if conditioning else None
+    if not entity_noise.is_clean and not conditioning:
+        # Noise on entities a policy never reads would score a clean rollout
+        # under a noisy label.
+        raise SystemExit("--entity-noise-* / --entity-dropout need an object-conditioned checkpoint")
 
     record = set(seeds)
     if args.video_dir and args.video_seeds:
@@ -463,6 +489,7 @@ def main() -> int:
                     uint8_images=uint8_images, state_encoding=state_encoding,
                     gripper_encoding=gripper_encoding, video=video,
                     entity_max_entities=entity_max_entities, model_ids=model_ids,
+                    entity_noise=entity_noise,
                 )
                 outcome["evaluation_split"] = args.evaluation_split
                 results.append(outcome)
@@ -498,8 +525,10 @@ def main() -> int:
                 ) else "",
                 f"te{args.temporal_ensemble_coeff:g}"
                 if args.temporal_ensemble_coeff is not None else "",
+                "" if entity_noise.is_clean else entity_noise.tag,
             ) if part
         ),
+        "entity_noise": dataclasses.asdict(entity_noise),
         "execution": {
             "n_action_steps": getattr(config, "n_action_steps", None),
             "trained_n_action_steps": base_n,
