@@ -59,9 +59,17 @@ case "$CORPUS" in
     # leftmost corpus, and a bare `eeabs` tag would have had stage 1 reuse it.
     declare -A DATASET=([F]=three_object_identity_eeabs [J]=three_object_identity_abs)
     declare -A TAG=([F]=id_eeabs [J]=id_abs) ;;
-  *) echo "CORPUS must be paired_full or identity" >&2; exit 2 ;;
+  paired_full_r19|paired_full_r38)
+    # The data-efficiency curve: the first 19 or 38 of the 75 training runs
+    # (25 %, 50 %), validation unchanged. Absolute EE only, and matrices of
+    # their own so their rollouts never overwrite the full-data ones.
+    runs="${CORPUS#paired_full_r}"
+    declare -A DATASET=([F]=three_object_${CORPUS}_eeabs)
+    declare -A TAG=([F]=pf${runs}_eeabs)
+    [ "$runs" = 19 ] && LETTER=([pi05]=PQ [smolvla]=SQ [groot]=GQ) || LETTER=([pi05]=PH [smolvla]=SH [groot]=GH) ;;
+  *) echo "CORPUS must be paired_full, paired_full_r19, paired_full_r38 or identity" >&2; exit 2 ;;
 esac
-for regime in F J; do
+for regime in "${!DATASET[@]}"; do
   [ -d "$OCTVLA_DATASET_ROOT/${DATASET[$regime]}" ] || { echo "no dataset ${DATASET[$regime]}" >&2; exit 2; }
 done
 
