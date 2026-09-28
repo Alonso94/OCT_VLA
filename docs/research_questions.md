@@ -702,6 +702,50 @@ rolled out with a shorter execution horizon): executing 8 of the 40-step chunk
 gives 4 → 5 seen successes of 60 (p = 1.0), executing 5 gives 22 → 12 episodes
 with a transfer (p = 0.064).
 
+### 4.13 GR00T: information, composition and robustness controls
+
+3 seeds × 20 scenes per tier, all from the same GR00T stage-1 checkpoints at
+the same 8 k-step budget. Success per 60 matched scenes:
+
+| arm | seen | held-out | trainable parameters |
+| --- | ---: | ---: | ---: |
+| rgb_cont (budget control) | 9 | 0 | 1.62 B |
+| **kv_adaln_shuffled** (same branch, another scene's entities in training) | 8 | 3 | **1,784,428,672** |
+| kv_adaln | **35** | **11** | 1,784,428,672 |
+| scene_attn (pooled scene vector only, no KV) | 12 | 3 | 1.63 B |
+| scene_mean (plain mean pool, no KV) | 8 | 1 | 1.62 B |
+| kv | 31 | 7 | 1.77 B |
+
+- **The gain is object information, not capacity.** With the identical
+  network and wrong entities, `kv_adaln_shuffled` is at the control's level
+  (8 vs 9, p = 1.0); the correct entities take it to 35 (p < 0.001 vs
+  shuffled; held-out ≥1 transfer 13 → 22, p = 0.049).
+- **Query-dependent composition carries the effect.** A pooled scene vector
+  alone, by attention or by mean, does not beat the control (12 and 8 vs 9);
+  adding KV takes `scene_attn` 12 → 31 (p = 0.001). Attention vs mean pooling
+  is not significant (12 vs 8, p = 0.39). So the "learned composition" is the
+  per-action retrieval of objects, not a global scene summary.
+
+**Object-pose noise** (evaluation only, movable objects; seen success, clean → noisy):
+
+| noise | kv | kv_adaln |
+| --- | --- | --- |
+| 2 mm, 2° | 31 → 32 | 35 → 28 (p = 0.23) |
+| 5 mm, 2° | 31 → 28 | 35 → 33 |
+| 10 mm, 5° | 31 → 24 (p = 0.21) | 35 → 23 (p = 0.017) |
+| 5 mm, 2°, 10 % dropout | 31 → 25 | 35 → 24 (p = 0.052) |
+| 5 mm, 2°, 25 % dropout | 31 → 12 (p < 0.001) | 35 → 10 (p < 0.001) |
+
+Robust at ArUco-like error (2–5 mm, 2°); still well above the control (9) at
+10 mm / 5°; losing a quarter of the object observations brings both to the
+control's level. KV degrades less than KV+AdaLN.
+
+**Visual shift** (unseen background textures, random lights; geometry
+unchanged): the RGB control collapses, 9 → 2 (p = 0.039); `kv` 31 → 25
+(p = 0.36); `kv_adaln` 35 → 24 (p = 0.071). Under the shift the conditioned
+arms beat the control 25 and 24 to 2 (p < 0.001): explicit object state keeps
+the policy working when appearance changes.
+
 ### 4.12 pi0.5 and SmolVLA: capacity, and a second recipe
 
 The first pi0.5/SmolVLA stage 2 (default recipe) mostly did not run: pi0.5's
@@ -828,6 +872,10 @@ lookup) to 16, and is tested on the bowl → cup category holdout.
 
 ## Update log
 
+- **2026-09-29.** GR00T controls (§4.13): the shuffled-entity arm, with the
+  identical network, falls to the control's level, so the gain is information;
+  scene vectors alone do not help, KV does. Robust to 2–5 mm pose noise; the
+  RGB control collapses under visual shift while the conditioned arms hold.
 - **2026-09-28 (later).** `expert_lora` stage 2: with the object branch at
   GR00T's share of trainable parameters (+8–19 %), no conditioned arm beats the
   budget control on pi0.5 (two seeds) or SmolVLA (three). The earlier SmolVLA
