@@ -113,7 +113,7 @@ declare -A TIER=([seen]="1,2,3,4" [heldout]="0,6" [novel]="5")
 
 submit() {
   if [ "${DRY_RUN:-0}" = 1 ]; then
-    echo "    would submit: $* [env: BATCH_SIZE=${BATCH_SIZE:-} GRAD_ACCUM=${GRAD_ACCUM:-} TRAIN_STEPS=${TRAIN_STEPS:-} LORA_SCOPE=${LORA_SCOPE:-} LORA_R=${LORA_R:-} OBJECT_WIDTH=${OBJECT_WIDTH:-} TOKENS_GATE=${TOKENS_GATE:-} TRAIN_TAG=${TRAIN_TAG:-}]" >&2; echo 0
+    echo "    would submit: $* [env: BATCH_SIZE=${BATCH_SIZE:-} GRAD_ACCUM=${GRAD_ACCUM:-} TRAIN_STEPS=${TRAIN_STEPS:-} LORA_SCOPE=${LORA_SCOPE:-} LORA_R=${LORA_R:-} OBJECT_WIDTH=${OBJECT_WIDTH:-} TOKENS_GATE=${TOKENS_GATE:-} CONDITIONING=${CONDITIONING:-} SIGREG_WEIGHT=${SIGREG_WEIGHT:-} TRAIN_TAG=${TRAIN_TAG:-}]" >&2; echo 0
   else sbatch --parsable "$@"; fi
 }
 after() { [ -n "$1" ] && [ "$1" != 0 ] && echo "--dependency=afterok:$1" || true; }
@@ -216,6 +216,11 @@ $OCTVLA_POLICY_PYTHON -u scripts/merge_stage1_adapter.py --stage1 $stage1 \
           kv_adaln_shuffled|scene_attn|scene_mean|kv_adaln_sigreg)
             [ "$backbone" = groot ] || { echo "$arm is implemented on groot only" >&2; exit 2; }
             arm_env=(TRAIN_VARIANT=object CONDITIONING="$arm") ;;
+          # The SIGReg weight sweep around kv_adaln_sigreg's 0.05.
+          kv_adaln_sigreg_low|kv_adaln_sigreg_high)
+            [ "$backbone" = groot ] || { echo "$arm is implemented on groot only" >&2; exit 2; }
+            weight=0.01; [ "$arm" = kv_adaln_sigreg_high ] && weight=0.2
+            arm_env=(TRAIN_VARIANT=object CONDITIONING=kv_adaln_sigreg SIGREG_WEIGHT="$weight") ;;
           *) echo "Unknown arm $arm" >&2; exit 2 ;;
         esac
         cell="$prefix-$arm-s$seed"

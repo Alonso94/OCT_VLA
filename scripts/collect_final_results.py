@@ -49,7 +49,8 @@ CELL = re.compile(r"^(?P<prefix>[A-Z]{1,3})-(?P<arm>[a-z_]+)-s(?P<seed>\d+)-(?P<
 ARMS = ("rgb", "rgb_cont", "rgb_novae", "rgb_short", "rgb_hist", "rgb_headdrop", "rgb_shift",
         "rgb_rel", "rgb_rel_short",
         "kv", "kv_adaln", "kv_tokens", "scratch_kv",
-        "kv_adaln_shuffled", "scene_attn", "scene_mean", "kv_adaln_sigreg")
+        "kv_adaln_shuffled", "scene_attn", "scene_mean", "kv_adaln_sigreg",
+        "kv_adaln_sigreg_low", "kv_adaln_sigreg_high")
 #: Arm names used before the 2026-09-23 rename, as they appear in result files.
 ARM_ALIASES = {"entity": "kv", "adaln": "kv_adaln", "incontext": "kv_tokens", "scratch": "scratch_kv"}
 #: What each conditioned arm is paired against. rgb_cont is the fair one: it has
@@ -59,7 +60,8 @@ BASELINES = ("rgb", "rgb_cont")
 BASELINE_ABLATIONS = ("rgb_novae", "rgb_short", "rgb_hist", "rgb_headdrop", "rgb_shift",
                       "rgb_rel", "rgb_rel_short")
 CONDITIONED = ("kv", "kv_adaln", "kv_tokens", "scratch_kv",
-               "kv_adaln_shuffled", "scene_attn", "scene_mean", "kv_adaln_sigreg")
+               "kv_adaln_shuffled", "scene_attn", "scene_mean", "kv_adaln_sigreg",
+               "kv_adaln_sigreg_low", "kv_adaln_sigreg_high")
 #: Q2: each encoder-side arm against KV alone, and against each other.
 MECHANISM_CONTRASTS = (("kv", "kv_adaln"), ("kv", "kv_tokens"), ("kv_adaln", "kv_tokens"),
                        # Information: the same branch trained on the wrong scenes.
@@ -69,7 +71,11 @@ MECHANISM_CONTRASTS = (("kv", "kv_adaln"), ("kv", "kv_tokens"), ("kv_adaln", "kv
                        ("scene_mean", "scene_attn"), ("scene_attn", "kv"),
                        ("scene_attn", "kv_adaln"),
                        # A SIGReg-regularised object space against the plain one.
-                       ("kv_adaln", "kv_adaln_sigreg"))
+                       ("kv_adaln", "kv_adaln_sigreg"),
+                       # Its weight: 0.01 and 0.2 around 0.05.
+                       ("kv_adaln", "kv_adaln_sigreg_low"), ("kv_adaln", "kv_adaln_sigreg_high"),
+                       ("kv_adaln_sigreg_low", "kv_adaln_sigreg"),
+                       ("kv_adaln_sigreg", "kv_adaln_sigreg_high"))
 TIERS = ("seen", "heldout", "novel")
 PROFILES = ("two_object", "three_object", "four_object")
 ARM_NOTE = {
@@ -89,7 +95,9 @@ ARM_NOTE = {
     "kv_adaln_shuffled": "kv_adaln trained on another scene's entities: same capacity, wrong information",
     "scene_attn": "attention-pooled scene vector only, no KV (GR00T)",
     "scene_mean": "mean-pooled scene vector only, no KV: naive aggregation (GR00T)",
-    "kv_adaln_sigreg": "kv_adaln plus SIGReg on the object embeddings (LeJEPA's regulariser, geometry only)",
+    "kv_adaln_sigreg": "kv_adaln plus SIGReg on the object embeddings (LeJEPA's regulariser, geometry only), weight 0.05",
+    "kv_adaln_sigreg_low": "kv_adaln_sigreg at SIGReg weight 0.01",
+    "kv_adaln_sigreg_high": "kv_adaln_sigreg at SIGReg weight 0.2",
 }
 #: The variants each tier must be pinned to, per matrix. Checked against what a
 #: rollout requested, so a file whose name and pin disagree is refused rather

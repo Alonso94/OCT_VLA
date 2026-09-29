@@ -237,6 +237,12 @@ if [ "$TRAIN_VARIANT" = object ]; then
   [ -n "${OBJECT_WIDTH:-}" ] && POLICY_ARGS+=(--policy.object_width="$OBJECT_WIDTH")
   [ -n "${OBJECT_HEADS:-}" ] && POLICY_ARGS+=(--policy.object_attention_heads="$OBJECT_HEADS")
   [ -n "${TOKENS_GATE:-}" ] && POLICY_ARGS+=(--policy.object_tokens_gate_init="$TOKENS_GATE")
+  # The SIGReg weight (kv_adaln_sigreg only; config default 0.05). Refused on any
+  # other arm, where it would be read by nothing.
+  if [ -n "${SIGREG_WEIGHT:-}" ]; then
+    [ "$CONDITIONING" = kv_adaln_sigreg ] || { echo "SIGREG_WEIGHT needs CONDITIONING=kv_adaln_sigreg" >&2; exit 2; }
+    POLICY_ARGS+=(--policy.object_sigreg_weight="$SIGREG_WEIGHT")
+  fi
 fi
 
 # The execution horizon is a measured convention (25; see
@@ -321,6 +327,7 @@ cat > "$OCTVLA_OUTPUT_ROOT/run_metadata/${RUN_NAME}.json" <<JSON
   "lora_scope": "$LORA_SCOPE",
   "lora_r": ${LORA_R:-16},
   "object_width": "${OBJECT_WIDTH:-}",
+  "object_sigreg_weight": "${SIGREG_WEIGHT:-}",
   "dataset": "$DATASET",
   "job_id": "${SLURM_JOB_ID:-none}"
 }
