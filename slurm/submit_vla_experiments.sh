@@ -209,6 +209,9 @@ $OCTVLA_POLICY_PYTHON -u scripts/merge_stage1_adapter.py --stage1 $stage1 \
         if [ "$arm" = kv_tokens ] && [ "$backbone" = groot ]; then
           echo "kv_tokens is unsupported on groot" >&2; exit 2
         fi
+        # The conditioning the run is named after (train_shelf_restock.sbatch):
+        # the arm itself, except for arms that are settings of another.
+        run_arm="$arm"
         case "$arm" in
           rgb_cont)               arm_env=(TRAIN_VARIANT=rgb) ;;
           kv|kv_adaln|kv_tokens)  arm_env=(TRAIN_VARIANT=object CONDITIONING="$arm") ;;
@@ -220,6 +223,7 @@ $OCTVLA_POLICY_PYTHON -u scripts/merge_stage1_adapter.py --stage1 $stage1 \
           kv_adaln_sigreg_low|kv_adaln_sigreg_high)
             [ "$backbone" = groot ] || { echo "$arm is implemented on groot only" >&2; exit 2; }
             weight=0.01; [ "$arm" = kv_adaln_sigreg_high ] && weight=0.2
+            run_arm=kv_adaln_sigreg
             arm_env=(TRAIN_VARIANT=object CONDITIONING=kv_adaln_sigreg SIGREG_WEIGHT="$weight") ;;
           *) echo "Unknown arm $arm" >&2; exit 2 ;;
         esac
@@ -231,16 +235,23 @@ $OCTVLA_POLICY_PYTHON -u scripts/merge_stage1_adapter.py --stage1 $stage1 \
         if [ "$RECIPE" = expert_lora ] && [ "$backbone" = pi05 ]; then
           common+=(BATCH_SIZE=8 GRAD_ACCUM=2 TRAIN_STEPS=$((TRAIN_STEPS * 2)))
         fi
-        # The init check gates the training: if stage 2 does not start at
-        # stage 1, or a branch gets no gradient, nothing trains.
-        check=$(train "$cell-check" "$merge_dep" 2 "${common[@]}" INIT_CHECK=1 TRAIN_TAG="${tag}_check")
-        dep=$(train "$cell" "$check" 24 "${common[@]}")
-        echo "$cell: check $check -> train $dep"; jobs=$((jobs + 2))
         # The name train_shelf_restock.sbatch will give the run.
         case "$arm" in
           rgb_cont) run2="${backbone}_rgb_s${seed}_${tag}" ;;
-          *)        run2="${backbone}_${arm}_s${seed}_${tag}" ;;
+          *)        run2="${backbone}_${run_arm}_s${seed}_${tag}" ;;
         esac
+        if exists "$run2"; then
+          # Trained already (a rollout-only resubmission): reuse it.
+          dep=""; echo "$cell: reuse $run2 (on disk)"
+        elif [ -e "$OCTVLA_OUTPUT_ROOT/$run2" ]; then
+          echo "$run2 exists without a final checkpoint: resolve first" >&2; exit 2
+        else
+          # The init check gates the training: if stage 2 does not start at
+          # stage 1, or a branch gets no gradient, nothing trains.
+          check=$(train "$cell-check" "$merge_dep" 2 "${common[@]}" INIT_CHECK=1 TRAIN_TAG="${tag}_check")
+          dep=$(train "$cell" "$check" 24 "${common[@]}")
+          echo "$cell: check $check -> train $dep"; jobs=$((jobs + 2))
+        fi
         ckpt="$OCTVLA_OUTPUT_ROOT/$run2/checkpoints/last/pretrained_model"
         for r in $ROLLOUTS; do
           case "$r" in
