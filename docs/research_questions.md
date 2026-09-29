@@ -746,19 +746,46 @@ unchanged): the RGB control collapses, 9 → 2 (p = 0.039); `kv` 31 → 25
 arms beat the control 25 and 24 to 2 (p < 0.001): explicit object state keeps
 the policy working when appearance changes.
 
-**SIGReg on the object embeddings (`kv_adaln_sigreg`, one seed — a lead, not a
-result).** Seed 1000 against `kv_adaln` on the same seed, 20 scenes per tier:
-seen success 11 → 9 (p = 0.75), held-out success 4 → 5, held-out ≥1 transfer
-**5 → 13 (p = 0.008)**. The logged SIGReg term rose from 8 to 34 during
-training, so at weight 0.05 the task loss outpulls it; the embeddings drift
-from isotropy rather than settle there.
+**SIGReg on the object embeddings (`kv_adaln_sigreg`, 3 seeds).** SIGReg
+(weight 0.05) on the movable-entity embeddings, geometry only, no camera. Paired
+over 60 episodes per tier against `kv_adaln` from the same stage-1 seeds:
 
-**Data fractions, stage 1 (RGB GR00T, fixed 8 k steps).** Mean transfers on
-seen objects: 19 runs 0.40, 38 runs **0.90**, 75 runs 0.52 (success 0, 9, 4 of
-60). Not monotone: at a fixed step budget the 38-run model sees each run twice
-as often (≈ 8 passes against 4), and GR00T is fit-limited like ACT. This curve
-confounds data with passes and is not a data-efficiency result by itself;
-stage 2 on each fraction is paired against its own budget control (running).
+| tier | metric | kv_adaln | kv_adaln_sigreg | b/c | p |
+|---|---|---|---|---|---|
+| seen | success | 35/60 | 25/60 | 21/11 | 0.11 |
+| seen | ≥1 transfer | 49/60 | 38/60 | 19/8 | 0.052 |
+| held-out | success | 11/60 | 18/60 | 4/11 | 0.12 |
+| held-out | ≥1 transfer | 22/60 | 36/60 | 3/17 | **0.003** |
+
+Against `rgb_cont`, held-out success goes 0 → 18/60 (0/18, p < 0.001), the
+largest held-out gain of any arm (`kv_adaln` 0 → 11). Mean held-out transfers
+1.27 [1.05–1.50] against 0.75 [0.50–1.10], and all three seeds are above every
+`kv_adaln` seed on held-out ≥1 transfer (10–13 against 5–10 of 20). The
+trade-off is on seen objects, where it gives back part of `kv_adaln`'s gain
+(success 25 against 35, not significant). So the regulariser moves the
+policy toward held-out sizes at a cost in fit to the seen ones: it matches a
+spread-out embedding helping extrapolation, but one weight on one task is all
+that was tried. The logged SIGReg term rose during training (8 → 34 on seed
+1000), so the embeddings are not isotropic at the end; the effect is from the
+pressure, not from reaching the target distribution.
+
+**Data fractions (GR00T, fixed 8 k steps per stage).** 19, 38 and 75 training
+runs; stage 2 paired against each fraction's own `rgb_cont`:
+
+| runs | stage-1 rgb success, seen | rgb_cont → kv_adaln success, seen | held-out | held-out ≥1 transfer |
+|---|---|---|---|---|
+| 19 | 0/60 | 2 → 8 (p = 0.11) | 0 → 4 (p = 0.13) | 7 → 22 (**p = 0.001**) |
+| 38 | 9/60 | 4 → 28 (**p < 0.001**) | 1 → 15 (**p < 0.001**) | 13 → 23 (p = 0.08) |
+| 75 | 4/60 | 9 → 35 (**p < 0.001**) | 0 → 11 (**p = 0.001**) | 17 → 22 (p = 0.41) |
+
+Conditioning beats the budget control at every fraction. At 19 runs neither
+arm completes the task often, so the gain shows up only as first transfers.
+From 38 runs on, the gain is in full successes. The RGB curve is
+non-monotone because the step count was fixed, so fewer runs means more
+passes over each one. The conditioned arm's seen success (8, 28, 35 of 60)
+grows with data regardless. We did not run a fixed-passes variant, by choice.
+So the table supports "conditioning helps at every data size tried", not a
+data-efficiency slope.
 
 ### 4.12 pi0.5 and SmolVLA: capacity, and a second recipe
 
@@ -886,6 +913,12 @@ lookup) to 16, and is tested on the bowl → cup category holdout.
 
 ## Update log
 
+- **2026-09-29.** SIGReg at 3 seeds: held-out ≥1 transfer 22 → 36 of 60
+  over `kv_adaln` (p = 0.003), held-out success 0 → 18 over `rgb_cont`; seen
+  success lower (35 → 25, n.s.). Data-fraction stage 2: `kv_adaln` beats
+  `rgb_cont` at 19, 38 and 75 runs. pi0.5 seed 1002 merged (fp32 merge exact
+  to 1.3e-6; the bf16 outlier frame was rounding); its conditioned arms are in,
+  rgb_cont still training.
 - **2026-09-28 (night).** One-seed SIGReg lead on held-out geometry (≥1
   transfer 5 → 13 of 20, p = 0.008). Data-fraction stage 1 is non-monotone
   (fixed steps confound data with passes); stage 2 on the fractions submitted.
