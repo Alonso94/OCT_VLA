@@ -764,10 +764,25 @@ largest held-out gain of any arm (`kv_adaln` 0 → 11). Mean held-out transfers
 trade-off is on seen objects, where it gives back part of `kv_adaln`'s gain
 (success 25 against 35, not significant). So the regulariser moves the
 policy toward held-out sizes at a cost in fit to the seen ones: it matches a
-spread-out embedding helping extrapolation, but one weight on one task is all
-that was tried. The logged SIGReg term rose during training (8 → 34 on seed
-1000), so the embeddings are not isotropic at the end; the effect is from the
-pressure, not from reaching the target distribution.
+spread-out embedding helping extrapolation. The logged SIGReg term falls
+during training, 34 → 8.3 on every seed, so the embeddings move toward the
+isotropic target without reaching it (an earlier version of this note had
+the direction backwards).
+
+**The weight does not matter within 0.01–0.2, and cannot, with this
+optimiser.** Trained at 0.01 and 0.2 from the same stage-1 seeds, the SIGReg
+term follows the 0.05 trajectory to three digits (34.2 → 27.6 → 20.9 → … →
+8.3) while the total loss scales with the weight, so the weight is applied.
+The trained embeddings of the three weights are 1–2 % apart (relative
+parameter distance, seed 1000), against 22 % between any of them and
+`kv_adaln`'s. SIGReg depends on the embedding parameters alone, and their
+task gradient is small (the branches they feed start at zero), so almost
+their whole gradient is SIGReg's: Adam normalises its scale away. The
+experiment is therefore SIGReg on against off; the sweep's rollouts measure
+near-copies of the 0.05 policy, a check on evaluation noise rather than on
+the weight. Making strength a real knob would need the task gradient to
+compete (a separate learning rate for the embedding, or SIGReg on a shared
+layer), which was not done.
 
 **Data fractions (GR00T, fixed 8 k steps per stage).** 19, 38 and 75 training
 runs; stage 2 paired against each fraction's own `rgb_cont`:
@@ -844,21 +859,25 @@ improves little.
 trainable parameters on pi0.5 (13.9 → 15.2 M) and +8–19 % on SmolVLA
 (7.0 → 7.6–8.3 M); every arm saw the same 128 k samples; step-0 drift is 0.0
 for KV and AdaLN and 0.5 % (pi0.5) and 1.4 % (SmolVLA) for tokens, whose init
-checks now pass. pi0.5 has two seeds (seed 1002's stage-1 merge refused itself
-at 5.36 %, just over the 5 % bound; the other five merges changed the chunk by
-0.2–1.2 %), so it is not yet a result.
+checks now pass. pi0.5 seed 1002's merge moved one of 8 frames 34 % in bf16;
+the same merge in float32 is exact to 1.3e-6 on every frame, so the outlier
+is bf16 rounding amplified through the flow, and the bf16 checkpoint (built
+as every other seed's) was used. Both backbones have three seeds.
 
-| arm | pi0.5 seen ≥1 transfer /40 | pi0.5 held-out | SmolVLA seen ≥1 transfer /60 | SmolVLA seen success | SmolVLA held-out |
+| arm | pi0.5 seen ≥1 transfer /60 | pi0.5 held-out | SmolVLA seen ≥1 transfer /60 | SmolVLA seen success | SmolVLA held-out |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| rgb_cont | 8 | 3 | 13 | 0 | 3 |
-| kv | 13 (p = 0.33) | 3 | 17 (p = 0.54) | 4 (p = 0.125) | 1 |
-| kv_adaln | 5 (p = 0.58) | 1 | 12 (p = 1.0) | 3 (p = 0.25) | 2 |
-| kv_tokens | 9 (p = 1.0) | 3 | 11 (p = 0.80) | 2 (p = 0.5) | 2 |
+| rgb_cont | 9 | 7 | 13 | 0 | 3 |
+| kv | 21 (p = 0.023) | 3 | 17 (p = 0.54) | 4 (p = 0.125) | 1 |
+| kv_adaln | 8 (p = 1.0) | 3 | 12 (p = 1.0) | 3 (p = 0.25) | 2 |
+| kv_tokens | 14 (p = 0.30) | 5 | 11 (p = 0.80) | 2 (p = 0.5) | 2 |
 
 **With the branch held to about GR00T's share of trainable parameters,
-conditioning does not measurably help pi0.5 or SmolVLA.** No contrast
-against the budget control reaches p = 0.1; the one nominal difference is
-`kv` over `kv_adaln` on pi0.5 (13 → 5, p = 0.039, two seeds). The earlier
+conditioning does not measurably help pi0.5 or SmolVLA.** No arm of either
+backbone completes a task more often than the budget control (pi0.5: 0 to 2
+successes of 60 in every arm), and none helps on held-out sizes. The one
+lead is `kv` on pi0.5's seen first transfers (9 → 21 of 60, p = 0.023; `kv`
+over `kv_adaln` 21 → 8, p = 0.007), which at this many contrasts is a lead,
+not a finding, and does not carry to success. The earlier
 two-seed SmolVLA gain under the default recipe (`kv_adaln` 3 successes, 9
 episodes with a transfer) does not reappear once the capacity is matched,
 consistent with that gain having been capacity.
@@ -888,7 +907,7 @@ GR00T.
 | Stage A2 | `CF`: rgb_cont, kv, kv_adaln, kv_tokens, scratch_kv × 3 seeds | **done** (§4.9): Stage A replicates |
 | Q4 (VLAs), stage 1 | `PF`/`PJ`, `SF`/`SJ`, `GF`/`GJ`: rgb × 3 seeds | **done** (§4.10): GR00T learns, absolute EE; pi0.5 and SmolVLA at zero |
 | Q1–Q2 (VLAs), stage 2 | `GF`: rgb_cont, kv, kv_adaln × 3 seeds, seen + held-out | **done** (§4.11): yes, and on seen objects too. `kv_tokens` unsupported on GR00T |
-| Q1–Q2, pi0.5 and SmolVLA | `PXF`, `SXF` (`RECIPE=expert_lora`): rgb_cont, kv, kv_adaln, kv_tokens × 3 seeds, seen + held-out | **done except pi0.5 seed 1002** (merge refused, 5.36 % > 5 %): no arm beats the budget control on either backbone (§4.12) |
+| Q1–Q2, pi0.5 and SmolVLA | `PXF`, `SXF` (`RECIPE=expert_lora`): rgb_cont, kv, kv_adaln, kv_tokens × 3 seeds, seen + held-out | **done** (3 seeds each): no arm beats the budget control on success on either backbone; one lead, pi0.5 `kv` seen first transfers (§4.12) |
 | Q3 (VLAs) | count rollouts on `rgb_cont` and any arm that beats it | only if GR00T stage 2 finds one |
 | semantics | geometry (16) vs geometry + semantics (16 + 16) on `place_container_plate` (bowl seen, cup held out as a category) | after stage 2; needs a closed-loop evaluator for the built-in task first |
 
@@ -913,6 +932,11 @@ lookup) to 16, and is tested on the bowl → cup category holdout.
 
 ## Update log
 
+- **2026-09-29 (later).** pi0.5 at 3 seeds: no arm beats `rgb_cont` on success;
+  `kv` seen first transfers 9 → 21 (p = 0.023) is a lead. SIGReg weight 0.01
+  and 0.2 train to the 0.05 embedding within 1–2 % (Adam removes the scale of
+  a gradient that is almost all SIGReg's): the result is SIGReg on vs off.
+  Corrected: the SIGReg term falls (34 → 8), not rises.
 - **2026-09-29.** SIGReg at 3 seeds: held-out ≥1 transfer 22 → 36 of 60
   over `kv_adaln` (p = 0.003), held-out success 0 → 18 over `rgb_cont`; seen
   success lower (35 → 25, n.s.). Data-fraction stage 2: `kv_adaln` beats
