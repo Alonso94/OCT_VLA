@@ -759,7 +759,7 @@ over 60 episodes per tier against `kv_adaln` from the same stage-1 seeds:
 
 Against `rgb_cont`, held-out success goes 0 → 18/60 (0/18, p < 0.001), the
 largest held-out gain of any arm (`kv_adaln` 0 → 11). Mean held-out transfers
-1.27 [1.05–1.50] against 0.75 [0.50–1.10], and all three seeds are above every
+1.27 [1.05–1.50] against 0.75 [0.50–1.10], and its worst seed ties the best
 `kv_adaln` seed on held-out ≥1 transfer (10–13 against 5–10 of 20). The
 trade-off is on seen objects, where it gives back part of `kv_adaln`'s gain
 (success 25 against 35, not significant). So the regulariser moves the
