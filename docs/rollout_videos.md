@@ -27,7 +27,9 @@ seen identities, the two-object scene on the nested layout.
 | `videos/chaining_atomic_clips/` | plain RGB ACT on the paired corpus, atomic clips | `AF` | §4.6 |
 | `videos/full_runs_all_arms/` | every ACT arm on continuous runs: the chaining study's full-run policy (`rgb`), Stage A2, and the baseline ablations | `CF` | §4.6–4.9 |
 | `videos/vla_stage1/` | pi0.5, SmolVLA and GR00T, RGB stage 1, both absolute regimes | `PF` … `GJ` | §4.10 |
-| `videos/groot_stage2/` | GR00T stage 2: the budget control and the conditioned arms, seen and held-out objects | `GF` | §4.11 |
+| `videos/groot_stage2/` | GR00T stage 2: the budget control, the conditioned arms, the controls and SIGReg, seen and held-out objects | `GF` | §4.11, §4.13 |
+| `videos/vla_stage2/pi05_expert_lora/` | pi0.5 stage 2 with the expert LoRA: the budget control and every conditioned arm | `PXF` | §4.12 |
+| `videos/groot_data_fraction/runs38/` | GR00T on 38 of 75 runs: stage 1, budget control, kv_adaln | `GHF` | §4.13 |
 
 ## Stage A: every arm, atomic clips (`videos/stage_a_all_arms/`, `F`)
 
@@ -206,6 +208,65 @@ video for it.
 | kv_adaln | 3 objects, seen identities | 35 | 1001 | 801 | 304 | 2 | [kv_adaln__three_seen__success.mp4](videos/groot_stage2/successes/kv_adaln__three_seen__success.mp4) |
 | kv_adaln | 3 objects, heldout identities | 11 | 1000 | 812 | 282 | 0, 6 | [kv_adaln__three_heldout__success.mp4](videos/groot_stage2/successes/kv_adaln__three_heldout__success.mp4) |
 
+### GR00T controls and SIGReg (`videos/groot_stage2/`, `GF`)
+
+The information and composition controls (research_questions §4.13) and
+SIGReg on the object embeddings at weights 0.05, 0.01 (`_low`) and 0.2
+(`_high`). The three SIGReg weights train to the same embedding but are
+otherwise independent runs (§4.13), so they are three replicates of one arm.
+What to look for: `kv_adaln_shuffled`, which has `kv_adaln`'s parameters but
+another scene's objects, drops objects on the way like `rgb_cont`; the SIGReg
+arms carry held-out sizes further than `kv_adaln` but finish fewer seen
+scenes.
+
+| arm | setting | training seed | scene seed | meshes | transfers | lifted | success | row mean transfers (per seed) | video |
+| --- | --- | ---: | ---: | --- | ---: | ---: | --- | --- | --- |
+| kv_adaln_shuffled | 3 objects, seen identities | 1000 | 815 | seen | 1 | 2 | no | 0.80, 0.65, 1.20 | [kv_adaln_shuffled__three_seen.mp4](videos/groot_stage2/kv_adaln_shuffled__three_seen.mp4) |
+| kv_adaln_shuffled | 3 objects, heldout identities | 1001 | 803 | heldout | 0 | 1 | no | 0.25, 0.30, 0.50 | [kv_adaln_shuffled__three_heldout.mp4](videos/groot_stage2/kv_adaln_shuffled__three_heldout.mp4) |
+| scene_attn | 3 objects, seen identities | 1002 | 801 | seen | 1 | 2 | no | 0.80, 1.55, 1.05 | [scene_attn__three_seen.mp4](videos/groot_stage2/scene_attn__three_seen.mp4) |
+| scene_attn | 3 objects, heldout identities | 1000 | 800 | heldout | 1 | 1 | no | 0.50, 0.65, 0.40 | [scene_attn__three_heldout.mp4](videos/groot_stage2/scene_attn__three_heldout.mp4) |
+| scene_mean | 3 objects, seen identities | 1000 | 805 | seen | 1 | 2 | no | 0.90, 0.90, 0.85 | [scene_mean__three_seen.mp4](videos/groot_stage2/scene_mean__three_seen.mp4) |
+| scene_mean | 3 objects, heldout identities | 1000 | 806 | heldout | 0 | 1 | no | 0.40, 0.40, 0.20 | [scene_mean__three_heldout.mp4](videos/groot_stage2/scene_mean__three_heldout.mp4) |
+| kv_adaln_sigreg | 3 objects, seen identities | 1000 | 803 | seen | 2 | 2 | no | 1.60, 1.75, 1.35 | [kv_adaln_sigreg__three_seen.mp4](videos/groot_stage2/kv_adaln_sigreg__three_seen.mp4) |
+| kv_adaln_sigreg | 3 objects, heldout identities | 1000 | 800 | heldout | 1 | 2 | no | 1.25, 1.50, 1.05 | [kv_adaln_sigreg__three_heldout.mp4](videos/groot_stage2/kv_adaln_sigreg__three_heldout.mp4) |
+| kv_adaln_sigreg_low | 3 objects, seen identities | 1002 | 803 | seen | 1 | 3 | no | 1.65, 1.10, 1.20 | [kv_adaln_sigreg_low__three_seen.mp4](videos/groot_stage2/kv_adaln_sigreg_low__three_seen.mp4) |
+| kv_adaln_sigreg_low | 3 objects, heldout identities | 1000 | 816 | heldout | 1 | 2 | no | 0.85, 1.25, 0.70 | [kv_adaln_sigreg_low__three_heldout.mp4](videos/groot_stage2/kv_adaln_sigreg_low__three_heldout.mp4) |
+| kv_adaln_sigreg_high | 3 objects, seen identities | 1000 | 803 | seen | 2 | 2 | no | 1.70, 1.85, 1.25 | [kv_adaln_sigreg_high__three_seen.mp4](videos/groot_stage2/kv_adaln_sigreg_high__three_seen.mp4) |
+| kv_adaln_sigreg_high | 3 objects, heldout identities | 1001 | 810 | heldout | 1 | 2 | no | 1.20, 0.95, 0.70 | [kv_adaln_sigreg_high__three_heldout.mp4](videos/groot_stage2/kv_adaln_sigreg_high__three_heldout.mp4) |
+
+## pi0.5 stage 2, expert LoRA (`videos/vla_stage2/pi05_expert_lora/`, `PXF`)
+
+pi0.5 with rank-32 LoRA over the action expert, stage 2 from the merged stage
+1 (§4.12). Every row's median seed averages at most 0.5 transfers, so every
+representative episode is a lift with no transfer. That is the result: no
+arm beats the budget control.
+
+| arm | setting | training seed | scene seed | meshes | transfers | lifted | success | row mean transfers (per seed) | video |
+| --- | --- | ---: | ---: | --- | ---: | ---: | --- | --- | --- |
+| rgb | 3 objects, seen identities | 1002 | 801 | seen | 0 | 1 | no | 0.50, 0.10, 0.20 | [rgb__three_seen.mp4](videos/vla_stage2/pi05_expert_lora/rgb__three_seen.mp4) |
+| rgb_cont | 3 objects, seen identities | 1001 | 800 | seen | 0 | 1 | no | 0.25, 0.15, 0.05 | [rgb_cont__three_seen.mp4](videos/vla_stage2/pi05_expert_lora/rgb_cont__three_seen.mp4) |
+| rgb_cont | 3 objects, heldout identities | 1000 | 802 | heldout | 0 | 1 | no | 0.10, 0.05, 0.20 | [rgb_cont__three_heldout.mp4](videos/vla_stage2/pi05_expert_lora/rgb_cont__three_heldout.mp4) |
+| kv | 3 objects, seen identities | 1000 | 803 | seen | 0 | 1 | no | 0.45, 0.25, 0.50 | [kv__three_seen.mp4](videos/vla_stage2/pi05_expert_lora/kv__three_seen.mp4) |
+| kv | 3 objects, heldout identities | 1002 | 800 | heldout | 0 | 1 | no | 0.00, 0.15, 0.00 | [kv__three_heldout.mp4](videos/vla_stage2/pi05_expert_lora/kv__three_heldout.mp4) |
+| kv_adaln | 3 objects, seen identities | 1000 | 802 | seen | 0 | 1 | no | 0.20, 0.15, 0.25 | [kv_adaln__three_seen.mp4](videos/vla_stage2/pi05_expert_lora/kv_adaln__three_seen.mp4) |
+| kv_adaln | 3 objects, heldout identities | 1001 | 800 | heldout | 0 | 1 | no | 0.00, 0.05, 0.10 | [kv_adaln__three_heldout.mp4](videos/vla_stage2/pi05_expert_lora/kv_adaln__three_heldout.mp4) |
+| kv_tokens | 3 objects, seen identities | 1002 | 812 | seen | 0 | 1 | no | 0.40, 0.10, 0.25 | [kv_tokens__three_seen.mp4](videos/vla_stage2/pi05_expert_lora/kv_tokens__three_seen.mp4) |
+| kv_tokens | 3 objects, heldout identities | 1000 | 800 | heldout | 0 | 1 | no | 0.10, 0.05, 0.10 | [kv_tokens__three_heldout.mp4](videos/vla_stage2/pi05_expert_lora/kv_tokens__three_heldout.mp4) |
+
+## GR00T data fraction, 38 runs (`videos/groot_data_fraction/runs38/`, `GHF`)
+
+GR00T trained on half the full-run corpus (38 of 75 runs), stage 1 and stage
+2 at the same 8 k steps each (§4.13). The fraction where conditioning's gain
+over the budget control is largest (seen success 4 → 28 of 60).
+
+| arm | setting | training seed | scene seed | meshes | transfers | lifted | success | row mean transfers (per seed) | video |
+| --- | --- | ---: | ---: | --- | ---: | ---: | --- | --- | --- |
+| rgb | 3 objects, seen identities | 1002 | 802 | seen | 1 | 2 | no | 1.05, 0.80, 0.85 | [rgb__three_seen.mp4](videos/groot_data_fraction/runs38/rgb__three_seen.mp4) |
+| rgb_cont | 3 objects, seen identities | 1002 | 811 | seen | 1 | 2 | no | 0.70, 0.75, 0.70 | [rgb_cont__three_seen.mp4](videos/groot_data_fraction/runs38/rgb_cont__three_seen.mp4) |
+| rgb_cont | 3 objects, heldout identities | 1001 | 801 | heldout | 0 | 2 | no | 0.15, 0.30, 0.30 | [rgb_cont__three_heldout.mp4](videos/groot_data_fraction/runs38/rgb_cont__three_heldout.mp4) |
+| kv_adaln | 3 objects, seen identities | 1002 | 803 | seen | 2 | 2 | no | 1.45, 1.85, 1.55 | [kv_adaln__three_seen.mp4](videos/groot_data_fraction/runs38/kv_adaln__three_seen.mp4) |
+| kv_adaln | 3 objects, heldout identities | 1000 | 801 | heldout | 1 | 3 | no | 1.10, 0.30, 1.35 | [kv_adaln__three_heldout.mp4](videos/groot_data_fraction/runs38/kv_adaln__three_heldout.mp4) |
+
 ## Regenerating
 
 ```bash
@@ -217,6 +278,9 @@ declare -A DEST=([F]=stage_a_all_arms [AF]=chaining_atomic_clips [CF]=full_runs_
 # GR00T stage 2 shares prefix GF with its stage 1: select it into its own folder
 # and drop the rgb row's copy, which is vla_stage1/groot_abs_ee/rgb__three_all.mp4.
 #   select_rollout_videos.py ... --prefix GF --dest docs/videos/groot_stage2
+# pi0.5 expert LoRA stage 2 and the 38-run data fraction:
+#   select_rollout_videos.py ... --prefix PXF --dest docs/videos/vla_stage2/pi05_expert_lora
+#   select_rollout_videos.py ... --prefix GHF --dest docs/videos/groot_data_fraction/runs38
 for p in "${!DEST[@]}"; do
   PYTHONPATH=src "$OCTVLA_POLICY_PYTHON" scripts/select_rollout_videos.py \
     "$OCTVLA_OUTPUT_ROOT/eval" --prefix $p --dest docs/videos/${DEST[$p]} --table /tmp/$p.md
