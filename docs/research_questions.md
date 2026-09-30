@@ -18,7 +18,7 @@ stage 1 (RGB, both absolute regimes) is complete; stage 2 is not run.
 | --- | --- | --- | --- |
 | Q1 | Is object conditioning useful? | **Only for held-out objects, and only through AdaLN — on both corpora.** Against the budget control no arm improves seen objects; `kv_adaln` succeeds on held-out sizes where the control never does, on atomic clips (0 → 6 of 60, p = 0.031) and again on full runs (0 → 7, p = 0.016), on every seed (§4.1, §4.9) | **GR00T: yes, strongly, on seen and held-out objects.** Against its budget control, seen success 9 → 31 (`kv`) and 9 → 35 of 60 (`kv_adaln`), held-out 0 → 7 and 0 → 11, every seed (§4.11) |
 | Q2 | Which mechanism: KV, AdaLN, or in-context tokens? | **AdaLN**, on both corpora: the only mechanism that beats the budget control anywhere, and it beats tokens on held-out objects (§4.2, §4.9) | **GR00T: AdaLN ≥ KV**, both far above the control; tokens unsupported on GR00T (§4.11). pi0.5 and SmolVLA stage 2 running |
-| Q3 | Does conditioning help compositional generalisation (train on 3, test on 2 and 4)? | **No**, on both corpora: no arm beats the budget control at 2 or 4 objects. The count gap was largely the training format (§4.3, §4.6). The four-object half ran 150 steps per object, not 200 (§3) | GR00T: 2 objects measured, 4 objects re-running at 800 steps |
+| Q3 | Does conditioning help compositional generalisation (train on 3, test on 2 and 4)? | **No**, on both corpora: no arm completes more scenes than the budget control at 2 or 4 objects, and no ACT policy completes any four-object scene (0 of 1380, at the full 800 steps). The count gap was largely the training format (§4.3, §4.6) | **GR00T: yes at 2 objects, marginal at 4.** Two-object success 14 → 47 of 60 (`kv`, p < 0.001); at four, `kv` completes 9 of 60 where the control completes none (p = 0.004), but the AdaLN arms transfer less often than the control (§4.14) |
 | Q4 | Which control regime: absolute joint, joint delta, absolute EE, EE delta? | **Absolute, not delta.** Both delta regimes complete 0 transfers in 180 episodes each. Absolute EE and absolute joint cannot be separated (§4.4) | **GR00T: absolute EE ahead of absolute joint** (0.52 against 0.30 mean transfers); pi0.5 and SmolVLA at zero in both (§4.10) |
 
 Status meanings: **answered** = ≥ 3 seeds, the budget control run, the paired
@@ -45,8 +45,9 @@ The full protocol is `data_protocol.md`, and the method is `method.md`.
     **Until 2026-09-30 four objects got 600 steps, not 800**: the client never
     sent the step limit and the server's default capped it (fixed in
     `serve/client.py`; the server now echoes the limit and a mismatch raises).
-    Every four-object number in §4.3–§4.9 is at 150 steps per object; the
-    collector now sets those episodes aside, and GR00T's are re-run at 800.
+    Every four-object rollout was re-run at 800 steps (`<cell>-four.json`,
+    `slurm/rerun_four_object.sh`); the collector sets the 600-step episodes
+    aside, and every four-object number below is at 800.
   - Every reset pins the tier, and the simulator verifies it.
 - **Statistics.**
   - A cell is reported across ≥ 3 training seeds, as the mean with the min–max
@@ -189,8 +190,8 @@ whether conditioning helps *that* policy is the open question for Stage A2.
 | seen | kv_adaln → kv_tokens | 0.17 → 0.23 (6/10) | 0.45 | 0.48 → 0.65 (8/18) | 0.076 |
 | held-out | kv → kv_adaln | 0.02 → 0.10 (1/6) | 0.13 | 0.18 → 0.33 (6/15) | 0.078 |
 | held-out | kv_adaln → kv_tokens | 0.10 → 0.00 (6/0) | **0.031** | 0.33 → 0.13 (17/5) | **0.017** |
-| four objects | kv → kv_adaln | 0 → 0 | — | 0.40 → 0.18 (20/7) | **0.019** |
-| four objects | kv → kv_tokens | 0 → 0 | — | 0.40 → 0.18 (19/6) | **0.015** |
+| four objects | kv → kv_adaln | 0 → 0 | — | 0.38 → 0.20 (19/8) | 0.052 |
+| four objects | kv → kv_tokens | 0 → 0 | — | 0.38 → 0.17 (19/6) | **0.015** |
 
 **Conclusion (answered, for ACT on atomic clips): AdaLN.**
 - It is the only mechanism that beats the budget control on any tier
@@ -198,7 +199,7 @@ whether conditioning helps *that* policy is the open question for Stage A2.
 - In-context tokens are best on seen objects by point estimate, but not
   significantly above either `kv` or the budget control.
 - Both encoder-side mechanisms (AdaLN and tokens) are *worse* than `kv` at
-  four objects.
+  four objects (tokens p = 0.015, AdaLN p = 0.052).
 
 One reading, not tested: tokens give the encoder a per-object handle, enough
 to fit the four trained sizes; AdaLN gives a pooled scene summary that
@@ -211,32 +212,31 @@ token arm that has to come first.
 ### 4.3 Q3: compositional generalisation (2 / 3 / 4 objects)
 
 Trained on three objects; seen identities; 200 steps per object; the
-two-object scenes on the nested layout (§3, item 4). **Caveat:** the
-four-object column ran 600 steps (150 per object), not 800, because of the
-step-limit bug in §3; "four objects fails for everyone" may be partly a
-budget effect and is unconfirmed at 800. Mean transfers per
+two-object scenes on the nested layout (§3, item 4); four objects at the full
+800 steps (re-run after the step-limit bug in §1). Mean transfers per
 episode, mean [min–max] across seeds:
 
 | arm | 2 objects | 3 objects | 4 objects |
 | --- | --- | --- | --- |
-| rgb | 0.22 [0.20–0.25] | 0.62 [0.45–0.90] | 0.40 [0.30–0.50] |
-| rgb_cont | 0.38 [0.15–0.55] | 0.95 [0.50–1.40] | 0.32 [0.15–0.45] |
-| rgb_novae | 0.33 [0.15–0.50] | 0.83 [0.45–1.40] | 0.58 [0.35–1.00] |
-| kv | 0.33 [0.25–0.40] | 0.83 [0.55–1.35] | 0.42 [0.35–0.45] |
-| kv_adaln | 0.43 [0.20–0.80] | 0.93 [0.75–1.10] | 0.20 [0.15–0.25] |
-| kv_tokens | 0.37 [0.25–0.45] | 1.25 [1.05–1.40] | 0.28 [0.25–0.35] |
-| scratch_kv | 0.22 [0.15–0.30] | 0.45 [0.30–0.55] | 0.32 [0.05–0.85] |
-| *AF-rgb (atomic, paired corpus)* | 0.47 [0.35–0.55] | 0.48 [0.45–0.55] | 0.42 [0.30–0.60] |
-| *CF-rgb (full runs, paired corpus)* | **0.88 [0.70–1.05]** | 0.70 [0.40–0.90] | **0.58 [0.45–0.75]** |
+| rgb | 0.22 [0.20–0.25] | 0.62 [0.45–0.90] | 0.32 [0.20–0.45] |
+| rgb_cont | 0.38 [0.15–0.55] | 0.95 [0.50–1.40] | 0.25 [0.10–0.40] |
+| rgb_novae | 0.33 [0.15–0.50] | 0.83 [0.45–1.40] | 0.52 [0.25–0.90] |
+| kv | 0.33 [0.25–0.40] | 0.83 [0.55–1.35] | 0.40 [0.35–0.45] |
+| kv_adaln | 0.43 [0.20–0.80] | 0.93 [0.75–1.10] | 0.23 [0.10–0.35] |
+| kv_tokens | 0.37 [0.25–0.45] | 1.25 [1.05–1.40] | 0.20 [0.10–0.25] |
+| scratch_kv | 0.22 [0.15–0.30] | 0.45 [0.30–0.55] | 0.32 [0.10–0.75] |
+| *AF-rgb (atomic, paired corpus)* | 0.47 [0.35–0.55] | 0.48 [0.45–0.55] | 0.37 [0.30–0.45] |
+| *CF-rgb (full runs, paired corpus)* | **0.88 [0.70–1.05]** | 0.70 [0.40–0.90] | **0.52 [0.45–0.60]** |
 
 Task success: 0/20 at four objects for every cell and seed. At two objects,
 every `F` cell is at most 1.7/20; `CF-rgb` is 6.3/20 [5–8].
 
 **Conclusion (answered, for ACT): conditioning does not help object-count
 generalisation.**
-- No conditioned arm beats `rgb_cont` at two or four objects (smallest p =
-  0.17, `kv` at four objects), and the encoder-side arms are worse than `kv`
-  at four (§4.2).
+- No conditioned arm completes more scenes than `rgb_cont` at two or four
+  objects. The one nominal count effect is `kv` reaching a first transfer
+  more often at four (12 → 23 of 60, p = 0.043), without a single success;
+  the encoder-side arms are worse than `kv` at four (§4.2).
 - **The collapse at two objects is mostly the training format.** An atomic
   policy scores lower on two objects than on three for every `F` arm — an
   easier scene, done worse. Trained on continuous runs, the same RGB ACT
@@ -245,10 +245,11 @@ generalisation.**
   The old two-object layout (independent draws) cost a little on top: `rgb`
   0.20 → 0.22 and `kv_tokens` 0.18 → 0.37 once the first target was placed as
   in training.
-- **Four objects fails for everyone,** full runs included (0 of 60 four-object
-  episodes succeed in `CF`). Four is inside the training support positionally (§3, item 4), so
-  this is a genuine sequence-length limit: no policy has chained past three
-  transfers.
+- **Four objects fails for everyone,** full runs included, and the budget was
+  not the cause: at the full 800 steps, 0 of 1380 ACT four-object episodes
+  succeed (every cell of `F`, `CF`, `AF`, `D`, `J` and `X`). Four is inside the training
+  support positionally (§3, item 4), so this is a genuine sequence-length
+  limit: no ACT policy has chained past three transfers.
 
 ### 4.4 Q4: control regime (ACT, RGB, identity corpus)
 
@@ -368,7 +369,7 @@ uncut run instead let the policy chain transfers?
 | --- | --- | --- | ---: | --- | ---: | --- |
 | 3 objects, seen | 1/60 → 9/60 | 0/8 | **0.008** | 26 → 24 | 0.83 | 0.48 → 0.70 |
 | 2 objects | 3/60 → 19/60 | 1/17 | **< 0.001** | 25 → 34 | 0.15 | 0.47 → 0.88 |
-| 4 objects | 0 → 0 | — | — | 24 → 31 | 0.23 | 0.42 → 0.58 |
+| 4 objects | 0 → 0 | — | — | 22 → 27 | 0.44 | 0.37 → 0.52 |
 | 3 objects, held-out | 0 → 0 | — | — | 5 → 3 | 0.69 | 0.08 → 0.05 |
 | 3 objects, novel | 6/60 → 6/60 | 5/5 | 1.00 | **45 → 24** | **< 0.001** | 1.18 → 0.75 |
 
@@ -401,8 +402,8 @@ With two objects the same holds: T2 | T1 is 3/25 atomic and 19/34 full runs.
 - **It does not fix single transfers.** T1 | lift stays near 0.5, and the
   failure modes are unchanged (§4.5): about half the lost objects are
   dropped, and about 45 % placed then knocked off.
-- **Four objects still fails** (0/60): three chained transfers is the longest
-  sequence in training.
+- **Four objects still fails** (0/60, at 800 steps): three chained transfers
+  is the longest sequence in training.
 - **The novel tier goes the other way,** by 45 → 24 episodes with a transfer.
   It is not seed-consistent (full runs are at 1.85 on one seed and 0.10–0.30
   on the others), mesh 5 is one the oracle has never been able to plan, and
@@ -434,10 +435,10 @@ frame, which the full run keeps — part of the difference, by design.
 | 3 objects, held-out | 0 → 0 | — | 3 → 13 | **0.021** | 0.05 → 0.25 |
 | 3 objects, novel | 6 → 0 | **0.031** | 24 → 1 | **< 0.001** | 0.75 → 0.02 |
 | 2 objects | 19 → 7 | **0.004** | 34 → 33 | 1.00 | 0.88 → 0.67 |
-| 4 objects | 0 → 0 | — | 31 → 38 | 0.21 | 0.58 → 0.82 |
+| 4 objects | 0 → 0 | — | 27 → 37 | 0.099 | 0.52 → 0.80 |
 
 - **Single transfers improve.** The first transfer after a lift rises from
-  24/48 to 35/48 on seen objects, and from 31/54 to 38/52 at four objects;
+  24/48 to 35/48 on seen objects, and from 27/54 to 37/52 at four objects;
   held-out objects get transferred at all (13 against 3). Objects placed and
   then knocked off fall from 65 to 23: re-planning every 8 steps instead of
   25 disturbs the shelf less.
@@ -506,7 +507,7 @@ grasps are 3.7 mm off and move with no camera: they happen at a fixed pose.
 | 3 objects, seen: success | 9 → 3 (p = 0.15) | 9 → 5 (p = 0.42) |
 | 3 objects, seen: T1 \| lift | 24/48 → 15/52 | 24/48 → 23/56 |
 | 2 objects: success | 19 → 16 (p = 0.69) | 19 → 16 (p = 0.61) |
-| 4 objects: ≥1 transfer | 31 → 17 (**p = 0.016**) | 31 → 19 (**p = 0.017**) |
+| 4 objects: ≥1 transfer | 27 → 15 (**p = 0.036**) | 27 → 16 (**p = 0.027**) |
 | 3 objects, novel: ≥1 transfer | 24 → 24 | 24 → **44 (p = 0.001)** |
 
 Neither improves the grasp or the task. Random shift makes the policy far
@@ -603,7 +604,7 @@ Paired against `rgb_cont` (60 matched episodes per scope):
 | held-out success | 0 → 0 | 0 → **7 (p = 0.016)** | 0 → 0 | 0 → 1 |
 | novel success | 15 → 15 | 15 → 9 (p = 0.15) | 15 → 8 (**p = 0.039**) | 15 → 4 (**p = 0.007**) |
 | 2 objects, ≥1 transfer | 38 → 38 | 38 → 28 (p = 0.076) | 38 → 38 | 38 → 30 (p = 0.15) |
-| 4 objects, ≥1 transfer | 28 → 21 (p = 0.28) | 28 → 20 (p = 0.13) | 28 → 25 (p = 0.69) | 28 → 19 (p = 0.14) |
+| 4 objects, ≥1 transfer | 22 → 14 (p = 0.17) | 22 → 18 (p = 0.50) | 22 → 23 (p = 1.0) | 22 → 16 (p = 0.35) |
 
 **The Stage A answers replicate.**
 - **Q1/Q2:** no mechanism improves seen objects over the budget control;
@@ -612,7 +613,7 @@ Paired against `rgb_cont` (60 matched episodes per scope):
   the control never does (7 of 60, 1–4 on every seed), and again beats tokens
   there (7 → 0, p = 0.016). Conditioning from scratch again hurts.
 - **Q3:** no arm beats the control at 2 or 4 objects; four objects stays at
-  0 successes everywhere.
+  0 successes everywhere, at 800 steps.
 - **The stages now look like ControlVLA's.** Per-stage survival on seen objects
   is 0.62–0.76 for the first two transfers and 0.87–0.91 for the third in
   every stage-2 arm (`rgb_cont`: lift 52/60, then 39/52, 23/39, 21/23). The
@@ -921,6 +922,45 @@ branch does not rescue these backbones; it does not rule out a larger one
 paired against a control given the same extra capacity (e.g. a higher LoRA
 rank).
 
+### 4.14 GR00T: object count (2 / 3 / 4)
+
+Stage-2 checkpoints of §4.11 and §4.13, trained on three objects; seen
+identities; 200 steps per object (two objects on the nested layout, four at
+the full 800). 60 episodes per cell, paired against `rgb_cont`:
+
+| arm | 2 objects: success | 3 objects | 4 objects | 4 objects: ≥1 transfer | 4 objects: mean transfers |
+|---|---|---|---|---|---|
+| rgb_cont | 14 | 9 | 0 | 37 | 0.85 [0.75–0.95] |
+| kv | **47 (p < 0.001)** | 31 | **9 (p = 0.004)** | 31 (p = 0.35) | 1.08 [0.95–1.20] |
+| kv_adaln | **37 (p < 0.001)** | 35 | 4 (p = 0.13) | **19 (p = 0.002)** | 0.60 [0.35–0.80] |
+| kv_adaln_sigreg | **33 (p = 0.001)** | 25 | 4 (p = 0.13) | **24 (p = 0.029)** | 0.85 [0.70–0.95] |
+
+**Two objects: conditioning carries over strongly,** unlike ACT: every
+conditioned arm more than doubles the control's success, on every seed
+(`kv` 13–18 of 20, `rgb_cont` 1–7). `kv` is ahead of `kv_adaln` (47 → 37,
+p = 0.052), and SIGReg does not help (37 → 33, p = 0.56).
+
+**Four objects: GR00T completes some scenes, ACT none.** `kv` finishes 9 of
+60 where the control finishes none (p = 0.004), on every seed (1–5 of 20),
+and is the only arm whose mean transfers rise above the control's. The AdaLN
+arms go the other way on first transfers: `kv_adaln` reaches one in 19
+episodes against the control's 37 (p = 0.002), `kv_adaln_sigreg` in 24
+(p = 0.029), and `kv` beats `kv_adaln` there (31 → 19, p = 0.043). This
+is the same split as ACT's four-object result (§4.2). One reading, not
+tested: the pooled scene summary AdaLN adds is fitted on three-object scenes
+and misleads when the scene has four, while the query-dependent KV path does
+not.
+
+**GR00T rollouts are not reproducible scene by scene.** Evaluation never
+seeds torch, and GR00T samples each chunk's initial noise from torch's global
+generator (`groot_n1_7.py`), so every rollout is a fresh draw: re-scoring the
+same checkpoints on the same four-object scenes, 11 successes at 600 steps
+were not repeated at 800, and 73 of 240 scenes lifted fewer objects with
+*more* steps. ACT is deterministic (0 of 1380). Paired comparisons stay valid
+(each arm draws independently on the same scenes); what the noise adds is
+variance, which the seed ranges already carry. pi0.5 and SmolVLA sample the
+same way.
+
 ## 5. What answers each question
 
 Matrix prefixes: `F` absolute EE, `J` absolute joint, `D` joint delta, `X` EE
@@ -964,6 +1004,12 @@ lookup) to 16, and is tested on the bowl → cup category holdout.
 
 ## Update log
 
+- **2026-09-30 (evening).** Four objects re-run at 800 steps for every ACT and
+  GR00T cell. ACT: still 0 of 1380 successes, so the sequence-length reading
+  stands; small shifts in first-transfer contrasts (§4.2–§4.9 updated). GR00T
+  object count (§4.14): two-object success 14 → 47 (`kv`); at four `kv` 0 → 9,
+  AdaLN arms transfer less than the control. Found: GR00T rollouts are
+  unseeded draws, not reproducible scene by scene.
 - **2026-09-30 (later).** Found: the client never sent the step limit, so
   every four-object rollout in the project ran 600 steps (150 per object)
   instead of 800. Fixed and guarded; the collector drops the capped episodes.
