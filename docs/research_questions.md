@@ -18,7 +18,7 @@ stage 1 (RGB, both absolute regimes) is complete; stage 2 is not run.
 | --- | --- | --- | --- |
 | Q1 | Is object conditioning useful? | **Only for held-out objects, and only through AdaLN — on both corpora.** Against the budget control no arm improves seen objects; `kv_adaln` succeeds on held-out sizes where the control never does, on atomic clips (0 → 6 of 60, p = 0.031) and again on full runs (0 → 7, p = 0.016), on every seed (§4.1, §4.9) | **GR00T: yes, strongly, on seen and held-out objects.** Against its budget control, seen success 9 → 31 (`kv`) and 9 → 35 of 60 (`kv_adaln`), held-out 0 → 7 and 0 → 11, every seed (§4.11) |
 | Q2 | Which mechanism: KV, AdaLN, or in-context tokens? | **AdaLN**, on both corpora: the only mechanism that beats the budget control anywhere, and it beats tokens on held-out objects (§4.2, §4.9) | **GR00T: AdaLN ≥ KV**, both far above the control; tokens unsupported on GR00T (§4.11). pi0.5 and SmolVLA stage 2 running |
-| Q3 | Does conditioning help compositional generalisation (train on 3, test on 2 and 4)? | **No**, on both corpora: no arm beats the budget control at 2 or 4 objects. The count gap was largely the training format (§4.3, §4.6) | not yet |
+| Q3 | Does conditioning help compositional generalisation (train on 3, test on 2 and 4)? | **No**, on both corpora: no arm beats the budget control at 2 or 4 objects. The count gap was largely the training format (§4.3, §4.6). The four-object half ran 150 steps per object, not 200 (§3) | GR00T: 2 objects measured, 4 objects re-running at 800 steps |
 | Q4 | Which control regime: absolute joint, joint delta, absolute EE, EE delta? | **Absolute, not delta.** Both delta regimes complete 0 transfers in 180 episodes each. Absolute EE and absolute joint cannot be separated (§4.4) | **GR00T: absolute EE ahead of absolute joint** (0.52 against 0.30 mean transfers); pi0.5 and SmolVLA at zero in both (§4.10) |
 
 Status meanings: **answered** = ≥ 3 seeds, the budget control run, the paired
@@ -42,6 +42,11 @@ The full protocol is `data_protocol.md`, and the method is `method.md`.
   object size never seen".
 - **Rollouts.** Scene seeds 800–819; `n_action_steps=25`.
   - Three objects run for 600 steps; 2 and 4 objects get 200 steps per object.
+    **Until 2026-09-30 four objects got 600 steps, not 800**: the client never
+    sent the step limit and the server's default capped it (fixed in
+    `serve/client.py`; the server now echoes the limit and a mismatch raises).
+    Every four-object number in §4.3–§4.9 is at 150 steps per object; the
+    collector now sets those episodes aside, and GR00T's are re-run at 800.
   - Every reset pins the tier, and the simulator verifies it.
 - **Statistics.**
   - A cell is reported across ≥ 3 training seeds, as the mean with the min–max
@@ -206,7 +211,10 @@ token arm that has to come first.
 ### 4.3 Q3: compositional generalisation (2 / 3 / 4 objects)
 
 Trained on three objects; seen identities; 200 steps per object; the
-two-object scenes on the nested layout (§3, item 4). Mean transfers per
+two-object scenes on the nested layout (§3, item 4). **Caveat:** the
+four-object column ran 600 steps (150 per object), not 800, because of the
+step-limit bug in §3; "four objects fails for everyone" may be partly a
+budget effect and is unconfirmed at 800. Mean transfers per
 episode, mean [min–max] across seeds:
 
 | arm | 2 objects | 3 objects | 4 objects |
@@ -956,6 +964,11 @@ lookup) to 16, and is tested on the bowl → cup category holdout.
 
 ## Update log
 
+- **2026-09-30 (later).** Found: the client never sent the step limit, so
+  every four-object rollout in the project ran 600 steps (150 per object)
+  instead of 800. Fixed and guarded; the collector drops the capped episodes.
+  GR00T four-object re-running at 800. ACT's four-object results carry a
+  caveat until re-run.
 - **2026-09-30.** SIGReg sweep collected: the weight leaves the embedding
   unchanged but the runs diverge elsewhere, so 0.01/0.05/0.2 are three
   replicates. Seen-object cost replicates (all three); held-out gain does not
