@@ -184,6 +184,11 @@ slurm/submit_final_experiments.sh               # PREFIX=F, the eeabs view, all 
 PREFIX=J FINAL_DATASET=three_object_identity_abs ARMS=rgb slurm/submit_final_experiments.sh
 ```
 
+Four-object rollouts before 2026-09-30 ran 600 steps, not 800 (the step limit
+was never sent). `slurm/rerun_four_object.sh` re-scores every ACT count cell
+on four objects at 800 steps as `<cell>-four.json`, from the original report
+and checkpoint; GR00T uses `ROLLOUTS=four` in `submit_vla_experiments.sh`.
+
 - Selection variables: `ARMS`, `SEEDS`, `PREFIX`, `FINAL_DATASET`,
   `SKIP_EVAL=1`, `AFTER_JOB`, `VIDEO_STAGE`.
 - A cell whose `checkpoints/last/pretrained_model` already exists is reused. A
