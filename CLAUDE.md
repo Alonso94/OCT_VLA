@@ -41,7 +41,8 @@ and 0/20 on two further training seeds. Seed variance exceeds every effect this
 project has measured. Run ≥3 seeds; `scripts/collect_final_results.py` prints
 min–max across seeds and flags any single-seed cell as not a result.
 
-**Re-derive every number from `$OCTVLA_OUTPUT_ROOT/{eval,diagnostics}/*.json`.**
+**Re-derive every number from `$OCTVLA_OUTPUT_ROOT/{eval,diagnostics}/*.json`**
+(archived in the repo as `results/octvla_results.tar.xz`; see `results/README.md`).
 Do not quote a previous document. Doing this has caught real arithmetic errors
 in our own reports more than once.
 

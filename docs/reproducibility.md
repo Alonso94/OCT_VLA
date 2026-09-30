@@ -306,6 +306,12 @@ diagnostics/*.json                           collector outputs
 slurm_logs/<cell>-<jobid>.out
 ```
 
+
+**Without the cluster.** Every rollout and diagnostic is archived in
+`results/octvla_results.tar.xz` (see `results/README.md`); the collector and
+`paired_compare.py` reproduce every table from it with the standard library
+alone. Checkpoints and per-episode videos were not kept.
+
 ## 5. Measured costs
 
 These numbers are quoted from the documents named in the last column. None was
