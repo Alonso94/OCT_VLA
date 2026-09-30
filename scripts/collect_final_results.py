@@ -131,7 +131,8 @@ def read(path: Path, prefix: str) -> list[dict]:
     if not requested:
         raise Rejected(f"{path.name}: records no requested variants, so its tier is unproven")
     job = match["job"]
-    tier = "seen" if job == "count" else job
+    # `four`: four objects alone, re-run at the full 200 steps per object.
+    tier = "seen" if job in ("count", "four") else job
     if tier not in TIERS:
         raise Rejected(f"{path.name}: unknown job {job!r}")
     if prefix[-1] not in TIER_IDS:
@@ -164,6 +165,10 @@ def read(path: Path, prefix: str) -> list[dict]:
             "outcomes": [e["outcome"] for e in (episode.get("events") or {}).values()],
             # Written under an arm's current name, not a pre-rename alias.
             "canonical": match["arm"] in ARMS,
+            # Before the step limit was echoed, the server ended every episode
+            # at 600 steps: a four-object episode got 150 per object, not 200.
+            "capped": (episode["profile"] == "four_object"
+                       and not report.get("step_limit_echoed")),
         })
     return rows
 
@@ -183,6 +188,11 @@ def drop_superseded(rows: list[dict]) -> tuple[list[dict], int]:
 
     current = {key(r) for r in rows if r["canonical"]}
     kept = [r for r in rows if r["canonical"] or key(r) not in current]
+    return kept, len(rows) - len(kept)
+
+
+def drop_capped(rows: list[dict]) -> tuple[list[dict], int]:
+    kept = [r for r in rows if not r["capped"]]
     return kept, len(rows) - len(kept)
 
 
@@ -253,6 +263,10 @@ def load(eval_dir: Path, prefix: str) -> tuple[list[dict], list[str]]:
     if superseded:
         rejected.append(f"{superseded} episode(s) under a pre-rename arm name re-run under "
                         "the current one; the re-run is kept")
+    rows, capped = drop_capped(rows)
+    if capped:
+        rejected.append(f"{capped} four-object episode(s) capped at 600 steps (150 per object) "
+                        "by the unechoed step limit; re-run the four job")
     rows, confounded = drop_confounded_layouts(rows)
     if confounded:
         rejected.append(f"{confounded} two-object episode(s) on the independent layout, "

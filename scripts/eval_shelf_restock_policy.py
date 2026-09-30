@@ -536,6 +536,10 @@ def main() -> int:
         "model_ids_requested": list(model_ids) if model_ids else None,
         "evaluation_split": args.evaluation_split,
         "steps_per_object": args.steps_per_object,
+        # The server echoed every episode's step limit and the client checked it
+        # (serve/client.py). Reports without this field capped four-object
+        # episodes at 600 steps whatever steps_per_object said.
+        "step_limit_echoed": True,
         # The arm, from the checkpoint's own config (None for an RGB policy).
         "object_conditioning": conditioning,
         # Same weights, different inference settings, so aggregation must not

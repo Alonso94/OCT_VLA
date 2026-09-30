@@ -259,6 +259,10 @@ $OCTVLA_POLICY_PYTHON -u scripts/merge_stage1_adapter.py --stage1 $stage1 \
               j=$(rollout "$cell-$r" "$ckpt" "${DATASET[$regime]}" three_object "${TIER[$r]}" "$dep" EVAL_MAX_STEPS=600) ;;
             count)
               j=$(rollout "$cell-count" "$ckpt" "${DATASET[$regime]}" two_object,four_object "${TIER[seen]}" "$dep" EVAL_STEPS_PER_OBJECT=200) ;;
+            # Four objects alone: re-runs a count job's four-object half, which
+            # before the step limit was echoed ran 600 steps, not 800.
+            four)
+              j=$(rollout "$cell-four" "$ckpt" "${DATASET[$regime]}" four_object "${TIER[seen]}" "$dep" EVAL_STEPS_PER_OBJECT=200) ;;
             *) echo "Unknown rollout $r" >&2; exit 2 ;;
           esac
           echo "    eval   $r -> $j"; jobs=$((jobs + 1))

@@ -20,7 +20,7 @@ TIER_IDS = {"seen": [1, 2, 3, 4], "heldout": [0, 6], "novel": [5]}
 
 
 def write(tmp_path, name, transfers, *, tier="seen", profile="three_object", pinned=True,
-          layout=None):
+          layout=None, echoed=True):
     ids = TIER_IDS[tier]
     if layout is None:
         layout = collect.COUNT_LAYOUT.get(profile, "independent")
@@ -30,7 +30,8 @@ def write(tmp_path, name, transfers, *, tier="seen", profile="three_object", pin
          **({"model_ids": [ids[0]]} if pinned else {})}
         for i, t in enumerate(transfers)
     ]
-    report = {"episodes": episodes, **({"model_ids_requested": ids} if pinned else {})}
+    report = {"episodes": episodes, **({"model_ids_requested": ids} if pinned else {}),
+              **({"step_limit_echoed": True} if echoed else {})}
     (tmp_path / f"{name}.json").write_text(json.dumps(report))
 
 
@@ -200,3 +201,18 @@ def test_the_control_arms_are_paired_against_their_counterparts(tmp_path, capsys
     # One tier here, so the scope is the pooled three-object one.
     assert {"kv_adaln_shuffled->kv_adaln/three_object", "scene_mean->scene_attn/three_object",
             "scene_attn->kv/three_object", "rgb_cont->scene_mean/three_object"} <= set(table["paired"])
+
+
+def test_four_object_episodes_capped_at_600_steps_are_dropped(tmp_path):
+    for seed in (1000, 1001):
+        write(tmp_path, f"F-rgb-s{seed}-seen", [1, 2])
+        # A pre-fix count job: its two-object half is sound, its four-object half capped.
+        write(tmp_path, f"F-rgb-s{seed}-count", [1, 0], profile="four_object", echoed=False)
+    rows, rejected = collect.load(tmp_path, "F")
+    assert not [r for r in rows if r["profile"] == "four_object"]
+    assert any("capped at 600 steps" in line for line in rejected)
+    for seed in (1000, 1001):
+        write(tmp_path, f"F-rgb-s{seed}-four", [2, 1], profile="four_object")
+    rows, _ = collect.load(tmp_path, "F")
+    four = [r for r in rows if r["profile"] == "four_object"]
+    assert len(four) == 4 and {r["tier"] for r in four} == {"seen"}
