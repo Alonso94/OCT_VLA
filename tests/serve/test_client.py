@@ -184,3 +184,28 @@ def test_codec_round_trips_scene_context_and_eef():
     assert scene_from_json(scene_to_json(_scene())) == _scene()
     assert context_from_json(context_to_json(_context())) == _context()
     assert eef_from_json(eef_to_json(_eef())) == _eef()
+
+
+def test_reset_sends_max_steps_and_checks_the_echo(connected):
+    client, server_sock = connected
+    requests: list[dict] = []
+    reply = {**_observation_header(), "max_steps": 800}
+    thread = threading.Thread(target=lambda: requests.extend(_serve(server_sock, [(reply, _frames())])))
+    thread.start()
+    observation = client.reset(seed=1, profile="four_object", max_steps=800)
+    thread.join()
+    assert requests[0]["max_steps"] == 800
+    assert observation.max_steps == 800
+
+
+@pytest.mark.parametrize("echo", [None, 600])
+def test_reset_refuses_a_step_limit_the_server_did_not_apply(connected, echo):
+    # The failure this guards: a server that ignores the field, or applies its
+    # own default, ends a four-object episode at 600 steps instead of 800.
+    client, server_sock = connected
+    reply = _observation_header() if echo is None else {**_observation_header(), "max_steps": echo}
+    thread = threading.Thread(target=lambda: _serve(server_sock, [(reply, _frames())]))
+    thread.start()
+    with pytest.raises(protocol.ProtocolError, match="800-step"):
+        client.reset(seed=1, profile="four_object", max_steps=800)
+    thread.join()

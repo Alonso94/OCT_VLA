@@ -49,6 +49,9 @@ class RemoteObservation:
     #: for a two-object scene cut from a three-object layout). Reset only; empty
     #: from a server too old to report it.
     layout: str = ""
+    #: The step limit the server will end the episode at. Reset only; 0 from a
+    #: server too old to report it.
+    max_steps: int = 0
 
     def frame(self, name: str) -> RGBFrame:
         try:
@@ -103,6 +106,7 @@ def _observation(message: protocol.Message) -> RemoteObservation:
         supports=supports_from_json(header.get("supports", [])),
         model_ids={str(k): int(v) for k, v in (header.get("model_ids") or {}).items()},
         layout=str(header.get("layout", "")),
+        max_steps=int(header.get("max_steps", 0)),
     )
 
 
@@ -154,8 +158,14 @@ class ShelfRestockEvalClient:
         control_space: str = "cartesian",
         gripper_encoding: str = "measured_aperture",
         model_ids: Sequence[int] | None = None,
+        max_steps: int | None = None,
     ) -> RemoteObservation:
         """Start a fresh scene. Raises if the simulator cannot build that seed.
+
+        `max_steps` is the step limit the server ends the episode at. It was once
+        never sent, so the server's default of 600 silently capped every
+        four-object episode meant to run 800; the server now echoes the limit it
+        applies, and a mismatch raises.
 
         `control_space` tells the server how to read the actions that follow:
         "cartesian" for 14-d canonical increments executed through IK, "joint"
@@ -178,7 +188,14 @@ class ShelfRestockEvalClient:
         }
         if model_ids is not None:
             header["model_ids"] = [int(v) for v in model_ids]
+        if max_steps is not None:
+            header["max_steps"] = int(max_steps)
         observation = _observation(self._round_trip(header))
+        if max_steps is not None and observation.max_steps != int(max_steps):
+            raise protocol.ProtocolError(
+                f"requested a {max_steps}-step episode but the server applies "
+                f"{observation.max_steps or 'an unreported limit'}"
+            )
         if model_ids is not None:
             if not observation.model_ids:
                 raise protocol.ProtocolError(

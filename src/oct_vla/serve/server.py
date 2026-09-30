@@ -413,6 +413,8 @@ class ShelfRestockEvalServer:
         )
         header, blobs, _ = self._snapshot()
         header["model_ids"] = spawned
+        # Echoed so the client can prove the limit it asked for is the one applied.
+        header["max_steps"] = int(max_steps)
         # How the scene's x positions were drawn. The two-object profile's
         # layout changed so its first target matches three-object training
         # (robotwin_env.py); the evaluator records this so a result on the old

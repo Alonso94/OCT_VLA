@@ -150,7 +150,8 @@ def run_episode(
     entity_max_entities=None, model_ids=None, entity_noise=None, entity_visual=None,
 ) -> dict:
     observation = client.reset(seed, profile, control_space=control_space,
-                               gripper_encoding=gripper_encoding, model_ids=model_ids)
+                               gripper_encoding=gripper_encoding, model_ids=model_ids,
+                               max_steps=max_steps)
     policy.reset()
     # Seeded by the scene, so every checkpoint scored at this noise level on this
     # scene starts from the same noise stream.

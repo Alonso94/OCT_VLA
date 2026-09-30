@@ -82,6 +82,7 @@ def test_the_pin_is_visible_to_the_scene_build_and_only_to_it(monkeypatch):
     header, _ = server_on(port).reset(800, "three_object", 600, model_ids=(0, 6))
     assert port.seen_pins == ["0,6"]
     assert set(header["model_ids"].values()) <= {0, 6}
+    assert header["max_steps"] == 600, "the reset header must echo the step limit applied"
     assert MODEL_IDS_ENV not in os.environ, "the pin must not leak into the next reset"
 
 
