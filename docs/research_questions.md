@@ -769,20 +769,44 @@ during training, 34 → 8.3 on every seed, so the embeddings move toward the
 isotropic target without reaching it (an earlier version of this note had
 the direction backwards).
 
-**The weight does not matter within 0.01–0.2, and cannot, with this
-optimiser.** Trained at 0.01 and 0.2 from the same stage-1 seeds, the SIGReg
-term follows the 0.05 trajectory to three digits (34.2 → 27.6 → 20.9 → … →
-8.3) while the total loss scales with the weight, so the weight is applied.
-The trained embeddings of the three weights are 1–2 % apart (relative
-parameter distance, seed 1000), against 22 % between any of them and
-`kv_adaln`'s. SIGReg depends on the embedding parameters alone, and their
-task gradient is small (the branches they feed start at zero), so almost
-their whole gradient is SIGReg's: Adam normalises its scale away. The
-experiment is therefore SIGReg on against off; the sweep's rollouts measure
-near-copies of the 0.05 policy, a check on evaluation noise rather than on
-the weight. Making strength a real knob would need the task gradient to
-compete (a separate learning rate for the embedding, or SIGReg on a shared
-layer), which was not done.
+**The weight is inert on the embedding, so the sweep is a replication.**
+Trained at 0.01 and 0.2 from the same stage-1 seeds, the SIGReg term follows
+the 0.05 trajectory to three digits (34.2 → 27.6 → 20.9 → … → 8.3) while the
+total loss scales with the weight, so the weight is applied. The trained
+embeddings of the three weights are 1–2 % apart (relative parameter distance,
+seed 1000), against 22 % between any of them and `kv_adaln`'s. SIGReg depends
+on the embedding parameters alone, and their task gradient is small (the
+branches they feed start at zero), so almost their whole gradient is
+SIGReg's, and Adam normalises its scale away. The rest of the head does not
+follow: each run's stage-2 update differs from the 0.05 run's by 1.13–1.16
+times its own norm (`kv_adaln`'s: 1.24), so the runs diverge as independent
+trainings would. The three weights are therefore **three replicates of
+SIGReg-on**, nine runs in all:
+
+| paired vs `kv_adaln` (60 each) | 0.01 | 0.05 | 0.2 | pooled SIGReg (180) | `kv_adaln` (60) |
+|---|---|---|---|---|---|
+| seen success | 20 (p = 0.014) | 25 (p = 0.11) | 26 (p = 0.11) | 71 (39 %) | 35 (58 %) |
+| seen ≥1 transfer | 33 (p = 0.002) | 38 (p = 0.052) | 41 (p = 0.096) | 112 (62 %) | 49 (82 %) |
+| held-out success | 15 (p = 0.42) | 18 (p = 0.12) | 10 (p = 1.0) | 43 (24 %) | 11 (18 %) |
+| held-out ≥1 transfer | 24 (p = 0.82) | 36 (p = 0.003) | 32 (p = 0.076) | 92 (51 %) | 22 (37 %) |
+
+**The seen-object cost replicates; the held-out gain mostly does not.** All
+three replicates lose seen success and first transfers against `kv_adaln`. On
+held-out sizes, the first-transfer gain is significant only in the first run
+(0.05), smaller at 0.2, and absent at 0.01. Held-out success rises in two of
+three and falls in the third. The pooled held-out gain (37 % → 51 % first
+transfers, 18 % → 24 % success) is smaller than the first estimate. That one
+comparison (22 → 36, p = 0.003) was the high draw of three. Against
+`rgb_cont` every replicate still improves held-out success (0 → 15, 18 and
+10 of 60, each p ≤ 0.002), as `kv_adaln` does (0 → 11).
+So SIGReg on the object embeddings is not a better arm than `kv_adaln`. It
+trades a reliable seen-object loss for an uncertain held-out gain.
+
+The replicates also calibrate how much a same-recipe retraining moves a
+result: 0.01 against 0.05 differs on held-out first transfers at p = 0.008
+between runs whose object embeddings match to 1–2 %. That is
+the "single run is not a result" rule measured directly. It applies to
+every single-comparison p in this document.
 
 **Data fractions (GR00T, fixed 8 k steps per stage).** 19, 38 and 75 training
 runs; stage 2 paired against each fraction's own `rgb_cont`:
@@ -932,6 +956,11 @@ lookup) to 16, and is tested on the bowl → cup category holdout.
 
 ## Update log
 
+- **2026-09-30.** SIGReg sweep collected: the weight leaves the embedding
+  unchanged but the runs diverge elsewhere, so 0.01/0.05/0.2 are three
+  replicates. Seen-object cost replicates (all three); held-out gain does not
+  (significant only in the first). SIGReg is not preferred over `kv_adaln`.
+  Supersedes the "near-copies / evaluation-noise check" reading of 2026-09-29.
 - **2026-09-29 (later).** pi0.5 at 3 seeds: no arm beats `rgb_cont` on success;
   `kv` seen first transfers 9 → 21 (p = 0.023) is a lead. SIGReg weight 0.01
   and 0.2 train to the 0.05 embedding within 1–2 % (Adam removes the scale of
