@@ -1,0 +1,10 @@
+\contentsline {todo}{\fcolorbox {black}{orange}{\textcolor {orange}{o}}\ co-authors, affiliations, funding}{1}{section*.3}%
+\contentsline {todo}{\fcolorbox {black}{orange}{\textcolor {orange}{o}}\ Rewrite once RQ2/RQ3 are in. Keep under 250 words.}{1}{section*.4}%
+\contentsline {todo}{\fcolorbox {black}{orange}{\textcolor {orange}{o}}\ Paragraph plan: (1) problem: a VLA fine-tuned from RGB must recover object identity and relative geometry from pixels, from few demonstrations; (2) gap: ControlVLA injects objects as a flat set, and nobody has checked, against a budget-matched control and across backbones, whether that helps, which injection carries the gain, or whether relational composition helps further; (3) findings so far; (4) the proposal: a relational encoder and a semantic channel; (5) the evaluation protocol.}{1}{section*.6}%
+\contentsline {todo}{\fcolorbox {black}{orange}{\textcolor {orange}{o}}\ Teaser caption.}{2}{section*.8}%
+\contentsline {todo}{\fcolorbox {black}{orange}{\textcolor {orange}{o}}\ Demos per task; oracle success rate (ceiling) per task.}{2}{section*.9}%
+\contentsline {todo}{\fcolorbox {black}{orange}{\textcolor {orange}{o}}\ Open: why GR00T but not $\pi _{0.5}$/SmolVLA? GR00T's branch is \textasciitilde 150M parameters against \textasciitilde 1M for the matched LoRA branch, so the ratio is the same but the absolute size is not. Decide whether to test a larger branch with a capacity-matched control, or to report the backbone dependence as a finding.}{3}{section*.10}%
+\contentsline {todo}{\fcolorbox {black}{orange}{\textcolor {orange}{o}}\ Fig.: success vs.\ object count (2/3/4), one line per arm, seed range as error bars.}{4}{section*.11}%
+\contentsline {todo}{\fcolorbox {black}{orange}{\textcolor {orange}{o}}\ RA-L reviewers will likely ask for a real-robot result. The 2--5\,mm robustness makes a fiducial-tracked real-robot cell plausible; decide whether to scope one in.}{4}{section*.12}%
+\contentsline {todo}{\fcolorbox {black}{orange}{\textcolor {orange}{o}}\ After RQ2/RQ3.}{4}{section*.13}%
+\contentsline {todo}{\fcolorbox {black}{orange}{\textcolor {orange}{o}}\ LPWM: authors and title}{5}{section*.16}%
