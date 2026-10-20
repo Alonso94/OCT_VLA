@@ -1,0 +1,149 @@
+\documentclass[letterpaper,10pt,conference]{ieeeconf}
+\overrideIEEEmargins % RA-L initial/revised submission; IEEEtran journal only for the final version
+
+\usepackage[T1]{fontenc}
+\usepackage{lmodern,microtype}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,tabularx,cite}
+
+\newcommand{\ekv}{Entity-KV}
+\newcommand{\fkv}{Flatten-MLP-KV}
+\newcommand{\rkv}{Relational-KV}
+
+\title{BiCo-VLA: Relational Composition for Bimanual VLA Control}
+\author{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Bimanual manipulation requires a policy to relate objects and goals to two interacting robot arms. We examine when explicit entity information helps a pretrained vision-language-action (VLA) policy and whether a learned composition of object-object, gripper-object, and inter-gripper relations improves coordinated control. BiCo-VLA injects a typed entity set through zero-initialized key-value (KV) attention and introduces a lightweight relational compositional head. Completed dual-Franka shelf-restocking results establish the motivation; four RoboTwin tasks, held-out object-goal-arm combinations, and physical TIAGo trials are proposed to test the bimanual hypothesis. Relational and real-robot gains are not yet established.
+\end{abstract}
+
+\section{Introduction}
+\label{sec:intro}
+
+Object-centric representations can improve compositional \emph{visual} reasoning when training data, combination diversity, or downstream compute is limited~\cite{kapl2026}. Closed-loop manipulation poses a different test: actions must respect the relations between objects, targets, and two moving grippers. In bimanual tasks, the useful relation may change during a grasp, handover, or concurrent placement. We ask whether \emph{learning how these relations compose} helps a VLA beyond providing an unordered set of entity states.
+
+Our dual-Franka shelf-restocking results provide initial evidence that supplying the correct object states to GR00T N1.7 improves success relative to budget-matched RGB continuation (Table~\ref{tab:existing}). Object-conditioned adaptation and relational VLA models exist~\cite{li2025controlvla,zhou2026trirel}; we contribute a controlled characterization of explicit relational composition for bimanual VLA control, carrying the protocol of~\cite{kapl2026} into closed-loop manipulation.
+
+\textbf{Research questions.}
+\emph{RQ1:} When does explicit entity-state conditioning benefit VLA control?
+\emph{RQ2:} Does a learned composition of object and inter-arm relations improve bimanual coordination beyond independent entity tokens and a flattened MLP?
+\emph{RQ3:} Does this help on unseen object-goal-arm-role combinations, and new object counts?
+
+\section{Related Work}
+\label{sec:related}
+
+Kapl \emph{et al.}~\cite{kapl2026} motivate testing held-out combinations and controlling data diversity, sample size, and compute; their setting is VQA, not control. ControlVLA~\cite{li2025controlvla} introduces the zero-initialized added-attention operator we adopt, and TriRelVLA~\cite{zhou2026trirel} learns task-grounded relational representations; we instead test direct inter-arm relations under matched controls. RoboTwin~2.0~\cite{chen2026robotwin} supplies bimanual experts.
+
+\section{Method}
+\label{sec:method}
+
+\textbf{Entity interface.}
+At time $t$, the policy observes RGB images, proprioception, an instruction $g$, and a masked entity set $X_t=\{x_i\}$ containing objects, supports, and both grippers. Existing 17-dimensional tokens contain position, 6D orientation, size, gripper aperture, and type; color is added where tasks require it. Simulation uses ground-truth poses; physical trials use ArUco estimates. Neither the selected target nor the executing arm is supplied as a privileged label.
+
+\textbf{Controlled composition.}
+All variants use the \emph{same} entity attributes; per-entity tokens $H$ enter every host attention layer through an added attention term~\cite{li2025controlvla}, and only $H$ differs:
+
+\begin{align}
+\text{KV:}\;
+&o=W_o\big[\sigma(QK^{\top}\!/\!\sqrt{d})V\notag\\[-2pt]
+&\qquad{}+\sigma(QK_H^{\top}\!/\!\sqrt{d})V_H\big],\notag\\[-2pt]
+\text{\ekv:}\;
+&H=E,\notag\\[-2pt]
+\text{\fkv:}\;
+&H=\operatorname{reshape}
+\big(F(\operatorname{vec}(E),M)\big),\notag\\[-2pt]
+\text{\rkv:}\;
+&h_i=e_i+\gamma\!\sum_{j\neq i}
+\alpha_{ij}\phi(e_i,e_j,r_{ij},g),
+\label{eq:rel}
+\end{align}
+
+where $Q,K,V,W_o$ are the host's, $K_H=W_kH$, $V_H=W_vH$, $E=[e_i]$ with $e_i=f(x_i)$, $M$ is the validity mask, $\alpha_{ij}=\operatorname{softmax}_j s(e_i,e_j,r_{ij},g)$ over valid $j$, $r_{ij}$ includes relative pose and entity-pair type, and $g$ is the host's instruction embedding. $W_k$, $W_v$, and $\gamma$ start at zero, so every variant starts as the RGB policy and \rkv\ as \ekv. \ekv\ keeps separate, order-independent tokens; KV+AdaLN also pools $E$ into a scene vector modulating every block. \fkv\ feeds fixed slots to an MLP, without permutation equivariance. \rkv\ uses shared masked relation attention, one output per entity.
+
+\textbf{Bimanual hypothesis and controls.}
+Every variant observes both grippers; we test whether \emph{explicit} inter-arm composition is a useful inductive bias, expecting larger gains in tightly coupled tasks (handovers, release timing) than in independent or sequential ones. Compare \rkv\ with \ekv, \fkv, a matched nonrelational MLP, fixed relative geometry, and a goal-free \rkv. Nested ablations (object-object; +gripper-object; +direct gripper-gripper) test where the gain originates. All variants receive the same current-step proprioception, so deleting direct edges tests direct message paths, not access to inter-arm information.
+
+\section{Experimental Setup}
+\label{sec:setup}
+
+\textbf{Training and fairness.}
+GR00T N1.7 is the main VLA; ACT~\cite{zhao2023act} is the from-scratch reference. Start from the same RGB-trained policy and compare against matched RGB continuation, with identical expert episodes, added optimization budget, and comparable adapter capacity. Use three training seeds and scene-paired evaluation; report expert feasibility. RGB versus \ekv\ tests \emph{additional state}; \ekv\ versus \rkv\ tests \emph{composition} with the same state.
+
+\begin{table}[!t]
+\caption{Planned tasks and their distinct diagnostic roles.}
+\label{tab:tasks}
+\centering\footnotesize
+\begin{tabularx}{\columnwidth}{@{}p{0.35\columnwidth}X@{}}
+\toprule
+\textbf{Environment} & \textbf{Bimanual or generalization test}\\
+\midrule
+Cans Plasticbox &
+Parallel two-arm grasp; shared placement target and arm interference.\\
+Bread Basket &
+Same-side sequential versus opposite-side parallel handling.\\
+Handover Mic &
+Left/right giver--receiver roles; transfer and release timing.\\
+Blocks Ranking RGB &
+Color-dependent ordering and arm choice; semantic comparison with weaker coupling.\\
+Custom shelf restocking &
+Known objects/goals/skills in unseen combinations; separate 2/3/4-object test.\\
+Physical TIAGo &
+Coordinated manipulation with measured marker-based object poses.\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\textbf{RoboTwin, dual Franka.}
+Generate RGB/action/entity demonstrations with RoboTwin experts, retaining only verified successes. Pilot on the already-bound Place Container Plate task. New task bindings and closed-loop evaluation remain to implement.
+
+\textbf{Compositional split.}
+The existing shelf task tests held-out sizes and 2/3/4 objects. A \emph{new goal-parameterized} variant will withhold feasible combinations of object attribute, destination, and arm role while exposing each component and required manipulation skill in training. As in~\cite{kapl2026}, vary training-combination diversity with the \emph{same} held-out test scenes, demonstration count, and update budget. Verify reachability and expert success for every withheld assignment. RoboTwin tasks provide coordination breadth, not this split.
+
+\textbf{TIAGo.}
+Hardware and control exist from another project; the shelf task, demonstrations, ArUco perception, and VLA interface will be adapted. Evaluate robot-trained RGB, \ekv, and (if successful in simulation) \rkv\ policies on matched starts.
+
+\section{Results}
+\label{sec:results}
+
+\subsection{RQ1: Existing Object-Conditioning Evidence}
+
+\begin{table}[!t]
+\caption{\textbf{Completed} GR00T N1.7 shelf-restocking task successes, 3 training seeds $\times$ 20 scenes/condition, 200 steps per object. RGB is the matched continuation control.}
+\label{tab:existing}
+\centering\footnotesize
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+\textbf{Evaluation} & \textbf{RGB} & \textbf{Entity--KV} & \textbf{KV+AdaLN}\\
+\midrule
+3 objects, seen sizes & 9/60 & 31/60 & 35/60\\
+3 objects, held-out sizes & 0/60 & 7/60 & 11/60\\
+2 objects (train: 3) & 14/60 & 47/60 & 37/60\\
+4 objects (train: 3) & 0/60 & 9/60 & 4/60\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Training KV+AdaLN on shuffled entities drops it to the control's level (8/60 versus 35/60), supporting correct scene information over adapter capacity alone. ACT gains only on held-out sizes, and only with AdaLN. Four-object transfer remains limited; no reusable task rule is established.
+
+\subsection{RQ2: Does Inter-Arm Composition Improve Control?}
+
+\textbf{Planned evidence:}
+Full-task success for RGB, \ekv, \fkv, and \rkv\ on all four RoboTwin tasks; capacity-matched and relation-family ablations on Cans Plasticbox and Handover Mic. Separately measure each arm's grasp success, handovers by transfer direction, premature releases, object drops, and unintended inter-arm interference. Report Bread Basket same-side and opposite-side separately, and Blocks Ranking RGB color-order and arm-choice errors. Evaluate \fkv\ under entity-slot permutations as well as canonical ordering.
+
+\subsection{RQ3: Does Composition Transfer?}
+
+\textbf{Planned evidence:}
+Unseen object-goal-arm-role success versus training-combination diversity under fixed data and compute, for \rkv\ with and without $g$; report count and size extrapolation separately. Test robustness to noisy or missing entity observations and evaluate on TIAGo with matched trials. Report failure types and inference latency.
+
+\section{Discussion and Conclusion}
+\label{sec:discussion}
+
+We distinguish gains from explicit state, relational composition, and recombination of task factors. Oracle simulation poses, marker occlusions, and embodiment adaptation limit transfer claims. The completed results motivate, but do not yet establish, improved relational coordination or compositional rule learning.
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}

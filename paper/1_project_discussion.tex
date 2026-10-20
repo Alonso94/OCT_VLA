@@ -1,0 +1,97 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=0.72in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,tabularx,array}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+\definecolor{ink}{HTML}{17324B}
+\definecolor{muted}{HTML}{566574}
+\hypersetup{colorlinks=true,linkcolor=ink,urlcolor=ink,citecolor=ink}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{3.2pt}
+\setlist[enumerate]{leftmargin=1.7em,topsep=2pt,itemsep=2pt,parsep=0pt}
+\setlist[itemize]{leftmargin=1.5em,topsep=1pt,itemsep=1pt,parsep=0pt}
+\renewcommand{\arraystretch}{1.12}
+\pagestyle{empty}
+\newcommand{\sect}[1]{\vspace{5pt}{\noindent\large\bfseries\color{ink}#1}\par\vspace{-2pt}}
+\newcommand{\status}[1]{{\color{muted}\textit{#1}}}
+\begin{document}
+\begin{center}
+{\LARGE\bfseries\color{ink} BiCo-VLA}\\[3pt]
+{\large\bfseries From Object-Centric Representations to Compositional Bimanual Control}\\[5pt]
+{\small Research skeleton for discussion with the supervisor \;|\; Target: IEEE RA-L \;|\; October 2026}
+\end{center}
+\vspace{-5pt}
+
+\sect{Motivation and research hypothesis}
+Kapl et al.~\cite{kapl2026} show that object-centric representations help compositional visual reasoning, especially with limited data, combination diversity, or compute. \textbf{We ask whether this extends to closed-loop bimanual manipulation}, where object--goal, arm--object, and arm--arm relations govern action. ControlVLA~\cite{li2025controlvla} and TriRelVLA~\cite{zhou2026trirel} motivate object-conditioned and relational policies; our question is \emph{when explicit inter-arm composition adds value under controlled conditions}.
+
+\sect{What is already done (OCT-VLA)}
+\textbf{Implemented:} dual-Franka shelf-restocking simulation, scripted demonstrations, object-state extraction, and entity-set conditioning (KV, KV+AdaLN) for ACT and GR00T. \textbf{Measured:} on GR00T N1.7 (three seeds; 60 trials each), budget-matched RGB continuation achieves \textbf{9/60} seen successes versus \textbf{31/60} with object KV and \textbf{35/60} with KV+AdaLN. Held-out sizes: \textbf{0/60}, \textbf{7/60}, and \textbf{11/60}. Trained on three objects, KV succeeds in \textbf{9/60} four-object trials versus RGB's \textbf{0/60}. Shuffled-entity training falls to RGB's level (8/60). \textbf{Limits:} poses are simulator ground truth; ACT gains only on held-out sizes. \emph{No relational, RoboTwin, or TIAGo results yet.}
+
+\sect{Research questions}
+\begin{enumerate}[label=\textbf{RQ\arabic*.}]
+\item \textbf{When does explicit object information help VLA control?} Compare RGB-only continuation with object-conditioned policies under matched optimization budgets; vary task difficulty, demonstration diversity, and held-out combinations following Kapl et al. \cite{kapl2026}.
+\item \textbf{Does learned composition of object--object, gripper--object, and gripper--gripper relations improve bimanual coordination?} Separate added information, model capacity, explicit relative geometry, and learned inter-arm reasoning through controlled ablations.
+\item \textbf{Do these representations support compositional transfer?} Test unseen combinations of familiar objects, destination goals, and arm roles, distinct from changes in object count; finally test whether gains persist with real perception and control.
+\end{enumerate}
+
+\sect{Proposed approach: relational composition over an entity table}
+Represent each scene as an \emph{entity-by-attribute table}: movable objects, two grippers, and supports, with poses, sizes, type, and observable semantic attributes. Encode each row as $e_i$ and compute task-conditioned relational messages with relative geometry $r_{ij}$ and the VLA's instruction embedding $g$:
+\vspace{-3pt}
+\[
+ h_i = e_i+\gamma\sum_{j\neq i}\alpha_{ij}\,\phi_\theta(e_i,e_j,r_{ij},g),
+ \qquad \alpha_{ij}=\operatorname{softmax}_j s_\theta(e_i,e_j,r_{ij},g).
+\]
+\vspace{-2pt}
+The resulting \emph{per-entity} tokens condition GR00T through ControlVLA's zero-initialized KV operator~\cite{li2025controlvla}; zero-initialized KV and $\gamma$ start it as the RGB policy. Start with a small composer, no world model: SIGReg on entity embeddings traded seen-object success for uncertain held-out gains.
+
+\textbf{Key control:} compare flat KV, parameter-matched nonrelational KV, fixed-relative-feature KV, and learned relational KV with and without $g$ on identical entities; ablate object-related, gripper--object, and direct gripper--gripper message paths. This tests composition, not access to poses.
+
+\sect{Experimental environments and why we chose them}
+\textbf{E1. In-house dual-Franka shelf restocking --- controlled rule recombination.}
+Reuse the established task for size and 2/3/4-object transfer; develop a \emph{separate goal-parameterized variant} with feasible object--destination--arm-role assignments. Hold out selected \emph{combinations} while exposing every constituent attribute, destination, and required manipulation skill in training. Change training-combination diversity at fixed demonstration and update budgets and retain identical held-out tests. \textbf{Why:} this is the principal test of Kapl-style compositional generalization, not merely scene or object-count transfer.
+
+\textbf{E2. RoboTwin 2.0, dual Franka --- diverse manipulation and inter-arm mechanisms.}
+Use RoboTwin's scripted experts to \emph{generate} successful demonstrations with synchronized RGB, actions, and simulator object states \cite{chen2026robotwin}. Four tasks cover complementary demands:
+\vspace{1pt}
+\begin{center}
+\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{0.34\linewidth}X@{}}
+\toprule
+\textbf{Task} & \textbf{Why it is included / what it tests}\\
+\midrule
+\texttt{place\_cans\_plasticbox} & Two simultaneous grasps and placement into a shared target; explicit coordination and arm--object relations.\\
+\texttt{place\_bread\_basket} & Switches between parallel and sequential two-arm strategies according to layout; tests coordination-mode selection.\\
+\texttt{handover\_mic} & An object passes from one gripper to the other; tests inter-arm timing and transfer.\\
+\texttt{blocks\_ranking\_rgb} & Color-dependent ordering and arm selection, with less simultaneous coupling; contrasts semantic relations with coordination demands.\\
+\bottomrule
+\end{tabularx}
+\end{center}
+\vspace{-4pt}
+\status{Pilot first with \texttt{place\_container\_plate}, whose OCT-VLA object binding already exists. New task bindings, color features, a general closed-loop evaluator, and expert-success filtering are still required.}
+
+\textbf{E3. Physical dual-arm TIAGo --- real-world validation.}
+The robot and control stack are operational in another project, but \emph{this} shelf-restocking configuration, its demonstrations, perception, and policy interface must be developed. Adapt the controller, construct the new shelf task, and obtain object poses with ArUco-based tracking. Compare independently adapted TIAGo RGB, flat-KV, and (if supported by simulation) relational-KV policies on matched physical trials. \textbf{Why:} assess whether the improvement survives estimation errors, occlusion, and actual coordinated manipulation; do \emph{not} claim zero-shot Franka-to-TIAGo transfer.
+
+\sect{Decisive experiments and intended contributions}
+\textbf{Main evidence:} full-task success by task and held-out split, together with handover success, both-arm grasp completion, unintended interference, and stage failures. Evaluate three training seeds where practical; pair evaluation scenes, equalize update budgets, and measure inference/representation cost. Use \emph{correct versus perturbed inter-arm relations} and \emph{full versus arm-edge-masked} models to isolate why a policy improves. Note that RGB versus explicit-state KV tests the benefit of \emph{additional information}, whereas flat KV versus relational KV tests \emph{how the same information is composed}.
+
+\textbf{Expected contribution, conditional on results:} (i) a controlled closed-loop bimanual test of the object-centric compositionality hypothesis~\cite{kapl2026}; (ii) test whether a lightweight learned relational composer improves inter-arm coordination beyond flat object tokens; and (iii) establish whether any such advantage transfers to unseen object--goal--arm combinations and physical TIAGo manipulation. \textbf{Immediate milestone:} a complete expert-to-policy-to-evaluation run on one RoboTwin task, followed by the matched relational ablation and the held-out composition split.
+
+\vspace{1pt}
+{\footnotesize
+\begin{thebibliography}{9}
+\setlength{\itemsep}{0pt}
+\setlength{\parsep}{0pt}
+\bibitem{kapl2026} F.~Kapl \emph{et al.}, ``\href{https://proceedings.mlr.press/v306/kapl26b.html}{Are Object-Centric Representations Better at Compositional Generalization?}'' \emph{ICML}, PMLR 306, 2026. \emph{Central experimental inspiration.}
+\bibitem{li2025controlvla} P.~Li \emph{et al.}, ``\href{https://proceedings.mlr.press/v305/li25c.html}{ControlVLA: Few-shot Object-centric Adaptation for Pre-trained Vision-Language-Action Models},'' \emph{CoRL}, PMLR 305, pp.~1898--1913, 2025.
+\bibitem{zhou2026trirel} H.~Zhou, C.~Ma, and G.~H.~Lee, ``\href{https://arxiv.org/abs/2605.05714}{TriRelVLA: Triadic Relational Structure for Generalizable Embodied Manipulation},'' arXiv:2605.05714, 2026.
+\bibitem{chen2026robotwin} T.~Chen \emph{et al.}, ``\href{https://proceedings.mlr.press/v306/chen26j.html}{RoboTwin 2.0: A Scalable Data Generator and Benchmark with Strong Domain Randomization for Robust Bimanual Robotic Manipulation},'' \emph{ICML}, PMLR 306, 2026.
+\end{thebibliography}
+}
+\end{document}
