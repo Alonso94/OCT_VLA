@@ -53,6 +53,17 @@ REQUIRED_BRANCHES = {
 }
 
 
+def required_branches(config) -> tuple[str, ...]:
+    """The arm's branches, plus the future-keyframe branch when the config has one.
+
+    `future` is orthogonal to the arm (object_conditioning.py), so it is added
+    here rather than per arm. Left out, a future run whose keyframe branch got
+    no gradient would pass this check as a plain kv run.
+    """
+    required = REQUIRED_BRANCHES.get(getattr(config, "object_conditioning", "rgb"), ())
+    return (*required, "future") if getattr(config, "object_future", False) else required
+
+
 def relative(a, b) -> float:
     return float((a.float() - b.float()).abs().max() / b.float().abs().max().clamp_min(1e-6))
 
@@ -144,7 +155,7 @@ def main() -> int:
         grads = {}
         if arm != "rgb":
             control = unwrap_object_conditioning(inner.object_conditioning)
-            for name in ("layers", "adaln", "incontext"):
+            for name in ("layers", "adaln", "incontext", "future"):
                 module = getattr(control, name, None)
                 if module is None:
                     continue
@@ -161,7 +172,7 @@ def main() -> int:
                             f"{report['chunk_relative_change']:.3e} > {tolerance}")
         # The branches each arm must have, by state-dict name (object_conditioning.py).
         # The scene_* controls have no KV, so their `layers` ModuleDict is empty.
-        required = REQUIRED_BRANCHES.get(arm, ())
+        required = required_branches(inner.config) if arm != "rgb" else ()
         for name in required:
             if name not in grads or not any(True for _ in getattr(control, name).parameters()):
                 failures.append(f"{name}: the {arm} arm has no {name} branch")
