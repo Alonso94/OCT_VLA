@@ -82,7 +82,16 @@ case "$CORPUS" in
     declare -A DATASET=([F]=three_object_v4l_eeabs)
     declare -A TAG=([F]=v4l_eeabs)
     LETTER=([pi05]=P4 [smolvla]=S4 [groot]=G4) ;;
-  *) echo "CORPUS must be paired_full, paired_full_r19, paired_full_r38, paired_full_vis, identity or v4_leftmost" >&2; exit 2 ;;
+  v4_leftmost_fk)
+    # v4_leftmost plus the oracle next-interaction keyframe
+    # (scripts/add_future_keyframe.py). The view switches the future branch on
+    # (entity_training_args.py) and evaluation requests the server's oracle.
+    # Stage 1 is RGB, so the arms continue v4_leftmost's stage-1 checkpoints.
+    declare -A DATASET=([F]=three_object_v4l_eeabs_fk)
+    declare -A TAG=([F]=v4lfk_eeabs)
+    declare -A STAGE1_TAG=([F]=v4l_eeabs)
+    LETTER=([pi05]=P5 [smolvla]=S5 [groot]=G5) ;;
+  *) echo "CORPUS must be paired_full, paired_full_r19, paired_full_r38, paired_full_vis, identity, v4_leftmost or v4_leftmost_fk" >&2; exit 2 ;;
 esac
 for regime in "${!DATASET[@]}"; do
   [ -d "$OCTVLA_DATASET_ROOT/${DATASET[$regime]}" ] || { echo "no dataset ${DATASET[$regime]}" >&2; exit 2; }

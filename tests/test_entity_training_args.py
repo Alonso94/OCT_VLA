@@ -53,3 +53,27 @@ def test_training_uses_exported_statistics(tmp_path):
 def test_malformed_or_unfitted_export_is_rejected(tmp_path, changes):
     with pytest.raises(ValueError):
         _module.entity_training_args(_dataset(tmp_path, **changes))
+
+
+def test_a_keyframe_view_switches_the_future_branch_on(tmp_path):
+    dataset = _dataset(tmp_path)
+    info = json.loads((dataset / "meta/info.json").read_text())
+    info["features"]["observation.future_keyframe"] = {"shape": [3, 24]}
+    info["features"]["observation.future_keyframe_mask"] = {"shape": [3]}
+    (dataset / "meta/info.json").write_text(json.dumps(info))
+    args = _module.entity_training_args(dataset)
+    assert "--policy.object_future=true" in args and "--policy.object_future_rows=3" in args
+
+
+def test_a_keyframe_view_with_the_wrong_width_is_refused(tmp_path):
+    dataset = _dataset(tmp_path)
+    info = json.loads((dataset / "meta/info.json").read_text())
+    info["features"]["observation.future_keyframe"] = {"shape": [3, 17]}
+    info["features"]["observation.future_keyframe_mask"] = {"shape": [3]}
+    (dataset / "meta/info.json").write_text(json.dumps(info))
+    with pytest.raises(ValueError, match="future_keyframe"):
+        _module.entity_training_args(dataset)
+
+
+def test_views_without_a_keyframe_leave_the_branch_off(tmp_path):
+    assert not any("object_future" in a for a in _module.entity_training_args(_dataset(tmp_path)))

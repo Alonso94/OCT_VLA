@@ -50,6 +50,19 @@ def entity_training_args(dataset: Path) -> list[str]:
         if len(shape) != 2 or shape[0] != capacity:
             raise ValueError(f"observation.entity_visual is {shape}; expected [{capacity}, D]")
         args.append(f"--policy.object_visual_dim={shape[1]}")
+    # A view with the next-interaction keyframe (scripts/add_future_keyframe.py):
+    # the dataset carries the branch's input, so it switches the branch on --
+    # a kv run on this view without it would ignore the very column it exists for.
+    future = info.get("features", {}).get("observation.future_keyframe")
+    if future is not None:
+        from oct_vla.data.future_keyframes import FUTURE_DIM
+
+        shape = list(future.get("shape", []))
+        mask = list(info["features"].get("observation.future_keyframe_mask", {}).get("shape", []))
+        if len(shape) != 2 or shape[1] != FUTURE_DIM or mask != shape[:1]:
+            raise ValueError(f"observation.future_keyframe is {shape} with mask {mask}; "
+                             f"expected [rows, {FUTURE_DIM}] and [rows]")
+        args += ["--policy.object_future=true", f"--policy.object_future_rows={shape[0]}"]
     return args
 
 
