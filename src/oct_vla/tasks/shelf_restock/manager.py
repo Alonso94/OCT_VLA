@@ -41,6 +41,33 @@ def _select_leftmost(remaining: tuple[str, ...], scene: ObjectScene) -> str:
     return min(remaining, key=lambda track_id: (by_position[track_id], track_id))
 
 
+def _select_rightmost(remaining: tuple[str, ...], scene: ObjectScene) -> str:
+    """The remaining object with the largest workcell x (ties: lowest track id)."""
+    by_position = {o.track_id: o.pose.position[0] for o in scene.objects}
+    return min(remaining, key=lambda track_id: (-by_position[track_id], track_id))
+
+
+def _select_middle(remaining: tuple[str, ...], scene: ObjectScene) -> str:
+    """The median-x remaining object when an odd number remain, else the leftmost.
+
+    From three objects this is middle, then left, then right: the synthetic
+    prior's `middle_out` order. It is the PFN-VLA held-out rule.
+    """
+    if len(remaining) % 2 == 0:
+        return _select_leftmost(remaining, scene)
+    by_position = {o.track_id: o.pose.position[0] for o in scene.objects}
+    ordered = sorted(remaining, key=lambda track_id: (by_position[track_id], track_id))
+    return ordered[len(ordered) // 2]
+
+
+#: Selector per transfer rule (`ShelfRestockSpec.rule`).
+SELECTORS: dict[str, Selector] = {
+    "leftmost": _select_leftmost,
+    "rightmost": _select_rightmost,
+    "middle": _select_middle,
+}
+
+
 def objects_on_lower_shelf(scene: ObjectScene, spec: ShelfRestockSpec) -> tuple[str, ...]:
     return tuple(o.track_id for o in scene.objects if spec.lower_shelf.contains(o.pose.position))
 
@@ -75,10 +102,12 @@ def objects_lifted(scene: ObjectScene, spec: ShelfRestockSpec) -> tuple[str, ...
 
 class ShelfRestockManager:
     def __init__(
-        self, spec: ShelfRestockSpec, *, selector: Selector = _select_leftmost
+        self, spec: ShelfRestockSpec, *, selector: Selector | None = None
     ) -> None:
         self.spec = spec
-        self._selector = selector
+        # The spec's rule decides by default, so a spec built for a rule cannot be
+        # executed under another one by forgetting to pass a selector.
+        self._selector = selector if selector is not None else SELECTORS[spec.rule]
         self._placed_order: list[str] = []
 
     def is_done(self, scene: ObjectScene) -> bool:

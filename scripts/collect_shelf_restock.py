@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT / "src"))
 def main() -> int:
     from oct_vla.robots.robotwin.native import RoboTwinNativePort
     from oct_vla.tasks.shelf_restock.collect import collect_dataset
-    from oct_vla.tasks.shelf_restock.spec import DEFAULT_SPEC
+    from oct_vla.tasks.shelf_restock.spec import RULE_INSTRUCTIONS, spec_for_rule
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--robotwin-root", required=True, type=Path)
@@ -29,7 +29,12 @@ def main() -> int:
         help="Store transfer clips (default), the original continuous shelf-emptying "
         "run, or both from the same oracle execution (paired).",
     )
+    parser.add_argument(
+        "--rule", choices=tuple(RULE_INSTRUCTIONS), default="leftmost",
+        help="Transfer order; also selects the instruction recorded with every clip.",
+    )
     args = parser.parse_args()
+    spec_ = spec_for_rule(args.rule)
     # Every profile shares DEFAULT_SPEC and differs only in object_count, so
     # the spec cannot disagree with the scene the task class builds. It is
     # still passed explicitly rather than left to collect_dataset's default:
@@ -39,9 +44,9 @@ def main() -> int:
     # objects_on_lower_shelf() -- the run reported a clean success while never
     # restocking it (confirmed live at seed 1000).
     task_class, spec = {
-        "two_object": ("ShelfRestockTwoObjectTask", DEFAULT_SPEC),
-        "three_object": ("ShelfRestockTask", DEFAULT_SPEC),
-        "four_object": ("ShelfRestockFourObjectTask", DEFAULT_SPEC),
+        "two_object": ("ShelfRestockTwoObjectTask", spec_),
+        "three_object": ("ShelfRestockTask", spec_),
+        "four_object": ("ShelfRestockFourObjectTask", spec_),
     }[args.profile]
     port = RoboTwinNativePort(
         args.robotwin_root,

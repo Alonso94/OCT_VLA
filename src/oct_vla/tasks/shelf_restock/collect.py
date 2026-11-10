@@ -217,6 +217,7 @@ def collect_episode(
     spawned = getattr(task, "spawned_model_ids", None) or {}
     run_metadata = {
         "model_ids": ",".join(str(v) for v in sorted(set(spawned.values()))),
+        "rule": spec.rule,
         **({"paired_run": "true"} if episode_kind == "paired" else {}),
         **(metadata or {}),
     }

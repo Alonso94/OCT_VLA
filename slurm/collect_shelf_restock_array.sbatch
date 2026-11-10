@@ -46,4 +46,5 @@ srun "$OCTVLA_ROBOTWIN_PYTHON" -u -B "$OCTVLA_REPO/scripts/collect_shelf_restock
   --output "$DESTINATION" \
   --profile "$COLLECTION_PROFILE" \
   --episode-kind "$EPISODE_KIND" \
-  --seeds "$SEED"
+  --seeds "$SEED" \
+  --rule "${RULE:-leftmost}"

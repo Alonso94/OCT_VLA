@@ -134,6 +134,28 @@ class ObjectVariation:
         return tuple(rng.uniform(lo, hi) for lo, hi in self.size_xyz_range)
 
 
+#: The transfer orders the task supports, and the instruction that names each.
+#: The leftmost text is the one every earlier corpus was collected under, kept
+#: byte-identical. `middle` (middle object, then left to right) is defined for
+#: three objects; it is the PFN-VLA held-out rule and is never collected for
+#: training. Each rule matches a selector of the synthetic prior
+#: (oct_vla.prior.programs): left_to_right, right_to_left, middle_out.
+RULE_INSTRUCTIONS = {
+    "leftmost": (
+        "Restock the leftmost object from the lower shelf to the upper shelf, "
+        "then compact it toward the previous neighbor if one exists."
+    ),
+    "rightmost": (
+        "Restock the rightmost object from the lower shelf to the upper shelf, "
+        "then compact it toward the previous neighbor if one exists."
+    ),
+    "middle": (
+        "Restock the middle object first, then the others from left to right, from the "
+        "lower shelf to the upper shelf, compacting each toward the previous neighbor."
+    ),
+}
+
+
 @dataclass(frozen=True)
 class ShelfRestockSpec:
     lower_shelf: ShelfRegion
@@ -148,6 +170,11 @@ class ShelfRestockSpec:
         "Restock the leftmost object from the lower shelf to the upper shelf, "
         "then compact it toward the previous neighbor if one exists."
     )
+    #: Which object the manager restocks next (`manager.SELECTORS`). Use
+    #: `spec_for_rule` rather than setting this alone: the rule and the
+    #: instruction must name the same thing, or a language-conditioned policy is
+    #: told one order and shown another.
+    rule: str = "leftmost"
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -156,6 +183,12 @@ class ShelfRestockSpec:
         object.__setattr__(
             self, "compaction_distance", _positive(self.compaction_distance, "compaction_distance")
         )
+        if self.rule not in RULE_INSTRUCTIONS:
+            raise ValueError(f"rule must be one of {tuple(RULE_INSTRUCTIONS)}, got {self.rule!r}")
+        if self.instruction != RULE_INSTRUCTIONS[self.rule]:
+            raise ValueError(
+                f"instruction does not describe rule {self.rule!r}; build the spec with spec_for_rule"
+            )
         if not isinstance(self.instruction, str) or not self.instruction.strip():
             raise ValueError("instruction must be a nonempty string")
 
@@ -212,3 +245,13 @@ DEFAULT_SPEC = ShelfRestockSpec(
         size_xyz_range=((0.03, 0.06), (0.03, 0.06), (0.03, 0.08)),
     ),
 )
+
+
+def spec_for_rule(rule: str, spec: ShelfRestockSpec | None = None) -> ShelfRestockSpec:
+    """`spec` (default: DEFAULT_SPEC) with its transfer rule and matching instruction."""
+    import dataclasses
+
+    if rule not in RULE_INSTRUCTIONS:
+        raise ValueError(f"rule must be one of {tuple(RULE_INSTRUCTIONS)}, got {rule!r}")
+    return dataclasses.replace(spec or DEFAULT_SPEC, rule=rule, instruction=RULE_INSTRUCTIONS[rule])
+
