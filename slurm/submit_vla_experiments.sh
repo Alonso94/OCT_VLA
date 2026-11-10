@@ -75,7 +75,14 @@ case "$CORPUS" in
     declare -A TAG=([F]=pfv_eeabs)
     declare -A STAGE1_TAG=([F]=pf_eeabs)
     LETTER=([pi05]=PV [smolvla]=SV [groot]=GV) ;;
-  *) echo "CORPUS must be paired_full, paired_full_r19, paired_full_r38, paired_full_vis or identity" >&2; exit 2 ;;
+  v4_leftmost)
+    # PFN-VLA corpus v4 (env-v4.sh): leftmost rule, full runs, Franka cuRobo
+    # 15/500, no mesh holdout (rollouts use the seen tier only). Its own cell
+    # letters, so nothing is reused from or written over the 2026-09 matrices.
+    declare -A DATASET=([F]=three_object_v4l_eeabs)
+    declare -A TAG=([F]=v4l_eeabs)
+    LETTER=([pi05]=P4 [smolvla]=S4 [groot]=G4) ;;
+  *) echo "CORPUS must be paired_full, paired_full_r19, paired_full_r38, paired_full_vis, identity or v4_leftmost" >&2; exit 2 ;;
 esac
 for regime in "${!DATASET[@]}"; do
   [ -d "$OCTVLA_DATASET_ROOT/${DATASET[$regime]}" ] || { echo "no dataset ${DATASET[$regime]}" >&2; exit 2; }
