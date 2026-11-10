@@ -26,6 +26,7 @@ import torch
 from torch import Tensor, nn
 
 from oct_vla.policies.conditioning.entity import ENTITY_MASK, ENTITY_TOKENS, TOKEN_DIM
+from oct_vla.policies.conditioning.future import FUTURE_KEYFRAME, FUTURE_MASK, check_future_inputs
 
 #: Per-object visual features, when the config asks for them.
 ENTITY_VISUAL = "observation.entity_visual"
@@ -194,6 +195,12 @@ class ObjectConditioningConfig:
     #: arm): LeJEPA's isotropic-Gaussian regulariser applied to the conditioning's
     #: own entity space, geometry only -- perception stays outside the policy.
     object_sigreg_weight: float = 0.05
+    #: PFN-VLA: a second KV branch over the next interaction keyframe
+    #: (`observation.future_keyframe`; conditioning/future.py). False: no such
+    #: branch, and the checkpoint keys are exactly those of the arm alone.
+    object_future: bool = False
+    #: Rows of the keyframe set (one per role in future.FUTURE_ROLES).
+    object_future_rows: int = 3
 
     # --- accepted only so pre-cleanup checkpoints load; see _migrate_legacy ---
     object_injection_mode: str | None = None
@@ -220,6 +227,12 @@ class ObjectConditioningConfig:
             )
         if self.object_attention_heads <= 0:
             raise ValueError("object_attention_heads must be positive")
+        if self.object_future:
+            if self.object_conditioning not in KV_ARMS:
+                raise ValueError("object_future adds a second KV branch; "
+                                 f"{self.object_conditioning!r} has no KV branch")
+            if self.object_future_rows <= 0:
+                raise ValueError("object_future_rows must be positive")
         if self.object_width is not None:
             if self.object_width <= 0:
                 raise ValueError("object_width must be positive")
@@ -271,7 +284,7 @@ class ObjectConditioningConfig:
                 "an entity-conditioned policy cannot also take observation.environment_state: "
                 "both are typed ENV, and ENV normalisation is IDENTITY for the entities"
             )
-        for name in (ENTITY_TOKENS, ENTITY_MASK, ENTITY_VISUAL):
+        for name in (ENTITY_TOKENS, ENTITY_MASK, ENTITY_VISUAL, FUTURE_KEYFRAME, FUTURE_MASK):
             if name in self.input_features:
                 self.input_features[name] = PolicyFeature(
                     type=FeatureType.ENV, shape=self.input_features[name].shape
@@ -298,6 +311,11 @@ class ObjectConditioning(nn.Module):
         self.layers = nn.ModuleDict()
         self._config = config
         self._inputs: tuple[Tensor | None, Tensor | None] | None = None
+        self._future_inputs: tuple[Tensor, Tensor] | None = None
+        # Created only when asked for, so a model without the future branch
+        # has exactly the checkpoint keys it had before the branch existed.
+        if getattr(config, "object_future", False):
+            self.future = nn.ModuleDict()
 
     def add_layer(self, name: str, width: int, heads: int) -> nn.Module:
         from oct_vla.policies.conditioning.kv import KVAttention
@@ -307,16 +325,34 @@ class ObjectConditioning(nn.Module):
         self.layers[name] = KVAttention(self._config, width, heads=heads)
         return self.layers[name]
 
+    def add_future_layer(self, name: str, width: int, heads: int) -> nn.Module:
+        from oct_vla.policies.conditioning.future import FutureKVAttention
+
+        if name in self.future:
+            raise ValueError(f"duplicate future layer {name}")
+        self.future[name] = FutureKVAttention(self._config, width, heads=heads)
+        return self.future[name]
+
+    @property
+    def has_future(self) -> bool:
+        return "future" in self._modules
+
     def set_inputs(self, tokens: Tensor | None, mask: Tensor | None) -> None:
         self._inputs = (tokens, mask)
 
+    def set_future_inputs(self, keyframe: Tensor, mask: Tensor) -> None:
+        self._future_inputs = (keyframe, mask)
+
     def clear(self) -> None:
         self._inputs = None
+        self._future_inputs = None
 
     @property
     def is_live(self) -> bool:
         """True once any branch has moved off its initialisation."""
         branches = [*self.layers.values()]
+        if self.has_future:
+            branches += [*self.future.values()]
         branches += [b for b in (getattr(self, "adaln", None), getattr(self, "incontext", None)) if b]
         return any(branch.is_live for branch in branches)
 
@@ -390,7 +426,27 @@ class ObjectConditionedPolicyMixin(VerifiedLoadMixin):
             # on its own scene, it shows what the entity *information* bought.
             target = derangement(tokens.shape[0], device=tokens.device)
             tokens, mask = tokens[target], mask[target]
-        self.object_conditioning.set_inputs(tokens, mask)
+        else:
+            target = None
+        control = self.object_conditioning
+        control.set_inputs(tokens, mask)
+        if getattr(self.config, "object_future", False):
+            # Refused, never skipped: a future arm run without its keyframe, or
+            # on a host that never built the branch, would train and score as
+            # plain kv under another name.
+            if not control.has_future or not len(control.future):
+                raise ObjectConditioningError(
+                    f"object_future is set but {type(self).__name__} built no future layers")
+            keyframe = batched(batch.get(FUTURE_KEYFRAME), unbatched_ndim=2)
+            future_mask = batched(batch.get(FUTURE_MASK), unbatched_ndim=1)
+            if keyframe is None or future_mask is None:
+                raise ValueError(f"object_future needs {FUTURE_KEYFRAME} and {FUTURE_MASK}")
+            check_future_inputs(keyframe, future_mask, rows=self.config.object_future_rows)
+            if keyframe.shape[0] != tokens.shape[0]:
+                raise ValueError("future keyframe and entity batches differ in size")
+            if target is not None:
+                keyframe, future_mask = keyframe[target], future_mask[target]
+            control.set_future_inputs(keyframe, future_mask)
 
     def _clear_object_inputs(self) -> None:
         self.object_conditioning.clear()

@@ -253,6 +253,8 @@ def install_diffusers_kv(head, control, *, conditioning_owner=None):
         width = host.to_q.out_features
         layer_name = str(index)
         control.add_layer(layer_name, width, host.heads)
+        if getattr(control, "has_future", False):
+            control.add_future_layer(layer_name, width, host.heads)
         captured = {}
 
         def query_hook(_module, _args, output, captured=captured):
@@ -270,6 +272,13 @@ def install_diffusers_kv(head, control, *, conditioning_owner=None):
             if getattr(host, "norm_q", None) is not None:
                 q = host.norm_q(q)
             residual = _context(branch, q, current._inputs, getattr(host, "scale", None))
+            # The future-keyframe branch (future.py): its own softmax, added
+            # alongside. Built only for object_future, and the policy refuses a
+            # forward without its inputs, so None here means "not this arm".
+            future = getattr(current, "_future_inputs", None)
+            if future is not None:
+                residual = residual + _context(current.future[layer_name], q, future,
+                                               getattr(host, "scale", None))
             # The branch has already applied an identity output projection
             # and returns [B, S, H*D], exactly the input expected by to_out.
             return (args[0] + residual.to(args[0].dtype), *args[1:])
