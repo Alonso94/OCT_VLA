@@ -112,9 +112,9 @@ def build_dual_franka_setup(
 #: cuRobo's c-space limits for the Franka arms that every shelf corpus was planned
 #: with. RoboTwin's asset pack changed them to 3.0 / 100.0 on 2026-09-22 (Hub commit
 #: 3dc3b798, "Unify curobo max_acceleration/max_jerk across embodiments"); a fresh
-#: download silently picks that up, which slows every planned motion and dropped the
-#: three-object collection yield from ~55 % to ~25 %. Collection refuses to run on
-#: anything else, so a corpus can never mix the two.
+#: download silently picks that up and slows every planned motion. (It is not what
+#: lowered the rebuilt environment's collection yield: restoring it left the yield at
+#: ~26 %.) Collection refuses to run on anything else, so a corpus never mixes the two.
 FRANKA_PLANNER_LIMITS = {"max_acceleration": 15.0, "max_jerk": 500.0}
 
 
