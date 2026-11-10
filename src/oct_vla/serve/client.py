@@ -52,6 +52,13 @@ class RemoteObservation:
     #: The step limit the server will end the episode at. Reset only; 0 from a
     #: server too old to report it.
     max_steps: int = 0
+    #: The oracle next-interaction keyframe, [rows, FUTURE_DIM] and [rows], when
+    #: the reset asked for one; None otherwise.
+    future_keyframe: tuple | None = None
+    future_keyframe_mask: tuple | None = None
+    #: Reset only: the keyframe source the server applied ("none" | "oracle");
+    #: empty from a server too old to know the field.
+    future_keyframe_source: str = ""
 
     def frame(self, name: str) -> RGBFrame:
         try:
@@ -107,6 +114,11 @@ def _observation(message: protocol.Message) -> RemoteObservation:
         model_ids={str(k): int(v) for k, v in (header.get("model_ids") or {}).items()},
         layout=str(header.get("layout", "")),
         max_steps=int(header.get("max_steps", 0)),
+        future_keyframe=(None if "future_keyframe" not in header
+                         else tuple(map(tuple, header["future_keyframe"]["rows"]))),
+        future_keyframe_mask=(None if "future_keyframe" not in header
+                              else tuple(header["future_keyframe"]["mask"])),
+        future_keyframe_source=str(header.get("future_keyframe_source", "")),
     )
 
 
@@ -124,6 +136,8 @@ class ShelfRestockEvalClient:
         self._sock: socket.socket | None = None
         #: Set by reset(); step() validates the action width against it.
         self._control_space = "cartesian"
+        #: Set by reset(); step() refuses an observation missing the keyframe.
+        self._future_keyframe = "none"
 
     def __enter__(self) -> ShelfRestockEvalClient:
         self.connect()
@@ -159,6 +173,7 @@ class ShelfRestockEvalClient:
         gripper_encoding: str = "measured_aperture",
         model_ids: Sequence[int] | None = None,
         max_steps: int | None = None,
+        future_keyframe: str = "none",
     ) -> RemoteObservation:
         """Start a fresh scene. Raises if the simulator cannot build that seed.
 
@@ -190,7 +205,19 @@ class ShelfRestockEvalClient:
             header["model_ids"] = [int(v) for v in model_ids]
         if max_steps is not None:
             header["max_steps"] = int(max_steps)
+        if future_keyframe != "none":
+            header["future_keyframe"] = future_keyframe
+        self._future_keyframe = future_keyframe
         observation = _observation(self._round_trip(header))
+        if future_keyframe != "none":
+            # A server that predates the field would ignore it, and a rollout
+            # "with oracle keyframes" would run without any.
+            if observation.future_keyframe_source != future_keyframe:
+                raise protocol.ProtocolError(
+                    f"requested future_keyframe={future_keyframe!r} but the server applied "
+                    f"{observation.future_keyframe_source or 'nothing (too old?)'}")
+            if observation.future_keyframe is None:
+                raise protocol.ProtocolError("server sent no future_keyframe at reset")
         if max_steps is not None and observation.max_steps != int(max_steps):
             raise protocol.ProtocolError(
                 f"requested a {max_steps}-step episode but the server applies "
@@ -225,8 +252,11 @@ class ShelfRestockEvalClient:
                 f"(position, quaternion, gripper, per arm); got {len(values)}"
             )
         message = self._round_trip({"op": "step", "action": values})
+        observation = _observation(message)
+        if self._future_keyframe != "none" and observation.future_keyframe is None:
+            raise protocol.ProtocolError("server stopped sending the future keyframe mid-episode")
         return StepResult(
-            observation=_observation(message),
+            observation=observation,
             success=bool(message.header["success"]),
             done=bool(message.header["done"]),
             reason=str(message.header.get("reason", "")),

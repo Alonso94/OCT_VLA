@@ -132,3 +132,36 @@ def test_each_episode_seeds_the_policy_noise_from_the_scene():
     assert s1 == s2 != s3
     torch.testing.assert_close(a, b)
     assert not torch.allclose(a, c)
+
+
+def test_the_live_builder_passes_the_servers_keyframe_and_refuses_without_it():
+    torch = pytest.importorskip("torch")
+    np = pytest.importorskip("numpy")
+    spec = importlib.util.spec_from_file_location(
+        "eval_future_policy", Path(__file__).parents[1] / "scripts/eval_shelf_restock_policy.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    from oct_vla.data.future_keyframes import FUTURE_DIM, FUTURE_ROWS
+    from oct_vla.policies.conditioning.future import FUTURE_KEYFRAME, FUTURE_MASK
+
+    pose = Pose((0.1, 0.2, 0.9), (0.0, 0.0, 0.0, 1.0))
+    scene = ObjectScene(0.0, (ObjectState("a", pose, (0.05, 0.04, 0.1), 1.0, 1.0),))
+    rows = tuple(tuple(float(i * FUTURE_DIM + j) for j in range(FUTURE_DIM))
+                 for i in range(FUTURE_ROWS))
+    obs = SimpleNamespace(scene=scene, eef=EEFState(ArmState(pose, 0.2), ArmState(pose, 0.8)),
+                          supports=shelf_support_entities(DEFAULT_SPEC),
+                          context=TaskContext("restock", "a"),
+                          frame=lambda name: SimpleNamespace(data=bytes(12), height=2, width=2),
+                          future_keyframe=rows, future_keyframe_mask=(True, True, True))
+    batch = module.build_observation(obs, torch=torch, np=np, entity_max_entities=16,
+                                     future_keyframe=True)
+    assert batch[FUTURE_KEYFRAME].shape == (1, FUTURE_ROWS, FUTURE_DIM)
+    assert batch[FUTURE_KEYFRAME][0, 2, 5].item() == 2 * FUTURE_DIM + 5
+    assert batch[FUTURE_MASK].dtype == torch.bool and batch[FUTURE_MASK].all()
+    assert FUTURE_KEYFRAME not in module.build_observation(obs, torch=torch, np=np,
+                                                           entity_max_entities=16)
+    obs.future_keyframe = None
+    with pytest.raises(ValueError, match="no keyframe"):
+        module.build_observation(obs, torch=torch, np=np, entity_max_entities=16,
+                                 future_keyframe=True)

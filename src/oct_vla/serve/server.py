@@ -40,7 +40,12 @@ from oct_vla.tasks.shelf_restock.manager import (
     objects_on_upper_shelf,
 )
 from oct_vla.tasks.shelf_restock.events import TransferEvents
+from oct_vla.tasks.shelf_restock.keyframes import ShelfKeyframeOracle
 from oct_vla.tasks.shelf_restock.spec import DEFAULT_SPEC, ShelfRestockSpec
+
+#: Where a rollout's future keyframe comes from. Only the oracle is served: a
+#: learned prior runs on the policy side and never sees task-manager state.
+FUTURE_KEYFRAME_SOURCES = ("none", "oracle")
 
 # Measured stationary EEF poses in the demonstrations move by a few tenths of
 # a micrometre due to physics. Sending those numerical remnants through IK is
@@ -188,6 +193,10 @@ class _Episode:
     #: exactly as it did before.
     gripper_encoding: str = "measured_aperture"
     placed_seen: set[str] = field(default_factory=set)
+    #: PFN-VLA upper bound: the oracle next-interaction keyframe
+    #: (tasks/shelf_restock/keyframes.py), stepped once per snapshot. None
+    #: unless the client asked for it at reset.
+    keyframe_oracle: object | None = None
     #: Every object raised clear of the lower shelf at any point this episode.
     #: Accumulated rather than sampled, so an object that is lifted and dropped
     #: still counts -- that is the distinction the measure exists to make.
@@ -348,6 +357,11 @@ class ShelfRestockEvalServer:
             "scene": scene_to_json(scene),
             "context": context_to_json(self._context(scene)),
         }
+        if self._episode.keyframe_oracle is not None:
+            # Called exactly once per snapshot, i.e. once per reset/step, in
+            # order: the oracle is a state machine over the episode.
+            rows, mask = self._episode.keyframe_oracle(scene, observation.eef)
+            header["future_keyframe"] = {"rows": rows.tolist(), "mask": mask.tolist()}
         frames = (
             ("head_camera", observation.head_rgb),
             ("left_wrist_camera", observation.left_wrist_rgb),
@@ -365,7 +379,11 @@ class ShelfRestockEvalServer:
         self, seed: int, profile: str, max_steps: int, control_space: str = "cartesian",
         gripper_encoding: str = "measured_aperture",
         model_ids: tuple[int, ...] | None = None,
+        future_keyframe: str = "none",
     ) -> tuple[dict, tuple[protocol.Blob, ...]]:
+        if future_keyframe not in FUTURE_KEYFRAME_SOURCES:
+            raise EvalServerError(f"Unknown future_keyframe {future_keyframe!r}; "
+                                  f"have {FUTURE_KEYFRAME_SOURCES}")
         if model_ids is not None and not model_ids:
             raise EvalServerError("model_ids, when given, must name at least one variant")
         if profile not in PROFILE_TASKS:
@@ -410,9 +428,13 @@ class ShelfRestockEvalServer:
             control_space=control_space,
             gripper_encoding=gripper_encoding,
             events=TransferEvents(self._spec),
+            keyframe_oracle=(ShelfKeyframeOracle(self._spec)
+                             if future_keyframe == "oracle" else None),
         )
         header, blobs, _ = self._snapshot()
         header["model_ids"] = spawned
+        # Echoed so a client can refuse a server that ignored the request.
+        header["future_keyframe_source"] = future_keyframe
         # Echoed so the client can prove the limit it asked for is the one applied.
         header["max_steps"] = int(max_steps)
         # How the scene's x positions were drawn. The two-object profile's
@@ -729,6 +751,7 @@ class ShelfRestockEvalServer:
                         str(message.header.get("control_space", "cartesian")),
                         str(message.header.get("gripper_encoding", "measured_aperture")),
                         None if requested is None else tuple(int(v) for v in requested),
+                        str(message.header.get("future_keyframe", "none")),
                     )
                 elif op == "step":
                     header, blobs = self.step(list(message.header["action"]))

@@ -209,3 +209,51 @@ def test_reset_refuses_a_step_limit_the_server_did_not_apply(connected, echo):
     with pytest.raises(protocol.ProtocolError, match="800-step"):
         client.reset(seed=1, profile="four_object", max_steps=800)
     thread.join()
+
+
+def _keyframe():
+    return {"rows": [[0.5] * 24] * 3, "mask": [True, True, False]}
+
+
+def test_reset_requests_the_oracle_keyframe_and_reads_it_every_step(connected):
+    client, server_sock = connected
+    requests: list[dict] = []
+    reset = {**_observation_header(), "future_keyframe_source": "oracle",
+             "future_keyframe": _keyframe()}
+    step = {**_observation_header(), "future_keyframe": _keyframe(), "success": False,
+            "done": False}
+    thread = threading.Thread(target=lambda: requests.extend(
+        _serve(server_sock, [(reset, _frames()), (step, _frames())])))
+    thread.start()
+    observation = client.reset(seed=1, profile="three_object", future_keyframe="oracle")
+    outcome = client.step([0.0] * 14)
+    thread.join()
+    assert requests[0]["future_keyframe"] == "oracle"
+    assert len(observation.future_keyframe) == 3 and len(observation.future_keyframe[0]) == 24
+    assert observation.future_keyframe_mask == (True, True, False)
+    assert outcome.observation.future_keyframe is not None
+
+
+@pytest.mark.parametrize("reply", [{}, {"future_keyframe_source": "none"}])
+def test_reset_refuses_a_server_that_ignored_the_keyframe_request(connected, reply):
+    client, server_sock = connected
+    thread = threading.Thread(target=lambda: _serve(
+        server_sock, [({**_observation_header(), **reply}, _frames())]))
+    thread.start()
+    with pytest.raises(protocol.ProtocolError, match="future_keyframe"):
+        client.reset(seed=1, profile="three_object", future_keyframe="oracle")
+    thread.join()
+
+
+def test_step_refuses_an_observation_that_lost_the_keyframe(connected):
+    client, server_sock = connected
+    reset = {**_observation_header(), "future_keyframe_source": "oracle",
+             "future_keyframe": _keyframe()}
+    step = {**_observation_header(), "success": False, "done": False}
+    thread = threading.Thread(target=lambda: _serve(
+        server_sock, [(reset, _frames()), (step, _frames())]))
+    thread.start()
+    client.reset(seed=1, profile="three_object", future_keyframe="oracle")
+    with pytest.raises(protocol.ProtocolError, match="mid-episode"):
+        client.step([0.0] * 14)
+    thread.join()

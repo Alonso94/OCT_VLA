@@ -76,7 +76,7 @@ def state_vector(eef) -> list[float]:
 def build_observation(
     obs, *, torch, np, control_space="cartesian", uint8_images=True,
     state_encoding="position", previous_joints=None, entity_max_entities=None,
-    entity_noise=None, noise_rng=None, entity_visual=None,
+    entity_noise=None, noise_rng=None, entity_visual=None, future_keyframe=False,
 ):
     """The policy's input batch, laid out exactly as the exporter wrote it.
 
@@ -138,6 +138,16 @@ def build_observation(
             batch["observation.entity_visual"] = torch.tensor(visual[None], dtype=torch.float32)
         batch["observation.entity_tokens"] = torch.tensor([tokens], dtype=torch.float32)
         batch["observation.entity_mask"] = torch.tensor([mask], dtype=torch.bool)
+    if future_keyframe:
+        # The oracle keyframe the server computed (tasks/shelf_restock/keyframes.py),
+        # laid out as add_future_keyframe.py wrote it. Refused, never zero-filled.
+        if obs.future_keyframe is None:
+            raise ValueError("the checkpoint has a future-keyframe branch but the "
+                             "observation carries no keyframe")
+        from oct_vla.policies.conditioning.future import FUTURE_KEYFRAME, FUTURE_MASK
+
+        batch[FUTURE_KEYFRAME] = torch.tensor([obs.future_keyframe], dtype=torch.float32)
+        batch[FUTURE_MASK] = torch.tensor([obs.future_keyframe_mask], dtype=torch.bool)
     batch["task"] = [obs.context.instruction]
     return batch
 
@@ -155,10 +165,11 @@ def run_episode(
     uint8_images=True, state_encoding="position", video=None,
     gripper_encoding="measured_aperture",
     entity_max_entities=None, model_ids=None, entity_noise=None, entity_visual=None,
+    future_keyframe="none",
 ) -> dict:
     observation = client.reset(seed, profile, control_space=control_space,
                                gripper_encoding=gripper_encoding, model_ids=model_ids,
-                               max_steps=max_steps)
+                               max_steps=max_steps, future_keyframe=future_keyframe)
     policy.reset()
     # GR00T (and any flow/diffusion head) draws each chunk's initial noise from torch's
     # global generator. Unseeded, a rollout was a fresh draw: 73/240 four-object scenes
@@ -179,6 +190,7 @@ def run_episode(
         # tier once went unapplied for a whole matrix without a trace.
         "model_ids": sorted(set(observation.model_ids.values())),
         "layout": observation.layout,
+        "future_keyframe": future_keyframe,
         # Where each object's transfer stopped, from ground truth; filled from
         # the final step (tasks/shelf_restock/events.py).
         "events": {},
@@ -201,6 +213,7 @@ def run_episode(
             previous_joints=previous_joints,
             entity_max_entities=entity_max_entities,
             entity_noise=entity_noise, noise_rng=noise_rng, entity_visual=entity_visual,
+            future_keyframe=future_keyframe != "none",
         )
         if observation.joints is not None:
             previous_joints = joint_vector(observation.joints)
@@ -484,6 +497,9 @@ def main() -> int:
         if entity_visual.visual_dim != config.object_visual_dim:
             raise SystemExit(f"encoder gives {entity_visual.visual_dim}-d features; the "
                              f"checkpoint expects {config.object_visual_dim}")
+    # The future-keyframe branch reads its source from the checkpoint too. Only
+    # the oracle is served today; a learned prior will be a policy-side source.
+    future_keyframe = "oracle" if getattr(config, "object_future", False) else "none"
     if not entity_noise.is_clean and not conditioning:
         # Noise on entities a policy never reads would score a clean rollout
         # under a noisy label.
@@ -528,6 +544,7 @@ def main() -> int:
                     gripper_encoding=gripper_encoding, video=video,
                     entity_max_entities=entity_max_entities, model_ids=model_ids,
                     entity_noise=entity_noise, entity_visual=entity_visual,
+                    future_keyframe=future_keyframe,
                 )
                 outcome["evaluation_split"] = args.evaluation_split
                 results.append(outcome)
