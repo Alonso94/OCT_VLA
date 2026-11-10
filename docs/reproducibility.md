@@ -16,7 +16,7 @@ uses the standard library only.
 | --- | --- | --- |
 | path | `~/octvla/RoboTwin/.venv-robotwin/bin/python` | `~/octvla/policy-venv/bin/python` |
 | Python | 3.10.20 | 3.12.13 |
-| key packages | SAPIEN 3.0.0b1, Torch 2.4.1+cu121, NumPy 1.26.4, cuRobo `d64c4b0` (v0.7.8), mplib 0.2.1 (patched), setuptools 69.5.1 | LeRobot 0.6.2 @ `6adf515` (from git, not PyPI), Torch 2.11.0+cu128, transformers 5.5.4, PEFT 0.20.0 |
+| key packages | SAPIEN 3.0.0b1, Torch 2.4.1+cu121, NumPy 1.26.4, cuRobo `d64c4b0` (v0.7.8), mplib 0.2.1 (patched), setuptools 69.5.1 | LeRobot 0.6.2 @ `6adf515` (from git, not PyPI), Torch 2.11.0+cu128, transformers 5.5.4, PEFT 0.20.0, plus the `lerobot[groot]` extra (diffusers 0.39.0, timm, dm-tree, decord; `tests/policies/test_policy_env_deps.py` fails without it) |
 | runs | collection, the eval server, bridge and replay checks | export, views, training, merge, init check, eval client, diagnostics, tests |
 
 RoboTwin is at revision `cffb78057724c6899fbae7b71ec4cfb249fbc225`. Installation
