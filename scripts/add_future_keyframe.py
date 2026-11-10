@@ -6,10 +6,13 @@ PFN-VLA step 2. Writes ``<source>_fk``: the source view's parquet plus
 ``[3]`` (``data/future_keyframes.py``), videos hard-linked back to the source,
 metadata extended with both features.
 
-Keyframes come from the canonical episodes (phase labels and recorded scenes),
-matched to dataset episodes through ``octvla_episode_manifest.json``. Frame
-alignment is asserted per episode exactly as in ``add_entity_visual.py``: the
-movable token positions must equal the recorded scene's object positions.
+Keyframes come from ``tasks/shelf_restock/keyframes.py``, the same oracle the
+evaluation server runs, applied to the recorded scenes frame by frame. Each
+episode is cross-checked against an independent definition read off the phase
+labels (``data/future_keyframes.py``): the event switches must be the same in
+number and lag them by 0-10 frames (3-7 over the v4 corpus). Episodes are
+matched through ``octvla_episode_manifest.json``; frame alignment is asserted as
+in ``add_entity_visual.py``.
 
     add_future_keyframe.py --source DATASET_VIEW \\
         --collection $OCTVLA_COLLECTION_ROOT/three_object
@@ -28,6 +31,30 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 
+#: Largest accepted lag of the oracle's event switch behind the phase label.
+MAX_LAG = 10
+
+
+def _event_switches(keyframes, mask) -> list[int]:
+    """Frames at which the next event's kind changes (grasp, place, or none)."""
+    import numpy as np
+
+    from oct_vla.data.entity_tokens import ENTITY_TOKEN_DIM
+    from oct_vla.data.future_keyframes import FUTURE_ROLES
+
+    start = ENTITY_TOKEN_DIM + len(FUTURE_ROLES)
+    kinds = [int(np.argmax(k[0, start:])) if m.all() else -1 for k, m in zip(keyframes, mask)]
+    return [i for i in range(1, len(kinds)) if kinds[i] != kinds[i - 1]]
+
+
+def _switch_lags(keyframes, mask, reference, reference_mask) -> list[int] | None:
+    """Lag of each event switch behind the reference's; None if they differ in count."""
+    ours, theirs = _event_switches(keyframes, mask), _event_switches(reference, reference_mask)
+    if len(ours) != len(theirs):
+        return None
+    return [a - b for a, b in zip(ours, theirs)]
+
+
 def _stats(values):
     import numpy as np
 
@@ -42,12 +69,9 @@ def main() -> int:
     import numpy as np
     import pandas as pd
 
-    from oct_vla.data.future_keyframes import (
-        FUTURE_DIM,
-        FUTURE_ROWS,
-        interaction_events,
-        oracle_future_keyframes,
-    )
+    from oct_vla.data.future_keyframes import FUTURE_DIM, FUTURE_ROWS, oracle_future_keyframes
+    from oct_vla.tasks.shelf_restock.keyframes import episode_keyframes
+    from oct_vla.tasks.shelf_restock.spec import spec_for_rule
     from oct_vla.data.store import read_episode
     from oct_vla.policies.conditioning.future import FUTURE_KEYFRAME, FUTURE_MASK
     from project_dataset_view import link_tree
@@ -91,7 +115,11 @@ def main() -> int:
                 if not np.allclose(np.sort(movable, axis=0), np.sort(scene, axis=0), atol=1e-5):
                     raise SystemExit(f"episode {episode_index} frame {frame}: tokens and recorded "
                                      "scene disagree; the frames are not aligned")
-            keyframes, mask = oracle_future_keyframes(episode)
+            keyframes, mask = episode_keyframes(episode, spec_for_rule(episode.metadata["rule"]))
+            lags = _switch_lags(keyframes, mask, *oracle_future_keyframes(episode))
+            if lags is None or not all(0 <= lag <= MAX_LAG for lag in lags):
+                raise SystemExit(f"episode {episode_index}: oracle events disagree with the phase "
+                                 f"labels (lags {lags}); refusing to export it")
             keyframes = keyframes[rows["frame_index"].to_numpy()]
             mask = mask[rows["frame_index"].to_numpy()]
             for position, index in enumerate(rows.index):
@@ -100,11 +128,10 @@ def main() -> int:
                 mask_column[at] = mask[position].astype(np.float32).tolist()
             real_rows.append(keyframes[mask])
             masks.append(mask.astype(np.float32))
-            events = interaction_events(episode)
             episodes_done += 1
             frames_done += len(rows)
             print(f"episode {episode_index} ({entry['source_episode']}): {len(rows)} frames, "
-                  f"{len(events)} events, keyframe on {int(mask.all(1).sum())} frames", flush=True)
+                  f"{len(lags)} events (lag {min(lags)}-{max(lags)}), keyframe on {int(mask.all(1).sum())} frames", flush=True)
         if any(value is None for value in keyframe_column):
             raise SystemExit(f"{path}: a row got no keyframe")
         table[FUTURE_KEYFRAME] = keyframe_column

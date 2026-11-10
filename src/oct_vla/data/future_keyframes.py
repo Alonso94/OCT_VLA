@@ -1,9 +1,13 @@
-"""Oracle next-interaction keyframes, read off a recorded episode.
+"""The future-keyframe row contract, and a phase-label reference for it.
 
 The PFN-VLA future branch (``policies/conditioning/future.py``) attends a small
 set of rows describing the *next* interaction. The learned prior predicts it;
-this module computes the oracle answer from the recording, as an upper bound
-and as training targets. Nothing here is visible to the learned path.
+the oracle that the dataset and the evaluation server use is
+``tasks/shelf_restock/keyframes.py``, which needs only the scene. This module
+holds the row layout they share, and an independent definition read off a
+recording's phase labels, which ``scripts/add_future_keyframe.py`` uses to
+cross-check the oracle episode by episode. Nothing here is visible to the
+learned path.
 
 Events are the two the prior predicts and the recording labels: ``grasp`` at
 the last frame of a ``close`` run and ``place`` at the last frame of a
