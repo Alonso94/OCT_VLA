@@ -142,6 +142,13 @@ def build_observation(
     return batch
 
 
+def policy_noise_seed(seed: int) -> int:
+    """The torch seed of an evaluation episode, derived from its scene seed alone."""
+    import numpy as np
+
+    return int(np.random.SeedSequence([seed, 104729]).generate_state(1)[0])
+
+
 def run_episode(
     client, policy, preprocessor, postprocessor, *,
     seed, profile, max_steps, torch, np, control_space="cartesian",
@@ -153,11 +160,18 @@ def run_episode(
                                gripper_encoding=gripper_encoding, model_ids=model_ids,
                                max_steps=max_steps)
     policy.reset()
+    # GR00T (and any flow/diffusion head) draws each chunk's initial noise from torch's
+    # global generator. Unseeded, a rollout was a fresh draw: 73/240 four-object scenes
+    # lifted fewer objects with *more* steps (research_questions.md). Seeding it per
+    # episode from the scene makes a rollout reproducible and pairs arms on the same
+    # noise, not only the same scene.
+    policy_seed = policy_noise_seed(seed)
+    torch.manual_seed(policy_seed)
     # Seeded by the scene, so every checkpoint scored at this noise level on this
     # scene starts from the same noise stream.
     noise_rng = np.random.default_rng([seed, 7919])
     result = {
-        "seed": seed, "profile": profile, "success": False, "steps": 0,
+        "seed": seed, "policy_seed": policy_seed, "profile": profile, "success": False, "steps": 0,
         "transfers_completed": 0, "reason": "step_limit", "detail": "",
         "infeasible_steps": 0, "objects_lifted": 0, "objects_total": 0,
         # What the scene held, as reported by the simulator -- not what was

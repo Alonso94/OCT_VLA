@@ -107,3 +107,28 @@ def test_the_live_builder_adds_visual_features_from_the_head_frame_and_tokens():
     assert batch["observation.entity_visual"].shape == (1, 16, 3)
     assert seen["image"].shape == (2, 2, 3) and seen["image"][0, 0, 1] == 1
     assert np.allclose(seen["tokens"], batch["observation.entity_tokens"][0].numpy())
+
+
+def test_each_episode_seeds_the_policy_noise_from_the_scene():
+    """GR00T samples its flow noise from torch's global generator; an unseeded rollout is a
+    fresh draw, so two rollouts of one checkpoint on one scene could disagree."""
+    torch = pytest.importorskip("torch")
+    np = pytest.importorskip("numpy")
+    spec = importlib.util.spec_from_file_location(
+        "eval_seeding", Path(__file__).parents[1] / "scripts/eval_shelf_restock_policy.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    client = SimpleNamespace(reset=lambda *a, **k: SimpleNamespace(model_ids={}, layout=None))
+    policy = SimpleNamespace(reset=lambda: torch.randn(3))   # consumes noise before seeding
+
+    def draw(seed):
+        torch.manual_seed(12345 + seed)                         # whatever state came before
+        result = module.run_episode(client, policy, None, None, seed=seed, profile="p",
+                                    max_steps=0, torch=torch, np=np)
+        return result["policy_seed"], torch.randn(4)
+
+    (s1, a), (s2, b), (s3, c) = draw(800), draw(800), draw(801)
+    assert s1 == s2 != s3
+    torch.testing.assert_close(a, b)
+    assert not torch.allclose(a, c)
