@@ -33,17 +33,21 @@ from typing import Any
 
 from torch import Tensor
 
+from oct_vla.data.future_keyframes import (  # noqa: F401  (the row contract)
+    FUTURE_DIM,
+    FUTURE_EVENTS,
+    FUTURE_EXTRA,
+    FUTURE_ROLES,
+)
+
 from .entity import TOKEN_DIM
 from .kv import KVAttention
 
+if FUTURE_DIM - FUTURE_EXTRA != TOKEN_DIM:
+    raise ImportError("future keyframe rows must start with an entity-schema token")
+
 FUTURE_KEYFRAME = "observation.future_keyframe"
 FUTURE_MASK = "observation.future_keyframe_mask"
-#: Roles of the rows, in column order.
-FUTURE_ROLES = ("object_keyframe", "gripper_keyframe", "object_goal")
-#: Events, in column order; the same four as ``oct_vla.prior.schema.TARGET_EVENTS``.
-FUTURE_EVENTS = ("grasp", "place", "regrasp", "release")
-FUTURE_EXTRA = len(FUTURE_ROLES) + len(FUTURE_EVENTS)
-FUTURE_DIM = TOKEN_DIM + FUTURE_EXTRA
 
 
 class FutureKVAttention(KVAttention):
