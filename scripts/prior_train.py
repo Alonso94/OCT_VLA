@@ -41,6 +41,8 @@ def main() -> None:
     ap.add_argument("--head", choices=M.HEADS, default="interaction")
     ap.add_argument("--no-context", action="store_true")
     ap.add_argument("--freeze-encoder", action="store_true")
+    ap.add_argument("--no-edges", action="store_true",
+                    help="relational ablation: no difference edges in row attention")
     ap.add_argument(
         "--lang", type=Path, default=None, help="instruction embeddings; omit for no language"
     )
@@ -80,6 +82,7 @@ def main() -> None:
         lang_dim=0 if lang is None else lang[0].shape[-1],
         head=args.head,
         use_context=not args.no_context,
+        use_edges=not args.no_edges,
     ).to(args.device)
     params = [
         p

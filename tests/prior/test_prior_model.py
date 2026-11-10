@@ -74,9 +74,10 @@ def test_pointer_is_equivariant_to_query_column_order(batch, table):
     torch.testing.assert_close(a[:, perm], b, rtol=1e-4, atol=1e-4)
 
 
+@pytest.mark.parametrize("use_edges", [True, False])
 @pytest.mark.parametrize("head", M.HEADS)
-def test_every_parameter_gets_a_gradient(batch, table, head):
-    model = _model(head=head).train()
+def test_every_parameter_gets_a_gradient(batch, table, head, use_edges):
+    model = _model(head=head, use_edges=use_edges).train()
     out = model(M.to_torch(batch, table, "cpu"))
     total, terms = M.loss(model, out, M.to_torch(batch, table, "cpu"))
     assert np.isfinite(total.item())
@@ -111,3 +112,27 @@ def test_baselines_run_and_retrieval_beats_copy_on_the_pointer():
     np.testing.assert_allclose(
         MT.correctness(BL.copy_current(b), b)["obj_err"][exact], 0.0, atol=1e-6
     )
+
+
+def test_the_no_edges_ablation_removes_exactly_the_edge_parameters(batch, table):
+    full, ablated = _model(), _model(use_edges=False)
+    edge = {n for n, _ in full.named_parameters() if n.startswith("edges.") or ".edge_" in n}
+    assert edge and not any(n.startswith("edges.") or ".edge_" in n
+                            for n, _ in ablated.named_parameters())
+    assert {n for n, _ in full.named_parameters()} - edge == {
+        n for n, _ in ablated.named_parameters()}
+    assert ablated.config["use_edges"] is False
+    # Still equivariant to column order, and still reads its support.
+    perm = np.random.default_rng(3).permutation(batch["q_types"].shape[1])
+    moved = dict(batch, q_feats=batch["q_feats"][:, :, perm], q_types=batch["q_types"][:, perm])
+    torch.testing.assert_close(_pointer(ablated, batch, table)[:, perm],
+                               _pointer(ablated, moved, table), rtol=1e-4, atol=1e-4)
+    b = I.language(batch, "none", np.random.default_rng(0))
+    shuffled, _ = I.support(b, "shuffled", np.random.default_rng(1))
+    assert not torch.allclose(_pointer(ablated, b, table), _pointer(ablated, shuffled, table))
+
+
+def test_checkpoints_from_before_the_flag_load_with_edges():
+    config = dict(_model().config)
+    del config["use_edges"]
+    assert M.KeyframePFN(**config).edges is not None

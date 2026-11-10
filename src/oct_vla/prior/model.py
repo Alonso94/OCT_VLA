@@ -21,7 +21,9 @@ Heads read the query's current row:
 - `final`: where the acted object ends up when it is finally placed.
 
 `head="interaction"` trains every head. `head="goal"` is the goal-only ablation: the same
-inputs and encoder, trained on `pointer` and `final` only. Regression heads are
+inputs and encoder, trained on `pointer` and `final` only. `use_edges=False` is the
+relational ablation: no difference edges in row attention, so entities relate only
+through attention over their absolute (normalised) features. Regression heads are
 teacher-forced on the true pointer during training and use the argmax at inference.
 """
 
@@ -137,9 +139,9 @@ class DifferenceEdges(nn.Module):
 
 
 class Block(nn.Module):
-    def __init__(self, width, heads):
+    def __init__(self, width, heads, edges=True):
         super().__init__()
-        self.row = Attention(width, heads, edges=True)
+        self.row = Attention(width, heads, edges=edges)
         self.time = Attention(width, heads)
         self.query = Attention(width, heads)
         self.ffn_norm = nn.LayerNorm(width)
@@ -148,6 +150,8 @@ class Block(nn.Module):
         )
 
     def rows(self, x, ok, edges):
+        if edges is None:
+            return self.row(x, x, ok[..., :, None] & ok[..., None, :])
         c = x.shape[-2]
         e = F.pad(
             edges, (0, 0, 0, c - edges.shape[-2], 0, c - edges.shape[-3])
@@ -179,6 +183,7 @@ class KeyframePFN(nn.Module):
         lang_dim: int = 0,
         head: str = "interaction",
         use_context: bool = True,
+        use_edges: bool = True,
     ):
         super().__init__()
         if head not in HEADS:
@@ -190,6 +195,7 @@ class KeyframePFN(nn.Module):
             "lang_dim": lang_dim,
             "head": head,
             "use_context": use_context,
+            "use_edges": use_edges,
         }
         self.head, self.use_context, w = head, use_context, width
         self.cell = nn.Sequential(nn.Linear(N_FEATURES, w), nn.SiLU(), nn.Linear(w, w))
@@ -199,8 +205,10 @@ class KeyframePFN(nn.Module):
         self.gripper = nn.Embedding(3, w)  # left, right, none
         self.unknown_event = nn.Parameter(torch.zeros(w))
         self.kind = nn.Parameter(torch.randn(2, w) * 0.1)  # context cell, query cell
-        self.edges = DifferenceEdges(w)
-        self.blocks = nn.ModuleList(Block(w, heads) for _ in range(layers))
+        # Absent rather than unused when ablated: no parameters a no-edges run could
+        # silently train, and its checkpoint says what it is.
+        self.edges = DifferenceEdges(w) if use_edges else None
+        self.blocks = nn.ModuleList(Block(w, heads, edges=use_edges) for _ in range(layers))
         self.lang = nn.Linear(lang_dim, w) if lang_dim else None
         self.pointer = nn.Linear(w, 1)
         self.final = _mlp(2 * w, w, 5)
@@ -219,7 +227,7 @@ class KeyframePFN(nn.Module):
         x = self.cell(f) + self.entity_type(types.clamp_min(0)) + self.flag(flag) + self.kind[kind]
         x = torch.cat([x, (event_cell + self.kind[kind])[..., None, :]], -2)
         ok = torch.cat([valid, torch.ones_like(valid[..., :1])], -1)
-        return x, ok, self.edges(f)
+        return x, ok, (self.edges(f) if self.edges is not None else None)
 
     def encode_context(self, b: dict):
         """-> per-block keys [B, K*S*(N+1) (+1 lang), W] and their mask."""
