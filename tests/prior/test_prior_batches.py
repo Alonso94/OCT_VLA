@@ -88,7 +88,13 @@ def test_interventions(batch):
         np.testing.assert_array_equal(conf["ctx_feats"][i], batch["ctx_feats"][batch["pair"][i]])
     partner = I.partner_targets(batch)
     for i in np.flatnonzero(batch["pair"] >= 0):
-        assert partner["t_obj"][i] == batch["t_obj"][batch["pair"][i]]
+        # Columns are permuted per item: the mapped column must hold the *same entity*
+        # as the partner's target, not the same index.
+        j = batch["pair"][i]
+        np.testing.assert_allclose(
+            batch["q_feats"][i, :, partner["t_obj"][i]], batch["q_feats"][j, :, batch["t_obj"][j]]
+        )
+        assert partner["t_event"][i] == batch["t_event"][j]
     exp = I.language(batch, "explicit", rng)
     assert (exp["lang_kind"] == B.LANG_EXPLICIT).all() and (exp["lang_index"] >= 0).all()
 

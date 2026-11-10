@@ -72,12 +72,25 @@ def support(b: dict, condition: str, rng: np.random.Generator) -> tuple[dict, np
 
 
 def partner_targets(b: dict) -> dict:
-    """The batch with every conflict item's targets replaced by its partner's (same query)."""
+    """The batch with every conflict item's targets replaced by its partner's (same query).
+
+    Each item's query columns are permuted independently. The partner's target column
+    is therefore mapped into this item's column order, by matching the two (identical)
+    query states row for row. Copying the raw index would point at another entity."""
     has = b["pair"] >= 0
     src = np.where(has, b["pair"], np.arange(len(has)))
     out = dict(b)
     for k in TARGET_KEYS:
         out[k] = b[k][src]
+    for i in np.flatnonzero(has):
+        j = src[i]
+        row = b["q_feats"][j, :, b["t_obj"][j]]  # partner's target, both rows
+        dist = np.abs(b["q_feats"][i] - row[:, None, :]).sum((0, 2))
+        dist[b["q_types"][i] != b["q_types"][j][b["t_obj"][j]]] = np.inf
+        col = int(np.argmin(dist))
+        if dist[col] > 1e-5:
+            raise ValueError(f"conflict partners {i} and {j} do not share a query state")
+        out["t_obj"][i] = col
     return out
 
 
