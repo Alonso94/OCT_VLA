@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 def main() -> int:
     from oct_vla.robots.robotwin.native import RoboTwinNativePort
+    from oct_vla.robots.robotwin.task_config import require_franka_planner_limits
     from oct_vla.tasks.shelf_restock.collect import collect_dataset
     from oct_vla.tasks.shelf_restock.spec import RULE_INSTRUCTIONS, spec_for_rule
 
@@ -35,6 +36,11 @@ def main() -> int:
     )
     args = parser.parse_args()
     spec_ = spec_for_rule(args.rule)
+    # Refuse before starting the simulator: a corpus planned under other limits
+    # collects at a different yield and with slower motions, and nothing downstream
+    # would notice. Recorded in every episode so a corpus states what it used.
+    limits = require_franka_planner_limits(args.robotwin_root)
+    planner_metadata = {f"curobo_{key}": str(value) for key, value in limits.items()}
     # Every profile shares DEFAULT_SPEC and differs only in object_count, so
     # the spec cannot disagree with the scene the task class builds. It is
     # still passed explicitly rather than left to collect_dataset's default:
@@ -56,7 +62,8 @@ def main() -> int:
     args.output.mkdir(parents=True, exist_ok=True)
     seeds = tuple(int(value) for value in args.seeds.split(",") if value.strip())
     reports = collect_dataset(
-        port, args.output, seeds, spec=spec, episode_kind=args.episode_kind
+        port, args.output, seeds, spec=spec, episode_kind=args.episode_kind,
+        metadata=planner_metadata,
     )
     (args.output / "collection_report.json").write_text(json.dumps(reports, indent=2) + "\n")
     print(json.dumps(reports, indent=2))

@@ -107,3 +107,39 @@ def build_dual_franka_setup(
     if not isinstance(camera, dict) or "head_camera_type" not in camera:
         raise ValueError(f"Missing camera.head_camera_type in {config_path}")
     return setup
+
+
+#: cuRobo's c-space limits for the Franka arms that every shelf corpus was planned
+#: with. RoboTwin's asset pack changed them to 3.0 / 100.0 on 2026-09-22 (Hub commit
+#: 3dc3b798, "Unify curobo max_acceleration/max_jerk across embodiments"); a fresh
+#: download silently picks that up, which slows every planned motion and dropped the
+#: three-object collection yield from ~55 % to ~25 %. Collection refuses to run on
+#: anything else, so a corpus can never mix the two.
+FRANKA_PLANNER_LIMITS = {"max_acceleration": 15.0, "max_jerk": 500.0}
+
+
+def franka_planner_limits(root: Path) -> dict[str, float]:
+    """The c-space limits in the generated `curobo.yml` and its `curobo_tmp.yml` source.
+
+    Both are read because `update_embodiment_config_path.py` regenerates the first
+    from the second: an edit to only one would be undone, or not yet applied."""
+    found = {}
+    for name in ("curobo_tmp.yml", "curobo.yml"):
+        path = root / "assets" / "embodiments" / FRANKA_EMBODIMENT / name
+        cspace = _load_yaml(path)["robot_cfg"]["kinematics"]["cspace"]
+        limits = {key: float(cspace[key]) for key in FRANKA_PLANNER_LIMITS}
+        if found and limits != found:
+            raise ValueError(f"{path} disagrees with curobo_tmp.yml: {limits} vs {found}")
+        found = limits
+    return found
+
+
+def require_franka_planner_limits(root: Path) -> dict[str, float]:
+    limits = franka_planner_limits(root)
+    if limits != FRANKA_PLANNER_LIMITS:
+        raise ValueError(
+            f"Franka cuRobo limits are {limits}, the shelf corpora were planned with "
+            f"{FRANKA_PLANNER_LIMITS}. Set them in assets/embodiments/{FRANKA_EMBODIMENT}/"
+            "curobo_tmp.yml and curobo.yml (docs/reproducibility.md)."
+        )
+    return limits

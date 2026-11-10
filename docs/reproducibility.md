@@ -24,6 +24,17 @@ steps and the two upstream patches are in `docs/reproducibility.md`. The core
 package (`src/oct_vla`) has no runtime dependencies (`dependencies = []`) and
 runs on Python 3.10–3.12.
 
+**RoboTwin assets drift; pin them.** The asset pack (`TianxingChen/RoboTwin2.0` on
+the Hub) is not versioned with the code. On 2026-09-22 (Hub commit `3dc3b798`)
+it lowered the Franka cuRobo limits from `max_acceleration: 15.0`,
+`max_jerk: 500.0` to 3.0 / 100.0. A fresh download picks that up silently:
+motions are slower and three-object collection fell to ~25 % yield (9–10 of 32
+seeds; 12 of 32 with the old limits restored, against 112 of 200 for the
+2026-09 corpus). Download `embodiments.zip` at revision `981c92aa` (the
+commit before), or set both values back in `assets/embodiments/franka-panda/`
+`curobo_tmp.yml` and `curobo.yml`. `scripts/collect_shelf_restock.py` refuses
+to collect under any other limits and records them in every episode's metadata.
+
 **Environment files** live outside the repo, in `~/octvla/`. Source one before
 anything else:
 

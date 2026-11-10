@@ -329,6 +329,7 @@ def collect_dataset(
     spec: ShelfRestockSpec = DEFAULT_SPEC,
     hz: float = DEFAULT_HZ,
     episode_kind: str = "atomic",
+    metadata: Mapping[str, str] | None = None,
 ) -> tuple[dict[str, Any], ...]:
     """Attempt each of `seeds` exactly once, in order, never retrying one.
 
@@ -349,6 +350,8 @@ def collect_dataset(
             kwargs = {"seed": seed, "spec": spec, "hz": hz}
             if episode_kind != "atomic":
                 kwargs["episode_kind"] = episode_kind
+            if metadata:
+                kwargs["metadata"] = metadata
             episodes = collect_episode(port, **kwargs)
         except Exception as error:  # noqa: BLE001 - one bad seed must not end the batch
             reports.append(
