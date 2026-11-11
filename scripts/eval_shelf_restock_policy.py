@@ -191,6 +191,9 @@ def run_episode(
         "model_ids": sorted(set(observation.model_ids.values())),
         "layout": observation.layout,
         "future_keyframe": future_keyframe,
+        # Steps the oracle could not plan and sent an empty keyframe (exactly
+        # kv): how far this rollout's "oracle" condition really was the oracle.
+        "future_keyframe_unplannable_steps": 0,
         # Where each object's transfer stopped, from ground truth; filled from
         # the final step (tasks/shelf_restock/events.py).
         "events": {},
@@ -233,6 +236,7 @@ def run_episode(
             objects_lifted=max(result["objects_lifted"], outcome.objects_lifted),
             objects_total=outcome.objects_total or result["objects_total"],
             events=outcome.events or result["events"],
+            future_keyframe_unplannable_steps=observation.future_keyframe_unplannable,
         )
         if video is not None:
             video.add(observation, {

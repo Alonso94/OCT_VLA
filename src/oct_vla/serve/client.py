@@ -59,6 +59,8 @@ class RemoteObservation:
     #: Reset only: the keyframe source the server applied ("none" | "oracle");
     #: empty from a server too old to know the field.
     future_keyframe_source: str = ""
+    #: Steps so far on which the oracle could not plan and sent an empty keyframe.
+    future_keyframe_unplannable: int = 0
 
     def frame(self, name: str) -> RGBFrame:
         try:
@@ -119,6 +121,8 @@ def _observation(message: protocol.Message) -> RemoteObservation:
         future_keyframe_mask=(None if "future_keyframe" not in header
                               else tuple(header["future_keyframe"]["mask"])),
         future_keyframe_source=str(header.get("future_keyframe_source", "")),
+        future_keyframe_unplannable=int((header.get("future_keyframe") or {})
+                                        .get("unplannable_steps", 0)),
     )
 
 

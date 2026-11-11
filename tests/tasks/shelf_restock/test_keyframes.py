@@ -1,6 +1,7 @@
 """The shelf keyframe oracle's state machine, on the real spec and planners."""
 
 import numpy as np
+import pytest
 
 from oct_vla.core.frames import WORKCELL_FRAME, Pose
 from oct_vla.core.objects import ObjectScene, ObjectState
@@ -84,3 +85,39 @@ def test_a_dropped_target_is_regrasped_where_it_lies():
     rows, mask = oracle(_scene(a=dropped, b=b), _eef())
     assert _event(rows, mask) == "grasp" and oracle.target == "a"
     np.testing.assert_allclose(rows[0, :3], dropped, atol=1e-6)
+
+
+def test_an_unplannable_step_is_an_empty_keyframe_and_is_counted():
+    # The neighbour is chosen with the target. If the policy then knocks it
+    # past the right end of the shelf, b's placement beside it lands off the
+    # shelf (rollout G5F-kv-s1000, seed 803): the oracle has no keyframe.
+    a_up, b = (0.2, UPPER_Y, UPPER_Z), (0.05, LOWER_Y, LOWER_Z)
+    knocked = (0.45, UPPER_Y, UPPER_Z)
+    oracle = ShelfKeyframeOracle(spec_for_rule("leftmost"))
+    oracle.manager.record_placement("a")
+    assert _event(*oracle(_scene(a=a_up, b=b), _eef())) == "grasp"
+    assert (oracle.target, oracle.neighbour) == ("b", "a")
+    rows, mask = oracle(_scene(a=knocked, b=b), _eef())
+    assert not mask.any() and not rows.any()
+    assert oracle.unplannable_steps == 1 and "upper shelf" in oracle.last_failure
+    assert oracle.history[-1] == (None, "b")
+    # Back where a placement fits, the keyframe returns.
+    assert _event(*oracle(_scene(a=a_up, b=b), _eef())) == "grasp"
+    assert oracle.unplannable_steps == 1
+
+
+def test_export_refuses_an_unplannable_recording(monkeypatch):
+    from types import SimpleNamespace
+
+    from oct_vla.tasks.shelf_restock import keyframes
+
+    a, b = (-0.25, LOWER_Y, LOWER_Z), (0.05, LOWER_Y, LOWER_Z)
+    sample = SimpleNamespace(scene=_scene(a=a, b=b), observation=SimpleNamespace(eef=_eef()))
+
+    def fail(*_, **__):
+        raise keyframes.PlacementError("placement is not on the upper shelf")
+
+    monkeypatch.setattr(keyframes, "plan_placement", fail)
+    with pytest.raises(ValueError, match="planners failed on 1 recorded frames"):
+        keyframes.episode_keyframes(SimpleNamespace(seed=7, samples=[sample]),
+                                    spec_for_rule("leftmost"))

@@ -220,8 +220,8 @@ def test_reset_requests_the_oracle_keyframe_and_reads_it_every_step(connected):
     requests: list[dict] = []
     reset = {**_observation_header(), "future_keyframe_source": "oracle",
              "future_keyframe": _keyframe()}
-    step = {**_observation_header(), "future_keyframe": _keyframe(), "success": False,
-            "done": False}
+    step = {**_observation_header(), "future_keyframe": {**_keyframe(), "unplannable_steps": 4},
+            "success": False, "done": False}
     thread = threading.Thread(target=lambda: requests.extend(
         _serve(server_sock, [(reset, _frames()), (step, _frames())])))
     thread.start()
@@ -232,6 +232,8 @@ def test_reset_requests_the_oracle_keyframe_and_reads_it_every_step(connected):
     assert len(observation.future_keyframe) == 3 and len(observation.future_keyframe[0]) == 24
     assert observation.future_keyframe_mask == (True, True, False)
     assert outcome.observation.future_keyframe is not None
+    assert observation.future_keyframe_unplannable == 0
+    assert outcome.observation.future_keyframe_unplannable == 4
 
 
 @pytest.mark.parametrize("reply", [{}, {"future_keyframe_source": "none"}])

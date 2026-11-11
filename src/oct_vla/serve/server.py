@@ -361,7 +361,9 @@ class ShelfRestockEvalServer:
             # Called exactly once per snapshot, i.e. once per reset/step, in
             # order: the oracle is a state machine over the episode.
             rows, mask = self._episode.keyframe_oracle(scene, observation.eef)
-            header["future_keyframe"] = {"rows": rows.tolist(), "mask": mask.tolist()}
+            header["future_keyframe"] = {
+                "rows": rows.tolist(), "mask": mask.tolist(),
+                "unplannable_steps": self._episode.keyframe_oracle.unplannable_steps}
         frames = (
             ("head_camera", observation.head_rgb),
             ("left_wrist_camera", observation.left_wrist_rgb),

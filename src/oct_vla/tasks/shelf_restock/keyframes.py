@@ -25,6 +25,14 @@ gripper 0.833). Over the v4 corpus the held object stays 0.138-0.162 m from the
 mover's EEF through every carrying phase, and the arm is >= 0.234 m away at the
 end of its retreat.
 
+A policy can leave the scene somewhere the expert never would, and then the
+expert's planners can fail too (a neighbour-relative placement off the end of
+the shelf, a tipped object with no top-down grasp). The oracle has no keyframe
+to give then: it returns an empty mask, which the branch turns into exactly
+kv, and counts the step in ``unplannable_steps`` so a rollout reports how often
+its "oracle" condition was really kv. Export (``episode_keyframes``) runs on the
+expert's own recordings, where this cannot happen, and refuses if it does.
+
 Rows follow ``data/future_keyframes.py``: object at the event, the acting
 gripper's commanded pose at the event, object at its goal.
 """
@@ -45,7 +53,7 @@ from oct_vla.tasks.shelf_restock.manager import (
 )
 from oct_vla.tasks.shelf_restock.oracle.arms import arm_for
 from oct_vla.tasks.shelf_restock.oracle.grasps import generate_top_down_grasps
-from oct_vla.tasks.shelf_restock.oracle.placement import plan_placement
+from oct_vla.tasks.shelf_restock.oracle.placement import PlacementError, plan_placement
 from oct_vla.tasks.shelf_restock.spec import ShelfRestockSpec
 
 #: The expert's defaults (oracle/expert.py), which collection uses unchanged.
@@ -55,6 +63,10 @@ GRIPPER_MAX_WIDTH = 0.08
 OPEN = 1.0
 #: Mover-to-object distance beyond which a placed object has been let go.
 RELEASE_DISTANCE = 0.20
+
+
+class NoGraspError(ValueError):
+    """No top-down grasp candidate fits the target."""
 
 
 @dataclass
@@ -78,6 +90,9 @@ class ShelfKeyframeOracle:
         self._placed: set[str] = set()
         #: (event, target) per call, for diagnostics and tests.
         self.history: list[tuple[str | None, str | None]] = []
+        #: Steps on which the expert's planners failed and the keyframe was empty.
+        self.unplannable_steps = 0
+        self.last_failure = ""
 
     def _select(self, scene: ObjectScene) -> None:
         context = self.manager.next_context(scene)
@@ -90,7 +105,7 @@ class ShelfKeyframeOracle:
         candidates = generate_top_down_grasps(target, gripper_max_width=GRIPPER_MAX_WIDTH,
                                               standoff=STANDOFF)
         if not candidates:
-            raise ValueError(f"no top-down grasp fits {self.target!r}")
+            raise NoGraspError(f"no top-down grasp fits {self.target!r}")
         grasp = candidates[0]
         neighbour = scene.get(self.neighbour) if self.neighbour is not None else None
         placement = plan_placement(self.spec, target, grasp.wrist_yaw, neighbour,
@@ -125,7 +140,14 @@ class ShelfKeyframeOracle:
             event = "place"
         else:
             event = "grasp"
-            self._replan(scene)
+            try:
+                self._replan(scene)
+            except (PlacementError, NoGraspError) as failure:
+                self.plan = None
+                self.unplannable_steps += 1
+                self.last_failure = str(failure)
+                self.history.append((None, self.target))
+                return empty
         plan = self.plan
         size = target.size_xyz
         if event == "grasp":
@@ -146,4 +168,7 @@ def episode_keyframes(episode, spec: ShelfRestockSpec) -> tuple[np.ndarray, np.n
     """The oracle run over a recorded episode, frame by frame: ``[T, 3, 24]``, ``[T, 3]``."""
     oracle = ShelfKeyframeOracle(spec)
     out = [oracle(sample.scene, sample.observation.eef) for sample in episode.samples]
+    if oracle.unplannable_steps:
+        raise ValueError(f"seed {episode.seed}: the expert's planners failed on "
+                         f"{oracle.unplannable_steps} recorded frames ({oracle.last_failure})")
     return np.stack([k for k, _ in out]), np.stack([m for _, m in out])
