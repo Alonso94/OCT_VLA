@@ -209,6 +209,10 @@ def run_episode(
         "future_keyframe": future_keyframe,
         # The demonstrations a learned source was given on this scene.
         "future_support_seeds": support_seeds,
+        # Where each object started: with `events` (lifted_step), the order the robot
+        # took them in, scored offline against either rule.
+        "initial_x": ({o.track_id: float(o.pose.position[0]) for o in observation.scene.objects}
+                      if getattr(observation, "scene", None) is not None else {}),
         # Steps the oracle could not plan and sent an empty keyframe (exactly
         # kv): how far this rollout's "oracle" condition really was the oracle.
         "future_keyframe_unplannable_steps": 0,
@@ -337,6 +341,13 @@ def main() -> int:
         "fully closed-loop; the trained default of 50 is 3.3 s of open loop at "
         "15 Hz.",
     )
+    parser.add_argument("--future-support-pool", type=Path, default=None,
+                        help="Support-swap intervention (learned future source only): draw "
+                             "the prior's demonstrations from this pool "
+                             "(scripts/build_support_pool.py) instead of the view's own")
+    parser.add_argument("--oracle-rule", default=None,
+                        help="Steering intervention (oracle future source only): serve the "
+                             "keyframe oracle of this transfer rule instead of the scene's")
     parser.add_argument("--visual-shift", action="store_true",
                         help="Record that the server renders the appearance-shift tier")
     parser.add_argument("--entity-noise-pos-mm", type=float, default=0.0,
@@ -540,9 +551,20 @@ def main() -> int:
 
             future_source = PriorFutureSource(
                 provenance, args.dataset_root,
-                device="cuda" if torch.cuda.is_available() else "cpu")
+                device="cuda" if torch.cuda.is_available() else "cpu",
+                support_pool=args.future_support_pool)
+            print(f"future source: {provenance['prior']} ({provenance['kind']}), "
+                  f"supports from {future_source.pool_path}", flush=True)
         elif future_keyframe != "oracle":
             raise SystemExit(f"unknown future_keyframe source {future_keyframe!r}")
+        if args.future_support_pool is not None and future_keyframe != "pfn":
+            raise SystemExit("--future-support-pool needs a learned (pfn) future source")
+        if args.oracle_rule is not None:
+            if future_keyframe != "oracle":
+                raise SystemExit("--oracle-rule needs an oracle future source")
+            future_keyframe = f"oracle:{args.oracle_rule}"
+    elif args.future_support_pool is not None or args.oracle_rule is not None:
+        raise SystemExit("--future-support-pool / --oracle-rule need a future-branch checkpoint")
     if not entity_noise.is_clean and not conditioning:
         # Noise on entities a policy never reads would score a clean rollout
         # under a noisy label.
@@ -632,6 +654,9 @@ def main() -> int:
             ) if part
         ),
         "visual_shift": bool(args.visual_shift),
+        "future_intervention": {
+            "support_pool": str(args.future_support_pool) if args.future_support_pool else None,
+            "oracle_rule": args.oracle_rule},
         "entity_noise": dataclasses.asdict(entity_noise),
         "execution": {
             "n_action_steps": getattr(config, "n_action_steps", None),

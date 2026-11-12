@@ -27,6 +27,9 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+#: The prediction heads (as in prior_train.py --freeze-encoder).
+HEAD_PREFIXES = ("pointer.", "final.", "grip_head.", "event_head.", "obj.", "grip.")
+
 
 def main() -> int:
     import torch
@@ -57,6 +60,13 @@ def main() -> int:
     ap.add_argument("--lr", type=float, default=None,
                     help="Default 1e-4 fine-tuning, 3e-4 from scratch")
     ap.add_argument("--warmup", type=int, default=200)
+    ap.add_argument("--absolute-obj-yaw", action="store_true",
+                    help="Keep the pretrained absolute object yaw (stuck at its saddle in P1; "
+                         "model._pose_rotated). Default: switch to the rotated yaw")
+    ap.add_argument("--heads-only", action="store_true",
+                    help="Freeze the encoder (cells, support and query attention); adapt the "
+                         "prediction heads only, so the small real set cannot rewrite how the "
+                         "prior reads its support")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--workers", type=int, default=12, help="Synthetic generator workers")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -78,7 +88,15 @@ def main() -> int:
     model = M.KeyframePFN(**blob["config"])
     if args.init:
         model.load_state_dict(blob["state"])
+    if model.head == "interaction" and not args.absolute_obj_yaw:
+        M.reset_obj_yaw(model)
     model = model.to(args.device).train()
+    if args.heads_only:
+        if args.scratch:
+            raise SystemExit("--heads-only on random weights would train heads on noise")
+        for name, param in model.named_parameters():
+            param.requires_grad_(name.startswith(HEAD_PREFIXES))
+    params = [p for p in model.parameters() if p.requires_grad]
 
     episodes, supports = {}, {}
     for spec in args.collection:
@@ -102,7 +120,7 @@ def main() -> int:
     print({r: len(v) for r, v in data.items.items()}, f"{len(data.pairs)} conflict pairs",
           flush=True)
 
-    opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
+    opt = torch.optim.AdamW(params, lr=lr, weight_decay=0.01)
     sched = torch.optim.lr_scheduler.LambdaLR(
         opt, lambda s: min(1.0, (s + 1) / args.warmup)
         * 0.5 * (1 + math.cos(math.pi * min(1.0, s / args.steps))))
@@ -117,7 +135,8 @@ def main() -> int:
             "synthetic_fraction": synthetic, "lr": lr, "model_config": model.config,
             "episodes": {r: [int(e.seed) for e in eps] for r, eps in episodes.items()},
             "real_items": {r: len(v) for r, v in data.items.items()},
-            "conflict_pairs": len(data.pairs)}
+            "conflict_pairs": len(data.pairs),
+            "trainable_parameters": sum(p.numel() for p in params)}
     (args.out / "config.json").write_text(json.dumps(meta, indent=1))
     hist = (args.out / "history.jsonl").open("a")
     t0, running = time.time(), {}
@@ -133,7 +152,7 @@ def main() -> int:
         total, terms = M.loss(model, {k: v.float() for k, v in out.items()}, b)
         opt.zero_grad(set_to_none=True)
         total.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        torch.nn.utils.clip_grad_norm_(params, 1.0)
         opt.step()
         sched.step()
         for k, v in terms.items():

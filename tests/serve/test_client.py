@@ -259,3 +259,11 @@ def test_step_refuses_an_observation_that_lost_the_keyframe(connected):
     with pytest.raises(protocol.ProtocolError, match="mid-episode"):
         client.step([0.0] * 14)
     thread.join()
+
+
+def test_the_server_serves_every_rules_oracle_as_a_source():
+    server = pytest.importorskip("oct_vla.serve.server")
+    from oct_vla.tasks.shelf_restock.spec import RULE_INSTRUCTIONS
+
+    assert {"none", "oracle"} <= set(server.FUTURE_KEYFRAME_SOURCES)
+    assert {f"oracle:{r}" for r in RULE_INSTRUCTIONS} <= set(server.FUTURE_KEYFRAME_SOURCES)

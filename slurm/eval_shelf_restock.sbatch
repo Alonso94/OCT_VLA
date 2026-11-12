@@ -84,6 +84,10 @@ EXEC_FLAG=()
 [ -n "${EVAL_ENTITY_NOISE_POS_MM:-}" ] && EXEC_FLAG+=(--entity-noise-pos-mm "$EVAL_ENTITY_NOISE_POS_MM")
 [ -n "${EVAL_ENTITY_NOISE_ROT_DEG:-}" ] && EXEC_FLAG+=(--entity-noise-rot-deg "$EVAL_ENTITY_NOISE_ROT_DEG")
 [ -n "${EVAL_ENTITY_DROPOUT:-}" ] && EXEC_FLAG+=(--entity-dropout "$EVAL_ENTITY_DROPOUT")
+# PFN-VLA interventions: another rule's support demos (learned source) or
+# another rule's oracle keyframe (oracle source).
+[ -n "${EVAL_SUPPORT_POOL:-}" ] && EXEC_FLAG+=(--future-support-pool "$EVAL_SUPPORT_POOL")
+[ -n "${EVAL_ORACLE_RULE:-}" ] && EXEC_FLAG+=(--oracle-rule "$EVAL_ORACLE_RULE")
 
 VIDEO_FLAG=()
 if [ -n "${EVAL_VIDEO_DIR:-}" ]; then

@@ -162,3 +162,32 @@ def test_target_masks_leave_synthetic_loss_unchanged_and_drop_missing_targets(ba
             "t_final": b["t_final"] + 100.0}
     _, terms = M.loss(model, out, drop)
     assert terms["final"] == 0.0
+
+
+def test_the_absolute_yaw_head_has_a_saddle_and_the_rotated_one_does_not():
+    # A prediction exactly opposite its target: the absolute head gets no gradient.
+    raw = torch.tensor([[0.0, 0.0, 0.0, 0.0, -1.0]], requires_grad=True)
+    current = torch.zeros(1, 9)
+    current[0, 4] = 1.0  # current yaw 0
+    target = torch.tensor([[0.0, 0.0, 0.0, 0.0, 1.0]])
+    torch.nn.functional.smooth_l1_loss(M._pose(current, raw), target, beta=0.05).backward()
+    assert raw.grad[0, 3:5].abs().max() == 0
+    # The rotated head with zeroed yaw outputs predicts the current yaw exactly.
+    current[0, 3:5] = torch.tensor([0.6, 0.8])
+    pose = M._pose_rotated(current, torch.zeros(1, 5))
+    torch.testing.assert_close(pose[0, 3:5], torch.tensor([0.6, 0.8]))
+
+
+def test_switching_a_pretrained_model_to_the_rotated_yaw(batch, table):
+    model = _model()
+    M.reset_obj_yaw(model)
+    assert model.config["yaw_residual"]
+    b = M.to_torch(batch, table, "cpu")
+    out = model(b, teacher=True)
+    cur = M.normalise(b["q_feats"][:, 1]).gather(
+        1, b["t_obj"][:, None, None].expand(-1, 1, b["q_feats"].shape[-1])).squeeze(1)
+    torch.testing.assert_close(out["obj"][:, 3:5], cur[:, 3:5])
+    # And it reloads as what it is.
+    again = M.KeyframePFN(**model.config)
+    again.load_state_dict(model.state_dict())
+    torch.testing.assert_close(again(b, teacher=True)["obj"], out["obj"])

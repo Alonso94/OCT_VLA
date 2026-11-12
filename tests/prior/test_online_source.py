@@ -105,3 +105,14 @@ def test_the_exporters_learned_source_writes_rows_and_confidence(tmp_path):
         assert values.shape == (len(frames), *shape) and mask.shape == (len(frames), shape[0])
         assert conf.shape == (len(frames),) and ((conf > 0) & (conf <= 1)).all()
         assert "supports [0, 2]" in note  # never the episode itself (index 1)
+
+
+def test_a_support_pool_override_replaces_the_views_own(tmp_path):
+    view = _view(tmp_path, demos=4)
+    other = tmp_path / "other.npz"
+    with np.load(tmp_path / "meta/pfn_support.npz") as pool:
+        np.savez_compressed(other, **{k: pool[k] for k in pool.files if k != "seed"},
+                            seed=np.arange(900, 904))
+    source = PriorFutureSource(view, tmp_path, support_pool=other)
+    assert source.pool_path == other
+    assert all(900 <= s < 904 for s in source.reset(800, _observation(**START)))

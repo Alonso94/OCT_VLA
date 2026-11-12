@@ -41,11 +41,19 @@ from oct_vla.tasks.shelf_restock.manager import (
 )
 from oct_vla.tasks.shelf_restock.events import TransferEvents
 from oct_vla.tasks.shelf_restock.keyframes import ShelfKeyframeOracle
-from oct_vla.tasks.shelf_restock.spec import DEFAULT_SPEC, ShelfRestockSpec
+from oct_vla.tasks.shelf_restock.spec import (
+    DEFAULT_SPEC,
+    RULE_INSTRUCTIONS,
+    ShelfRestockSpec,
+    spec_for_rule,
+)
 
 #: Where a rollout's future keyframe comes from. Only the oracle is served: a
 #: learned prior runs on the policy side and never sees task-manager state.
-FUTURE_KEYFRAME_SOURCES = ("none", "oracle")
+#: "oracle:<rule>" serves the oracle of another transfer rule than the scene's own:
+#: the steering intervention (does the keyframe alone change what the robot does?).
+#: Only the keyframe changes; success, events and the task context stay the scene's.
+FUTURE_KEYFRAME_SOURCES = ("none", "oracle", *(f"oracle:{r}" for r in RULE_INSTRUCTIONS))
 
 # Measured stationary EEF poses in the demonstrations move by a few tenths of
 # a micrometre due to physics. Sending those numerical remnants through IK is
@@ -430,8 +438,11 @@ class ShelfRestockEvalServer:
             control_space=control_space,
             gripper_encoding=gripper_encoding,
             events=TransferEvents(self._spec),
-            keyframe_oracle=(ShelfKeyframeOracle(self._spec)
-                             if future_keyframe == "oracle" else None),
+            keyframe_oracle=(
+                None if future_keyframe == "none"
+                else ShelfKeyframeOracle(self._spec) if future_keyframe == "oracle"
+                else ShelfKeyframeOracle(spec_for_rule(future_keyframe.split(":", 1)[1],
+                                                       self._spec))),
         )
         header, blobs, _ = self._snapshot()
         header["model_ids"] = spawned

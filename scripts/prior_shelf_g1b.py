@@ -73,6 +73,28 @@ def _reference(episode):
     return out
 
 
+#: Confidence bins of the reliability table.
+BINS = (0.0, 0.5, 0.8, 0.95, 1.0 + 1e-9)
+
+
+def _calibration(records) -> dict:
+    """Is the prior right as often as it is sure? Accuracy against mean confidence per
+    bin, and the expected calibration error. The confidence gate assumes this holds."""
+    if not records:
+        return {}
+    conf = np.array([c for c, _ in records])
+    hit = np.array([h for _, h in records], float)
+    table, ece = [], 0.0
+    for lo, hi in zip(BINS[:-1], BINS[1:]):
+        sel = (conf >= lo) & (conf < hi)
+        if sel.any():
+            table.append({"lo": lo, "hi": min(hi, 1.0), "n": int(sel.sum()),
+                          "acc": float(hit[sel].mean()), "conf": float(conf[sel].mean())})
+            ece += sel.mean() * abs(hit[sel].mean() - conf[sel].mean())
+    return {"bins": table, "ece": float(ece), "mean_conf": float(conf.mean()),
+            "acc": float(hit.mean())}
+
+
 def _acc(hits) -> dict:
     hits = np.asarray(hits, bool)
     return {"acc": float(hits.mean()) if len(hits) else None, "n": int(len(hits))}
@@ -139,6 +161,7 @@ def main() -> int:
             supports = shelf_support_entities(spec_for_rule(rule))
             for condition in ("same", "other", "none"):
                 rng = np.random.default_rng([args.seed, len(rule), len(condition)])
+                calibration: dict[str, list] = {}
                 hits = {k: [] for k in ("pointer", "pointer_grasp", "pointer_place", "event",
                                         "gripper", "first")}
                 err = {k: [] for k in ("obj_cm", "grip_cm", "goal_cm")}
@@ -165,6 +188,16 @@ def main() -> int:
                         hits["pointer"].append(right)
                         hits[f"pointer_{e.kind}"].append(right)
                         stage = _stage(ep.samples[t].phase)
+                        # Correct = right object (and, for an interaction prior, right
+                        # event and arm): what the gate's confidence is a product over.
+                        whole = right
+                        if "event" in out:
+                            whole = (right and ("grasp", "place", "regrasp", "release")[
+                                int(out["event"][n].argmax())] == e.kind
+                                and ("left", "right")[int(out["gripper"][n].argmax())] == e.side)
+                        record = (A.confidence(out, n), bool(whole))
+                        calibration.setdefault("all", []).append(record)
+                        calibration.setdefault(stage, []).append(record)
                         hits.setdefault(f"pointer@{stage}", []).append(right)
                         if "event" in out:
                             hits["event"].append(
@@ -188,7 +221,9 @@ def main() -> int:
                     first = qs[0].order[int(RULE_SELECT[want_rule](xs))]
                     hits["first"].append(frames[0] == 0 and A.predicted_track(out, 0, qs[0]) == first)
                 key = f"{name}/{rule}/{condition}"
-                results[key] = {**{k: _acc(v) for k, v in hits.items() if v},
+                results[key] = {**{f"calibration@{k}": _calibration(v)
+                                   for k, v in calibration.items()},
+                                **{k: _acc(v) for k, v in hits.items() if v},
                                 **{k: {"median": float(np.median(v)), "mean": float(np.mean(v))}
                                    for k, v in err.items() if v}}
                 print(key, {k: round(v["acc"], 3) for k, v in results[key].items()

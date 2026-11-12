@@ -30,7 +30,10 @@ class PriorFutureSource:
 
     name = "pfn"
 
-    def __init__(self, provenance: dict, dataset_root: Path, device: str = "cpu") -> None:
+    def __init__(self, provenance: dict, dataset_root: Path, device: str = "cpu",
+                 support_pool: Path | None = None) -> None:
+        """``support_pool`` replaces the view's own pool: the support-swap intervention
+        (another rule's demonstrations, ``scripts/build_support_pool.py``)."""
         from .data import load_language
 
         if provenance.get("source") != "pfn":
@@ -46,7 +49,8 @@ class PriorFutureSource:
         if self.model.config != provenance["prior_config"]:
             raise ValueError(f"{provenance['prior']} is not the prior the view was exported with")
         self.lang = load_language(Path(provenance["lang"])) if provenance.get("lang") else None
-        with np.load(Path(dataset_root) / provenance["support_pool"]) as pool:
+        self.pool_path = Path(support_pool or Path(dataset_root) / provenance["support_pool"])
+        with np.load(self.pool_path) as pool:
             self.pool = [
                 A.SupportDemo(pool["feats"][i], pool["types"][i], pool["rows"][i],
                               pool["event"][i], pool["gripper"][i], pool["flag"][i],

@@ -184,6 +184,7 @@ class KeyframePFN(nn.Module):
         head: str = "interaction",
         use_context: bool = True,
         use_edges: bool = True,
+        yaw_residual: bool = False,
     ):
         super().__init__()
         if head not in HEADS:
@@ -196,6 +197,7 @@ class KeyframePFN(nn.Module):
             "head": head,
             "use_context": use_context,
             "use_edges": use_edges,
+            "yaw_residual": yaw_residual,
         }
         self.head, self.use_context, w = head, use_context, width
         self.cell = nn.Sequential(nn.Linear(N_FEATURES, w), nn.SiLU(), nn.Linear(w, w))
@@ -298,7 +300,9 @@ class KeyframePFN(nn.Module):
         out["event"] = self.event_head(evc)
         grip_idx = b["t_grip"] if teacher else out["gripper"].argmax(-1)
         grip_cell = _take(gcells, grip_idx)
-        out["obj"] = _pose(cur_obj, self.obj(torch.cat([obj_cell, evc], -1)))
+        raw_obj = self.obj(torch.cat([obj_cell, evc], -1))
+        out["obj"] = (_pose_rotated(cur_obj, raw_obj) if self.config.get("yaw_residual")
+                      else _pose(cur_obj, raw_obj))
         g = self.grip(torch.cat([grip_cell, obj_cell, evc], -1))
         out["grip_pos"] = out["obj"][:, :3] + g[:, :3]
         out["aperture"] = torch.sigmoid(g[:, 3])
@@ -319,6 +323,31 @@ def _pose(current, raw):
     pos = current[:, POS] + raw[:, :3]
     yaw = F.normalize(raw[:, 3:5], dim=-1, eps=1e-6)
     return torch.cat([pos, yaw], -1)
+
+
+def _pose_rotated(current, raw):
+    """Like `_pose`, but the yaw is the current yaw rotated by a predicted delta that
+    starts at "no rotation" (raw yaw outputs zero -> delta (sin, cos) = (0, 1)).
+
+    `_pose`'s absolute unit-vector yaw has a saddle: a prediction exactly opposite its
+    target gets a radial error, which the normalisation projects out, so its gradient is
+    zero. The pretrained P1 object heads sit in it (cos yaw loss 1.93, yaw off by pi,
+    on their own synthetic data); G1 scored positions only and never saw it."""
+    pos = current[:, POS] + raw[:, :3]
+    delta = F.normalize(raw[:, 3:5] + raw.new_tensor([0.0, 1.0]), dim=-1, eps=1e-6)
+    s, c = current[:, 3], current[:, 4]
+    yaw = torch.stack([s * delta[:, 1] + c * delta[:, 0], c * delta[:, 1] - s * delta[:, 0]], -1)
+    return torch.cat([pos, yaw], -1)
+
+
+def reset_obj_yaw(model: "KeyframePFN") -> None:
+    """Switch a pretrained model to the rotated object yaw: zero the head's yaw outputs,
+    so the delta starts at "no rotation" rather than at whatever the stuck head emitted."""
+    last = model.obj[-1]
+    with torch.no_grad():
+        last.weight[3:5].zero_()
+        last.bias[3:5].zero_()
+    model.config["yaw_residual"] = True
 
 
 def target_pose(pose: torch.Tensor) -> torch.Tensor:
