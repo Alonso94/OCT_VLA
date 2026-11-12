@@ -40,6 +40,17 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 RULE_SELECT = {"leftmost": np.argmin, "rightmost": np.argmax}
+#: Phase label -> stage of a transfer, for the per-stage breakdown only (evaluation side;
+#: nothing here reaches the prior). The compactor's push has no counterpart in the prior.
+STAGES = {"open": "to_grasp", "pregrasp": "to_grasp", "descend": "to_grasp", "close": "to_grasp",
+          "lift": "carry", "preplace": "carry", "place": "carry", "release": "carry",
+          "retreat": "after_place", "park mover": "after_place"}
+
+
+def _stage(phase: str) -> str:
+    if phase.startswith("compact") or phase == "park compactor":
+        return "compaction"
+    return STAGES.get(phase, "other")
 
 
 def _episodes(path: Path):
@@ -85,6 +96,7 @@ def main() -> int:
     parser.add_argument("--k", type=int, default=A.K_SUPPORT)
     parser.add_argument("--stride", type=int, default=5, help="Evaluate every n-th frame")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--device", default="cpu")
     args = parser.parse_args()
     if args.out.exists():
         raise SystemExit(f"Refusing to overwrite {args.out}")
@@ -102,8 +114,13 @@ def main() -> int:
         print(f"{rule}: {len(episodes[rule])} successful episodes", flush=True)
 
     results = {}
+    meta = {"args": {k: str(v) for k, v in vars(args).items()},
+            "episodes": {r: [int(e.seed) for e in eps] for r, eps in episodes.items()},
+            "adapter": {"eef_to_grip": A.EEF_TO_GRIP, "instruction": A.INSTRUCTION}}
+    partial = args.out.with_name(args.out.name + ".partial")
+    args.out.parent.mkdir(parents=True, exist_ok=True)
     for run in args.runs:
-        model = A.load_prior(run)
+        model = A.load_prior(run, args.device)
         name = run.name
         for rule in RULE_SELECT:
             other = next(r for r in RULE_SELECT if r != rule)
@@ -128,18 +145,22 @@ def main() -> int:
                     s0 = ep.samples[0]
                     qs = [A.query(s0.scene, s0.observation.eef, ep.samples[t].scene,
                                   ep.samples[t].observation.eef, supports) for t in frames]
-                    out = A.infer(model, A.pack(support, qs), lang)
+                    out = A.infer(model, A.pack(support, qs), lang, args.device)
                     for n, t in enumerate(frames):
                         e = ref[t]
                         right = A.predicted_track(out, n, qs[n]) == e.track_id
                         hits["pointer"].append(right)
                         hits[f"pointer_{e.kind}"].append(right)
+                        stage = _stage(ep.samples[t].phase)
+                        hits.setdefault(f"pointer@{stage}", []).append(right)
                         if "event" in out:
                             hits["event"].append(
                                 ("grasp", "place", "regrasp", "release")[int(out["event"][n].argmax())]
                                 == e.kind)
                             hits["gripper"].append(("left", "right")[int(out["gripper"][n].argmax())]
                                                    == e.side)
+                            hits.setdefault(f"event@{stage}", []).append(hits["event"][-1])
+                            hits.setdefault(f"gripper@{stage}", []).append(hits["gripper"][-1])
                             rows, _ = A.keyframe_rows(out, n, qs[n])
                             for r, key in enumerate(("obj_cm", "grip_cm", "goal_cm")):
                                 err[key].append(100 * float(np.linalg.norm(
@@ -159,11 +180,9 @@ def main() -> int:
                                    for k, v in err.items() if v}}
                 print(key, {k: round(v["acc"], 3) for k, v in results[key].items()
                             if isinstance(v, dict) and v.get("acc") is not None}, flush=True)
-    meta = {"args": {k: str(v) for k, v in vars(args).items()},
-            "episodes": {r: [int(e.seed) for e in eps] for r, eps in episodes.items()},
-            "adapter": {"eef_to_grip": A.EEF_TO_GRIP, "instruction": A.INSTRUCTION}}
-    args.out.parent.mkdir(parents=True, exist_ok=True)
+        partial.write_text(json.dumps({"meta": meta, "results": results}, indent=1))
     args.out.write_text(json.dumps({"meta": meta, "results": results}, indent=1))
+    partial.unlink(missing_ok=True)
     print(f"wrote {args.out}")
     return 0
 

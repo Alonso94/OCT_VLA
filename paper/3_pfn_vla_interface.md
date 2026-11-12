@@ -166,10 +166,35 @@ says what it tells GEMIL.
 
 - **Question:** does the synthetic PFN pick the right next object on real collected
   shelf keyframes, for the demonstrated order?
-- **Learned:** pending.
-- **For GEMIL:** the same sim-gap test GEMIL needs between its synthetic prior and
-  MIRACLE scenes: does a prior trained without a simulator read simulator states
-  correctly?
+- **Learned** (3 seeds per prior, 52 leftmost + 43 rightmost recorded demos, K = 3
+  support, ambiguous instruction, `octvla-prior/results/g1b-shelf-v1.json`):
+  - **It follows the support on real scenes.** With no support the prior defaults to
+    "leftmost first": on rightmost scenes it picks the rightmost object at frame 0 only
+    0.00–0.35 of the time. Rightmost support raises that to 0.98 for interaction seeds
+    1–2, but only 0.37 for seed 0; the goal-only prior reaches 0.88–1.00 on all seeds.
+  - **Before each grasp it names the right object almost always.** With same-rule
+    support, next-object accuracy is 0.99 [0.99–1.00] for the interaction prior,
+    against 0.76 without support. While carrying it is 0.81, and after placing 0.98.
+  - **It fails during compaction.** The right arm's push is about 28 % of evaluated
+    frames, and the prior has no vocabulary for it. Next-object accuracy there drops to
+    0.33, event to 0.11, and acting arm to 0.20: it reads the pushing arm as the one
+    about to act.
+  - **Positions are coarse.** Median errors against the oracle rows are 9.6 cm for the
+    object, 9.4 cm for the gripper and 7.1 cm for the goal. The prior's row arrangement
+    starts at a deck edge, while the shelf's starts near the deck centre.
+  - **The goal-only prior matches or beats the interaction prior** on next-object
+    accuracy (0.97 against 0.81 while carrying) and follows support more reliably.
+    This is a warning for the "interaction pretraining matters" claim, which Step 3's
+    goal-only arm tests directly.
+- **For GEMIL:**
+  - The sim gap is not uniform. A synthetic prior reads simulator states it has a
+    vocabulary for almost perfectly. It fails on a behaviour it has none for (here a
+    push), and fails confidently, not by abstaining. GEMIL should check which of its
+    targets' behaviours the synthetic prior actually covers before trusting E(Y | D)
+    on them.
+  - Default preferences show up only without context. The prior's "leftmost first"
+    default is invisible when supports agree with it, so the no-support condition is
+    needed to see what the support actually contributes.
 
 ### G2: oracle keyframe into GR00T
 
