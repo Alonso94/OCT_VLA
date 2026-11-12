@@ -136,3 +136,29 @@ def test_checkpoints_from_before_the_flag_load_with_edges():
     config = dict(_model().config)
     del config["use_edges"]
     assert M.KeyframePFN(**config).edges is not None
+
+
+def test_target_masks_leave_synthetic_loss_unchanged_and_drop_missing_targets(batch, table):
+    import torch.nn.functional as F
+
+    model = _model().train()
+    b = M.to_torch(batch, table, "cpu")
+    out = model(b)
+    plain, _ = M.loss(model, out, b)
+    # The pre-mask definition: one mean over every element.
+    gp = (b["t_grip_pos"] - b["t_grip_pos"].new_tensor(M.POS_CENTRE)) / M.POS_SCALE
+    reference = (F.cross_entropy(out["pointer"], b["t_obj"])
+                 + F.smooth_l1_loss(out["final"], M.target_pose(b["t_final"]), beta=0.05)
+                 + F.cross_entropy(out["gripper"], b["t_grip"])
+                 + F.cross_entropy(out["event"], b["t_event"] - 1)
+                 + F.smooth_l1_loss(out["obj"], M.target_pose(b["t_obj_pose"]), beta=0.05)
+                 + F.smooth_l1_loss(out["grip_pos"], gp, beta=0.05)
+                 + F.smooth_l1_loss(out["aperture"], b["t_aperture"], beta=0.05))
+    torch.testing.assert_close(plain, reference)
+    ones = {f"m_{k}": torch.ones(len(b["t_obj"])) for k in ("obj", "grip_pos", "aperture", "final")}
+    torch.testing.assert_close(M.loss(model, out, {**b, **ones})[0], plain)
+    # A target marked missing contributes nothing, whatever its value.
+    drop = {**b, **ones, "m_final": torch.zeros(len(b["t_obj"])),
+            "t_final": b["t_final"] + 100.0}
+    _, terms = M.loss(model, out, drop)
+    assert terms["final"] == 0.0

@@ -95,6 +95,10 @@ def main() -> int:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--k", type=int, default=A.K_SUPPORT)
     parser.add_argument("--stride", type=int, default=5, help="Evaluate every n-th frame")
+    parser.add_argument("--query-split", choices=("all", "val"), default="all",
+                        help="all: every episode, supports leave-one-out (a frozen prior). "
+                             "val: validation-seed queries, training-seed supports (the "
+                             "held-out check for a prior fine-tuned on the training seeds)")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cpu")
     args = parser.parse_args()
@@ -109,9 +113,17 @@ def main() -> int:
     episodes, demos = {}, {}
     for rule, path in collections.items():
         supports = shelf_support_entities(spec_for_rule(rule))
-        episodes[rule] = _episodes(Path(path))
-        demos[rule] = [A.support_demo(e, supports) for e in episodes[rule]]
-        print(f"{rule}: {len(episodes[rule])} successful episodes", flush=True)
+        every = _episodes(Path(path))
+        if args.query_split == "val":
+            from oct_vla.prior.finetune import split_of
+
+            episodes[rule] = [e for e in every if split_of(int(e.seed)) == "val"]
+            pool = [e for e in every if split_of(int(e.seed)) == "train"]
+        else:
+            episodes[rule], pool = every, every
+        demos[rule] = [A.support_demo(e, supports) for e in pool]
+        print(f"{rule}: {len(episodes[rule])} query episodes, {len(pool)} support demos",
+              flush=True)
 
     results = {}
     meta = {"args": {k: str(v) for k, v in vars(args).items()},
@@ -136,7 +148,8 @@ def main() -> int:
                     else:
                         pool = [d for j, d in enumerate(demos[rule if condition == "same"
                                                               else other])
-                                if not (condition == "same" and j == i)]
+                                if not (condition == "same" and j == i
+                                        and args.query_split == "all")]
                         support = [pool[j] for j in rng.choice(len(pool), args.k, replace=False)]
                     ref = _reference(ep)
                     ref_rows, ref_mask = oracle_future_keyframes(ep)

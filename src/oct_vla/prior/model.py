@@ -328,18 +328,35 @@ def target_pose(pose: torch.Tensor) -> torch.Tensor:
     return out
 
 
+def _regression(pred, target, weight):
+    """Smooth-L1 averaged per item, then over the items whose target exists.
+
+    With every weight 1 this equals the plain mean over all elements (each item has
+    the same number of them), so synthetic training is unchanged. Real fine-tuning
+    items can lack a target (a conflict partner's aperture and final pose were never
+    recorded) and carry weight 0 for it (`m_<target>`)."""
+    per_item = F.smooth_l1_loss(pred, target, beta=0.05, reduction="none")
+    per_item = per_item.reshape(per_item.shape[0], -1).mean(-1)
+    if weight is None:
+        return per_item.mean()
+    weight = weight.to(per_item.dtype)
+    return (per_item * weight).sum() / weight.sum().clamp_min(1.0)
+
+
 def loss(model: KeyframePFN, out: dict, b: dict) -> tuple[torch.Tensor, dict]:
+    m = {k: b.get(f"m_{k}") for k in ("obj", "grip_pos", "aperture", "final")}
     terms = {
         "pointer": F.cross_entropy(out["pointer"], b["t_obj"]),
-        "final": F.smooth_l1_loss(out["final"], target_pose(b["t_final"]), beta=0.05),
+        "final": _regression(out["final"], target_pose(b["t_final"]), m["final"]),
     }
     if model.head == "interaction":
         terms["gripper"] = F.cross_entropy(out["gripper"], b["t_grip"])
         terms["event"] = F.cross_entropy(out["event"], b["t_event"] - 1)
-        terms["obj"] = F.smooth_l1_loss(out["obj"], target_pose(b["t_obj_pose"]), beta=0.05)
+        terms["obj"] = _regression(out["obj"], target_pose(b["t_obj_pose"]), m["obj"])
         gp = (b["t_grip_pos"] - b["t_grip_pos"].new_tensor(POS_CENTRE)) / POS_SCALE
-        terms["grip_pos"] = F.smooth_l1_loss(out["grip_pos"], gp, beta=0.05)
-        terms["aperture"] = F.smooth_l1_loss(out["aperture"], b["t_aperture"], beta=0.05)
+        terms["grip_pos"] = _regression(out["grip_pos"], gp, m["grip_pos"])
+        terms["aperture"] = _regression(out["aperture"][:, None], b["t_aperture"][:, None],
+                                        m["aperture"])
     total = sum(terms.values())
     return total, {k: float(v.detach()) for k, v in terms.items()}
 

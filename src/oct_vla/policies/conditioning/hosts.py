@@ -277,7 +277,9 @@ def install_diffusers_kv(head, control, *, conditioning_owner=None):
             # forward without its inputs, so None here means "not this arm".
             future = getattr(current, "_future_inputs", None)
             if future is not None:
-                residual = residual + _context(current.future[layer_name], q, future,
+                gate = getattr(current, "_future_gate", None)
+                scale_by = 1.0 if gate is None else gate.to(q.dtype)[:, None, None]
+                residual = residual + scale_by * _context(current.future[layer_name], q, future,
                                                getattr(host, "scale", None))
             # The branch has already applied an identity output projection
             # and returns [B, S, H*D], exactly the input expected by to_out.

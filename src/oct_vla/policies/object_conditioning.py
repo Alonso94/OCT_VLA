@@ -26,7 +26,12 @@ import torch
 from torch import Tensor, nn
 
 from oct_vla.policies.conditioning.entity import ENTITY_MASK, ENTITY_TOKENS, TOKEN_DIM
-from oct_vla.policies.conditioning.future import FUTURE_KEYFRAME, FUTURE_MASK, check_future_inputs
+from oct_vla.policies.conditioning.future import (
+    FUTURE_CONFIDENCE,
+    FUTURE_KEYFRAME,
+    FUTURE_MASK,
+    check_future_inputs,
+)
 
 #: Per-object visual features, when the config asks for them.
 ENTITY_VISUAL = "observation.entity_visual"
@@ -206,6 +211,11 @@ class ObjectConditioningConfig:
     #: prior's query cells, `object_future_dim` wide (future.FutureLatentAttention).
     object_future_kind: str = "keyframe"
     object_future_dim: int = 24
+    #: "none": the branch's residual enters as is. "confidence": it is scaled per
+    #: sample by the source's own confidence (`observation.future_keyframe_confidence`,
+    #: in [0, 1]), so the policy leans on the prior where the prior is sure. No
+    #: learned gate parameter: a zero gate on a zero branch would never train.
+    object_future_gate: str = "none"
 
     # --- accepted only so pre-cleanup checkpoints load; see _migrate_legacy ---
     object_injection_mode: str | None = None
@@ -247,6 +257,10 @@ class ObjectConditioningConfig:
                                  f"rows are {FUTURE_DIM} wide")
             if self.object_future_dim <= 0:
                 raise ValueError("object_future_dim must be positive")
+            if self.object_future_gate not in ("none", "confidence"):
+                raise ValueError("object_future_gate must be 'none' or 'confidence'")
+        elif getattr(self, "object_future_gate", "none") != "none":
+            raise ValueError("object_future_gate needs object_future")
         if self.object_width is not None:
             if self.object_width <= 0:
                 raise ValueError("object_width must be positive")
@@ -298,7 +312,8 @@ class ObjectConditioningConfig:
                 "an entity-conditioned policy cannot also take observation.environment_state: "
                 "both are typed ENV, and ENV normalisation is IDENTITY for the entities"
             )
-        for name in (ENTITY_TOKENS, ENTITY_MASK, ENTITY_VISUAL, FUTURE_KEYFRAME, FUTURE_MASK):
+        for name in (ENTITY_TOKENS, ENTITY_MASK, ENTITY_VISUAL, FUTURE_KEYFRAME, FUTURE_MASK,
+                     FUTURE_CONFIDENCE):
             if name in self.input_features:
                 self.input_features[name] = PolicyFeature(
                     type=FeatureType.ENV, shape=self.input_features[name].shape
@@ -326,6 +341,7 @@ class ObjectConditioning(nn.Module):
         self._config = config
         self._inputs: tuple[Tensor | None, Tensor | None] | None = None
         self._future_inputs: tuple[Tensor, Tensor] | None = None
+        self._future_gate: Tensor | None = None
         # Created only when asked for, so a model without the future branch
         # has exactly the checkpoint keys it had before the branch existed.
         if getattr(config, "object_future", False):
@@ -356,12 +372,14 @@ class ObjectConditioning(nn.Module):
     def set_inputs(self, tokens: Tensor | None, mask: Tensor | None) -> None:
         self._inputs = (tokens, mask)
 
-    def set_future_inputs(self, keyframe: Tensor, mask: Tensor) -> None:
+    def set_future_inputs(self, keyframe: Tensor, mask: Tensor, gate: Tensor | None = None) -> None:
         self._future_inputs = (keyframe, mask)
+        self._future_gate = gate
 
     def clear(self) -> None:
         self._inputs = None
         self._future_inputs = None
+        self._future_gate = None
 
     @property
     def is_live(self) -> bool:
@@ -461,9 +479,20 @@ class ObjectConditionedPolicyMixin(VerifiedLoadMixin):
                                 dim=getattr(self.config, "object_future_dim", 24))
             if keyframe.shape[0] != tokens.shape[0]:
                 raise ValueError("future keyframe and entity batches differ in size")
+            gate = None
+            if getattr(self.config, "object_future_gate", "none") == "confidence":
+                gate = batched(batch.get(FUTURE_CONFIDENCE), unbatched_ndim=1)
+                if gate is None:
+                    raise ValueError(f"object_future_gate=confidence needs {FUTURE_CONFIDENCE}")
+                if gate.shape != (keyframe.shape[0], 1):
+                    raise ValueError(f"{FUTURE_CONFIDENCE} must be [B, 1]; got {tuple(gate.shape)}")
+                if bool(((gate < 0) | (gate > 1)).any()):
+                    raise ValueError(f"{FUTURE_CONFIDENCE} must lie in [0, 1]")
+                gate = gate[:, 0]
             if target is not None:
                 keyframe, future_mask = keyframe[target], future_mask[target]
-            control.set_future_inputs(keyframe, future_mask)
+                gate = None if gate is None else gate[target]
+            control.set_future_inputs(keyframe, future_mask, gate)
 
     def _clear_object_inputs(self) -> None:
         self.object_conditioning.clear()

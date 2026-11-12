@@ -237,6 +237,12 @@ if [ "$TRAIN_VARIANT" = object ]; then
   [ -n "${OBJECT_WIDTH:-}" ] && POLICY_ARGS+=(--policy.object_width="$OBJECT_WIDTH")
   [ -n "${OBJECT_HEADS:-}" ] && POLICY_ARGS+=(--policy.object_attention_heads="$OBJECT_HEADS")
   [ -n "${TOKENS_GATE:-}" ] && POLICY_ARGS+=(--policy.object_tokens_gate_init="$TOKENS_GATE")
+  # The future branch's gate (PFN-VLA): only on a view that switches the branch on.
+  if [ -n "${FUTURE_GATE:-}" ]; then
+    printf '%s\n' "${ENTITY_ARGS[@]}" | grep -q -- "--policy.object_future=true" \
+      || { echo "FUTURE_GATE needs a view with a future keyframe" >&2; exit 2; }
+    POLICY_ARGS+=(--policy.object_future_gate="$FUTURE_GATE")
+  fi
   # The SIGReg weight (kv_adaln_sigreg only; config default 0.05). Refused on any
   # other arm, where it would be read by nothing.
   if [ -n "${SIGREG_WEIGHT:-}" ]; then
@@ -328,6 +334,7 @@ cat > "$OCTVLA_OUTPUT_ROOT/run_metadata/${RUN_NAME}.json" <<JSON
   "lora_r": ${LORA_R:-16},
   "object_width": "${OBJECT_WIDTH:-}",
   "object_sigreg_weight": "${SIGREG_WEIGHT:-}",
+  "object_future_gate": "${FUTURE_GATE:-}",
   "dataset": "$DATASET",
   "job_id": "${SLURM_JOB_ID:-none}"
 }

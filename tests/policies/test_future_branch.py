@@ -73,12 +73,12 @@ def _scene(seed=0, batch=2):
     return tokens, mask, keyframe, future_mask, hidden, context
 
 
-def _run(owner, scene, *, future=True):
+def _run(owner, scene, *, future=True, gate=None):
     tokens, mask, keyframe, future_mask, hidden, context = scene
     control = owner.object_conditioning
     control.set_inputs(tokens, mask)
     if future and control.has_future:
-        control.set_future_inputs(keyframe, future_mask)
+        control.set_future_inputs(keyframe, future_mask, gate)
     try:
         return owner.model(hidden, context, timestep=torch.tensor([3, 7]))
     finally:
@@ -252,3 +252,43 @@ def test_config_refuses_an_inconsistent_kind(kind, dim):
     with pytest.raises(ValueError, match="object_future"):
         ControlGrootConfig(object_conditioning="kv", object_future=True,
                            object_future_kind=kind, object_future_dim=dim)
+
+
+def test_the_confidence_gate_scales_the_branch_and_nothing_else():
+    kv, both = _model(False), _model(True)
+    _copy_kv(kv, both)
+    _train_future(both)
+    scene = _scene()
+    base, full = _run(kv, scene), _run(both, scene)
+    assert torch.equal(_run(both, scene, gate=torch.zeros(2)), base)
+    torch.testing.assert_close(_run(both, scene, gate=torch.ones(2)), full)
+    # Per sample: the first fully gated off, the second fully on.
+    mixed = _run(both, scene, gate=torch.tensor([0.0, 1.0]))
+    torch.testing.assert_close(mixed[0], base[0])
+    torch.testing.assert_close(mixed[1], full[1])
+
+
+def _gated_policy():
+    policy = _Policy(_model(True))
+    policy.config.object_future_gate = "confidence"
+    return policy
+
+
+def test_a_gated_policy_needs_a_valid_confidence():
+    from oct_vla.policies.conditioning.future import FUTURE_CONFIDENCE
+
+    policy = _gated_policy()
+    batch = _batch(_scene())
+    with pytest.raises(ValueError, match="needs"):
+        policy._set_object_inputs(batch)
+    with pytest.raises(ValueError, match=r"\[0, 1\]"):
+        policy._set_object_inputs({**batch, FUTURE_CONFIDENCE: torch.tensor([[0.5], [1.5]])})
+    policy._set_object_inputs({**batch, FUTURE_CONFIDENCE: torch.tensor([[0.5], [0.2]])})
+    assert policy.object_conditioning._future_gate.tolist() == [0.5, pytest.approx(0.2)]
+
+
+def test_config_refuses_a_gate_without_the_branch():
+    from oct_vla.policies.control_groot import ControlGrootConfig
+
+    with pytest.raises(ValueError, match="needs object_future"):
+        ControlGrootConfig(object_conditioning="kv", object_future_gate="confidence")

@@ -252,6 +252,11 @@ $OCTVLA_POLICY_PYTHON -u scripts/merge_stage1_adapter.py --stage1 $stage1 \
         case "$arm" in
           rgb_cont)               arm_env=(TRAIN_VARIANT=rgb) ;;
           kv|kv_adaln|kv_tokens)  arm_env=(TRAIN_VARIANT=object CONDITIONING="$arm") ;;
+          # PFN-VLA: kv with the future branch scaled by the prior's confidence.
+          kv_confgate)
+            [ "$backbone" = groot ] || { echo "$arm is implemented on groot only" >&2; exit 2; }
+            run_arm=kv
+            arm_env=(TRAIN_VARIANT=object CONDITIONING=kv FUTURE_GATE=confidence) ;;
           # The information and composition controls (research plan, Phase A).
           kv_adaln_shuffled|scene_attn|scene_mean|kv_adaln_sigreg)
             [ "$backbone" = groot ] || { echo "$arm is implemented on groot only" >&2; exit 2; }
