@@ -196,6 +196,25 @@ says what it tells GEMIL.
     default is invisible when supports agree with it, so the no-support condition is
     needed to see what the support actually contributes.
 
+### Known defects of the frozen prior (found 2026-11-12)
+
+- **Object yaw stuck 180° off.** P1's object-pose head predicts yaw as a unit vector,
+  `F.normalize(raw)`. A prediction exactly opposite its target gets a purely radial
+  error, which the normalisation projects out, so its gradient is zero: a saddle. All
+  three P1 seeds sit in it, on their own synthetic data too (cos-yaw loss 1.93). G1
+  scored positions only, so nobody saw it.
+  - The frozen-PFN views therefore carry a flipped yaw in the object-keyframe row; the
+    goal row is unaffected.
+  - Stage B switches to a rotated yaw (current yaw times a delta that starts at
+    identity), which has no such saddle.
+  - **For GEMIL:** its prior uses the same unit-vector parameterisation. Score angles,
+    not only positions, and check for antipodal saddles.
+- **Overconfident on real scenes.** Across the nine frozen views, mean confidence is
+  0.80–0.98, while the predicted object matches the recording's next one on only
+  0.68–0.78 of frames. A confidence gate on the frozen prior is therefore close to
+  constant. G1b′ (job 4990170) measures calibration by stage before any gated result is
+  read.
+
 ### G2: oracle keyframe into GR00T
 
 - **Question:** can GR00T use a keyframe at all (Section 3)?
