@@ -45,11 +45,13 @@ from oct_vla.policies.stage_loading import VerifiedLoadMixin
 #: first isolates global from query-dependent context and the pair isolates a
 #: learned composition from naive aggregation.
 CONDITIONING = ("kv", "kv_adaln", "kv_tokens", "kv_adaln_shuffled", "scene_attn", "scene_mean",
-                "kv_adaln_sigreg")
+                "kv_adaln_sigreg", "kv_rel")
 #: The nested arms every host implements.
 CORE_ARMS = ("kv", "kv_adaln", "kv_tokens")
 #: Arms with the per-layer KV branch.
-KV_ARMS = ("kv", "kv_adaln", "kv_tokens", "kv_adaln_shuffled", "kv_adaln_sigreg")
+KV_ARMS = ("kv", "kv_adaln", "kv_tokens", "kv_adaln_shuffled", "kv_adaln_sigreg", "kv_rel")
+#: ``kv`` with a relational composer on the entity tokens (conditioning/relational.py):
+#: the one RQ2 ablation arm, GR00T only.
 #: Arms with a pooled scene vector, and how each pools.
 SCENE_POOL = {"kv_adaln": "attention", "kv_adaln_shuffled": "attention",
               "scene_attn": "attention", "scene_mean": "mean", "kv_adaln_sigreg": "attention"}
@@ -349,10 +351,13 @@ class ObjectConditioning(nn.Module):
 
     def add_layer(self, name: str, width: int, heads: int) -> nn.Module:
         from oct_vla.policies.conditioning.kv import KVAttention
+        from oct_vla.policies.conditioning.relational import RelationalKVAttention
 
         if name in self.layers:
             raise ValueError(f"duplicate object layer {name}")
-        self.layers[name] = KVAttention(self._config, width, heads=heads)
+        relational = getattr(self._config, "object_conditioning", "kv") == "kv_rel"
+        branch = RelationalKVAttention if relational else KVAttention
+        self.layers[name] = branch(self._config, width, heads=heads)
         return self.layers[name]
 
     def add_future_layer(self, name: str, width: int, heads: int) -> nn.Module:

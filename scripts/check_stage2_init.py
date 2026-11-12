@@ -48,6 +48,7 @@ REQUIRED_BRANCHES = {
     "kv_tokens": ("layers", "incontext"),
     "kv_adaln_shuffled": ("layers", "adaln"),
     "kv_adaln_sigreg": ("layers", "adaln"),
+    "kv_rel": ("layers",),
     "scene_attn": ("adaln",),
     "scene_mean": ("adaln",),
 }

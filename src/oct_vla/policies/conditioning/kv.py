@@ -74,6 +74,11 @@ class KVAttention(nn.Module):
             nn.init.zeros_(layer.weight)
             nn.init.zeros_(layer.bias)
 
+    def _compose(self, memory: Tensor, tokens: Tensor) -> Tensor:
+        """A hook between the entity embedding and K/V; identity for plain ``kv``
+        (``relational.RelationalKVAttention`` composes the entities here)."""
+        return memory
+
     @property
     def is_live(self) -> bool:
         """Whether training has moved V_z off zero; False means the branch is inert."""
@@ -108,7 +113,8 @@ class KVAttention(nn.Module):
             tokens = tokens[:, -1]
         padding = padding_of(tokens, mask)
         # Mask before embedding: nothing in a padded slot, even a NaN, reaches a gradient.
-        memory = self.embedding(tokens.masked_fill(padding[..., None], 0).to(self.to_k.weight.dtype))
+        clean = tokens.masked_fill(padding[..., None], 0).to(self.to_k.weight.dtype)
+        memory = self._compose(self.embedding(clean), clean)
         empty = padding.all(dim=1)
 
         def heads_of(x: Tensor) -> Tensor:
