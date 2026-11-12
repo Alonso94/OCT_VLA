@@ -234,6 +234,61 @@ coverage gate should switch it off there; do not expect its confidence to say so
   constant. G1b′ (job 4990170) measures calibration by stage before any gated result is
   read.
 
+### G1b′: calibration on real demos, and the from-scratch control (2026-11-12)
+
+Validation-seed queries, training-seed supports, 3 seeds per prior
+(`octvla-prior/results/g1b-val-v1.json`):
+
+| Prior | Rule switch at frame 0 | Compaction next object | Object / gripper / goal error (cm) | ECE |
+|---|---|---|---|---|
+| P1 frozen | 0.77–1.00 (rightmost scenes 0.31–1.00) | 0.32 | 9.5 / 9.3 / 7.0 | 0.24–0.51 |
+| F1 full calibration | 1.00 | 1.00 | 0.3 / 0.2 / 0.9 | 0.00 |
+| F2 heads only | 1.00 | 0.91 | 0.6 / 0.5 / 1.1 | 0.09–0.15 |
+| S1 from scratch, real only | 1.00 | 1.00 | 0.4 / 0.4 / 1.0 | 0.00–0.01 |
+
+- **Calibration fixes everything G1b found.** Compaction is solved by teaching the
+  prior's targets to look past the push, so no coverage gate is needed.
+- **But the from-scratch control matches it.** On the rules and scene type the real
+  data covers (3 objects, leftmost/rightmost), synthetic pretraining buys nothing.
+  Its value can only show where the real data runs out:
+  - a held-out rule (middle-first);
+  - other object counts (2 and 4);
+  - held-out sizes;
+  - fewer real demonstrations.
+
+  Those are the tests that decide the pretraining claim; an in-distribution validation
+  cannot.
+- **For GEMIL:** the same trap. Pretraining has to be judged off the fine-tuning
+  distribution, and against a from-scratch model trained on the same real data.
+  GEMIL's own finding (pretraining bought speed, not accuracy) is what an
+  in-distribution test shows.
+
+### Steering probe: another rule's oracle keyframe on single-rule policies (2026-11-12)
+
+The three leftmost-trained oracle-keyframe policies (G5F), given rightmost keyframes:
+- 0/20 success and 0 transfers on every seed (7–13/20 with leftmost keyframes);
+- the robot lifts something in only 6–8 of 20 scenes, and its first pick is mostly the
+  **middle** object (5 of 6–8), between its learned leftmost habit and the keyframe's
+  rightmost target (`score_pick_order.py`).
+
+GR00T does not ignore the keyframe, but trained on one rule it cannot follow another:
+closed-loop switching needs a VLA trained on at least two rules.
+
+### Oracle keyframe off-distribution (2026-11-12)
+
+On held-out sizes and 4 objects the oracle often cannot plan: 12–38 % of steps have an
+empty keyframe, against almost none on seen scenes. The policy trained with the
+keyframe nearly always present then runs blind. The oracle row is therefore unreliable
+exactly there; report it with its empty share.
+
+| Condition | kv | oracle |
+|---|---|---|
+| held-out | 3/60 | 2/60 |
+| 2 objects | 31/60 | 34/60 |
+| 4 objects | 5/60 | 1/60 |
+
+A learned prior always predicts, so it has no such gap.
+
 ### G2: oracle keyframe into GR00T
 
 - **Question:** can GR00T use a keyframe at all (Section 3)?
