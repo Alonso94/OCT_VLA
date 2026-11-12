@@ -170,6 +170,32 @@ def _learned_source(args, source, by_index):
     return _LearnedSource(args, source, by_index)
 
 
+def _check_loads(output: Path, confidence: bool) -> None:
+    """Load the written view the way training will, and read one frame.
+
+    The first learned export wrote a column LeRobot could not cast, and nine training
+    jobs died at their first step; a view that does not load is refused here."""
+    from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+    from oct_vla.policies.conditioning.future import (
+        FUTURE_CONFIDENCE,
+        FUTURE_KEYFRAME,
+        FUTURE_MASK,
+    )
+
+    info = json.loads((output / "meta" / "info.json").read_text())
+    dataset = LeRobotDataset(f"local/{output.name}", root=output)
+    item = dataset.hf_dataset[0]
+    for key in (FUTURE_KEYFRAME, FUTURE_MASK) + ((FUTURE_CONFIDENCE,) if confidence else ()):
+        if key not in item:
+            raise SystemExit(f"{output}: {key} missing from a loaded frame")
+    shape = info["features"][FUTURE_KEYFRAME]["shape"]
+    got = np.asarray(item[FUTURE_KEYFRAME]).shape
+    if list(got) != shape:
+        raise SystemExit(f"{output}: loaded keyframe {got}, declared {shape}")
+    print(f"load check: {len(dataset)} frames, keyframe {got}", flush=True)
+
+
 def main() -> int:
     import numpy as np
     import pandas as pd
@@ -264,7 +290,9 @@ def main() -> int:
                 keyframe_column[at] = keyframes[position].tolist()
                 mask_column[at] = mask[position].astype(np.float32).tolist()
                 if conf is not None:
-                    confidence_column[at] = [float(conf[position])]
+                    # A scalar: LeRobot stores a shape-[1] feature as a plain value
+                    # (like `timestamp`), and refuses a one-element list at load.
+                    confidence_column[at] = float(conf[position])
             if conf is not None:
                 confidences.append(conf)
             real_rows.append(keyframes[mask])
@@ -311,6 +339,7 @@ def main() -> int:
     if confidences:
         stats[FUTURE_CONFIDENCE] = _stats(np.concatenate(confidences)[:, None])
     stats_path.write_text(json.dumps(stats, indent=4) + "\n")
+    _check_loads(output, learned is not None)
     print(f"\nwrote {output}: {episodes_done} episodes, {frames_done} frames, "
           f"{len(real)} keyframe rows, {linked} video files linked")
     return 0

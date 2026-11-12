@@ -486,11 +486,15 @@ class ObjectConditionedPolicyMixin(VerifiedLoadMixin):
                 raise ValueError("future keyframe and entity batches differ in size")
             gate = None
             if getattr(self.config, "object_future_gate", "none") == "confidence":
-                gate = batched(batch.get(FUTURE_CONFIDENCE), unbatched_ndim=1)
+                gate = batch.get(FUTURE_CONFIDENCE)
                 if gate is None:
                     raise ValueError(f"object_future_gate=confidence needs {FUTURE_CONFIDENCE}")
-                if gate.shape != (keyframe.shape[0], 1):
-                    raise ValueError(f"{FUTURE_CONFIDENCE} must be [B, 1]; got {tuple(gate.shape)}")
+                # A shape-[1] feature is a scalar column in LeRobot, so training
+                # batches carry [B]; the evaluation client sends [1, 1].
+                if gate.numel() != keyframe.shape[0]:
+                    raise ValueError(f"{FUTURE_CONFIDENCE} has {gate.numel()} values for "
+                                     f"{keyframe.shape[0]} samples")
+                gate = gate.reshape(keyframe.shape[0], 1)
                 if bool(((gate < 0) | (gate > 1)).any()):
                     raise ValueError(f"{FUTURE_CONFIDENCE} must lie in [0, 1]")
                 gate = gate[:, 0]

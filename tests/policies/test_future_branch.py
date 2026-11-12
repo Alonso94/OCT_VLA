@@ -285,6 +285,11 @@ def test_a_gated_policy_needs_a_valid_confidence():
         policy._set_object_inputs({**batch, FUTURE_CONFIDENCE: torch.tensor([[0.5], [1.5]])})
     policy._set_object_inputs({**batch, FUTURE_CONFIDENCE: torch.tensor([[0.5], [0.2]])})
     assert policy.object_conditioning._future_gate.tolist() == [0.5, pytest.approx(0.2)]
+    # As a training batch carries it: one scalar per sample.
+    policy._set_object_inputs({**batch, FUTURE_CONFIDENCE: torch.tensor([0.5, 0.2])})
+    assert policy.object_conditioning._future_gate.tolist() == [0.5, pytest.approx(0.2)]
+    with pytest.raises(ValueError, match="values for"):
+        policy._set_object_inputs({**batch, FUTURE_CONFIDENCE: torch.tensor([0.5, 0.2, 0.1])})
 
 
 def test_config_refuses_a_gate_without_the_branch():
