@@ -25,13 +25,19 @@ Row layout (``FUTURE_DIM`` = 17 + 3 + 4 = 24 columns)::
     [17:20]  role one-hot: object at the keyframe | acting gripper at the
              keyframe | object at its goal
     [20:24]  event one-hot: grasp | place | regrasp | release (prior.schema)
+
+``object_future_kind="latent"`` is the additional arm (paper/3_pfn_vla_interface.md
+§5): the same input keys carry the frozen prior's current-row query cells
+``[B, N_MAX + 1, width]`` instead of decoded rows, read through a learned
+LayerNorm + projection (`FutureLatentAttention`). Everything else -- zero
+``to_k``/``to_v``, masking, the exact-zero residual of an empty set -- is shared.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from torch import Tensor
+from torch import Tensor, nn
 
 from oct_vla.data.future_keyframes import (  # noqa: F401  (the row contract)
     FUTURE_DIM,
@@ -48,6 +54,8 @@ if FUTURE_DIM - FUTURE_EXTRA != TOKEN_DIM:
 
 FUTURE_KEYFRAME = "observation.future_keyframe"
 FUTURE_MASK = "observation.future_keyframe_mask"
+#: What the future set holds: decoded keyframe rows, or the prior's latent cells.
+FUTURE_KINDS = ("keyframe", "latent")
 
 
 class FutureKVAttention(KVAttention):
@@ -68,6 +76,17 @@ class FutureKVAttention(KVAttention):
         self.embedding.visual_projection.reset_parameters()
 
 
+class FutureLatentAttention(KVAttention):
+    """`KVAttention` over the prior's latent query cells: no entity schema, so a
+    LayerNorm and a projection to the branch width replace the entity embedding.
+    Only this projection and the branch train; the prior stays frozen upstream."""
+
+    def __init__(self, config: Any, width: int, *, heads: int) -> None:
+        super().__init__(_GeometryOnly(config), width, heads=heads)
+        dim = config.object_future_dim
+        self.embedding = nn.Sequential(nn.LayerNorm(dim), nn.Linear(dim, self.entity_width))
+
+
 class _GeometryOnly:
     """A config view without ``object_visual_dim``: the future rows carry no
     per-object visual feature, whatever the entity branch uses."""
@@ -81,15 +100,16 @@ class _GeometryOnly:
         return getattr(self._config, name)
 
 
-def check_future_inputs(keyframe: Tensor, mask: Tensor, *, rows: int) -> None:
-    """The shape contract at the policy boundary: ``[B, rows, FUTURE_DIM]`` and ``[B, rows]``.
+def check_future_inputs(keyframe: Tensor, mask: Tensor, *, rows: int,
+                        dim: int = FUTURE_DIM) -> None:
+    """The shape contract at the policy boundary: ``[B, rows, dim]`` and ``[B, rows]``.
 
     Strict on purpose. The entity path quietly reads the last step of a 4-D
     history; a keyframe tensor of the wrong rank here is a wiring bug, not a
     history, and must not be reinterpreted.
     """
-    if keyframe.ndim != 3 or keyframe.shape[1:] != (rows, FUTURE_DIM):
-        raise ValueError(f"{FUTURE_KEYFRAME} must be [B, {rows}, {FUTURE_DIM}]; "
+    if keyframe.ndim != 3 or keyframe.shape[1:] != (rows, dim):
+        raise ValueError(f"{FUTURE_KEYFRAME} must be [B, {rows}, {dim}]; "
                          f"got {tuple(keyframe.shape)}")
     if mask.shape != keyframe.shape[:2]:
         raise ValueError(f"{FUTURE_MASK} must be [B, {rows}]; got {tuple(mask.shape)}")

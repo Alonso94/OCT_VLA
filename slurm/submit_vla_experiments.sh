@@ -82,6 +82,22 @@ case "$CORPUS" in
     declare -A DATASET=([F]=three_object_v4l_eeabs)
     declare -A TAG=([F]=v4l_eeabs)
     LETTER=([pi05]=P4 [smolvla]=S4 [groot]=G4) ;;
+  v4_leftmost_pfn|v4_leftmost_pfngoal|v4_leftmost_pfnlat)
+    # PFN-VLA step 3: the frozen prior's prediction instead of the oracle
+    # (add_future_keyframe.py --keyframes pfn). pfn = interaction prior,
+    # decoded rows; pfngoal = goal-only prior; pfnlat = interaction prior,
+    # latent cells (the additional arm). Each VLA seed reads the view of its
+    # own prior seed ({prior} -> s<seed mod 1000>), so the seed spread includes
+    # the prior's. Evaluation runs the same prior policy-side (prior/online.py).
+    kind="${CORPUS#v4_leftmost_}"
+    declare -A DATASET=([F]="three_object_v4l_eeabs_${kind}_{prior}")
+    declare -A TAG=([F]="v4l${kind}_eeabs")
+    declare -A STAGE1_TAG=([F]=v4l_eeabs)
+    case "$kind" in
+      pfn)     LETTER=([pi05]=P6 [smolvla]=S6 [groot]=G6) ;;
+      pfngoal) LETTER=([pi05]=P7 [smolvla]=S7 [groot]=G7) ;;
+      pfnlat)  LETTER=([pi05]=P8 [smolvla]=S8 [groot]=G8) ;;
+    esac ;;
   v4_leftmost_fk)
     # v4_leftmost plus the oracle next-interaction keyframe
     # (scripts/add_future_keyframe.py). The view switches the future branch on
@@ -91,9 +107,11 @@ case "$CORPUS" in
     declare -A TAG=([F]=v4lfk_eeabs)
     declare -A STAGE1_TAG=([F]=v4l_eeabs)
     LETTER=([pi05]=P5 [smolvla]=S5 [groot]=G5) ;;
-  *) echo "CORPUS must be paired_full, paired_full_r19, paired_full_r38, paired_full_vis, identity, v4_leftmost or v4_leftmost_fk" >&2; exit 2 ;;
+  *) echo "CORPUS must be paired_full, paired_full_r19, paired_full_r38, paired_full_vis, identity, v4_leftmost, v4_leftmost_fk or v4_leftmost_pfn{,goal,lat}" >&2; exit 2 ;;
 esac
 for regime in "${!DATASET[@]}"; do
+  # A per-seed view ({prior}) is checked per seed in stage 2.
+  [[ "${DATASET[$regime]}" == *"{prior}"* ]] && continue
   [ -d "$OCTVLA_DATASET_ROOT/${DATASET[$regime]}" ] || { echo "no dataset ${DATASET[$regime]}" >&2; exit 2; }
 done
 
@@ -199,6 +217,9 @@ elif [ "$PHASE" = stage2 ]; then
     for seed in $SEEDS; do
       run1=$(stage1_run "$backbone" "$regime" "$seed")
       exists "$run1" || { echo "no stage-1 checkpoint for $run1" >&2; exit 2; }
+      # A learned-keyframe corpus pairs each VLA seed with one prior seed.
+      dataset="${DATASET[$regime]//\{prior\}/s$((seed % 1000))}"
+      [ -d "$OCTVLA_DATASET_ROOT/$dataset" ] || { echo "no dataset view $dataset" >&2; exit 2; }
       stage1="$OCTVLA_OUTPUT_ROOT/$run1/checkpoints/last/pretrained_model"
       merge_dep=""
       # MERGE_ON_FRAME_OUTLIER=verify-fp32[-then-accept]: what one frame over the
@@ -210,8 +231,8 @@ elif [ "$PHASE" = stage2 ]; then
             --output="$LOGS/$prefix-merge-s$seed-%j.out" --export=ALL --wrap="set -euo pipefail
 cd $OCTVLA_REPO; export PYTHONPATH=src HF_HUB_OFFLINE=1
 $OCTVLA_POLICY_PYTHON -u scripts/merge_stage1_adapter.py --stage1 $stage1 \
-  --dataset-root $OCTVLA_DATASET_ROOT/${DATASET[$regime]} \
-  --repo-id local/oct-vla-shelf-restock-${DATASET[$regime]#three_object_} --output $merged \
+  --dataset-root $OCTVLA_DATASET_ROOT/$dataset \
+  --repo-id local/oct-vla-shelf-restock-${dataset#three_object_} --output $merged \
   --on-frame-outlier ${MERGE_ON_FRAME_OUTLIER:-refuse}")
           echo "$prefix-merge-s$seed -> $merge_dep"; jobs=$((jobs + 1))
         fi
@@ -245,7 +266,7 @@ $OCTVLA_POLICY_PYTHON -u scripts/merge_stage1_adapter.py --stage1 $stage1 \
         esac
         cell="$prefix-$arm-s$seed"
         tag="${TAG[$regime]}_s2_${arm}"
-        common=(BACKBONE="$backbone" TRAIN_DATASET="${DATASET[$regime]}" TRAIN_SEED="$seed"
+        common=(BACKBONE="$backbone" TRAIN_DATASET="$dataset" TRAIN_SEED="$seed"
                 STAGE1_CHECKPOINT="$stage1" TRAIN_TAG="$tag" "${arm_env[@]}" "${RECIPE_ENV[@]}")
         [ "$arm" != rgb_cont ] && common+=("${STAGE2_ENV[@]}")
         if [ "$RECIPE" = expert_lora ] && [ "$backbone" = pi05 ]; then
@@ -272,13 +293,13 @@ $OCTVLA_POLICY_PYTHON -u scripts/merge_stage1_adapter.py --stage1 $stage1 \
         for r in $ROLLOUTS; do
           case "$r" in
             seen|heldout|novel)
-              j=$(rollout "$cell-$r" "$ckpt" "${DATASET[$regime]}" three_object "${TIER[$r]}" "$dep" EVAL_MAX_STEPS=600) ;;
+              j=$(rollout "$cell-$r" "$ckpt" "$dataset" three_object "${TIER[$r]}" "$dep" EVAL_MAX_STEPS=600) ;;
             count)
-              j=$(rollout "$cell-count" "$ckpt" "${DATASET[$regime]}" two_object,four_object "${TIER[seen]}" "$dep" EVAL_STEPS_PER_OBJECT=200) ;;
+              j=$(rollout "$cell-count" "$ckpt" "$dataset" two_object,four_object "${TIER[seen]}" "$dep" EVAL_STEPS_PER_OBJECT=200) ;;
             # Four objects alone: re-runs a count job's four-object half, which
             # before the step limit was echoed ran 600 steps, not 800.
             four)
-              j=$(rollout "$cell-four" "$ckpt" "${DATASET[$regime]}" four_object "${TIER[seen]}" "$dep" EVAL_STEPS_PER_OBJECT=200) ;;
+              j=$(rollout "$cell-four" "$ckpt" "$dataset" four_object "${TIER[seen]}" "$dep" EVAL_STEPS_PER_OBJECT=200) ;;
             *) echo "Unknown rollout $r" >&2; exit 2 ;;
           esac
           echo "    eval   $r -> $j"; jobs=$((jobs + 1))

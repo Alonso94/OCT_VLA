@@ -165,3 +165,10 @@ def test_the_live_builder_passes_the_servers_keyframe_and_refuses_without_it():
     with pytest.raises(ValueError, match="no keyframe"):
         module.build_observation(obs, torch=torch, np=np, entity_max_entities=16,
                                  future_keyframe=True)
+    # A policy-side source (the learned prior) wins over the observation, whatever
+    # its width: here latent cells [10, 128].
+    cells, valid = np.ones((10, 128), np.float32), np.arange(10) < 7
+    batch = module.build_observation(obs, torch=torch, np=np, entity_max_entities=16,
+                                     future_keyframe=True, future=(cells, valid))
+    assert batch[FUTURE_KEYFRAME].shape == (1, 10, 128)
+    assert batch[FUTURE_MASK][0].tolist() == valid.tolist()

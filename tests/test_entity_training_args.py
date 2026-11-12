@@ -77,3 +77,26 @@ def test_a_keyframe_view_with_the_wrong_width_is_refused(tmp_path):
 
 def test_views_without_a_keyframe_leave_the_branch_off(tmp_path):
     assert not any("object_future" in a for a in _module.entity_training_args(_dataset(tmp_path)))
+
+
+def test_a_latent_view_selects_the_latent_kind_at_the_priors_width(tmp_path):
+    dataset = _dataset(tmp_path)
+    info = json.loads((dataset / "meta/info.json").read_text())
+    info["features"]["observation.future_keyframe"] = {"shape": [10, 128]}
+    info["features"]["observation.future_keyframe_mask"] = {"shape": [10]}
+    info["future_keyframe"] = {"source": "pfn", "kind": "latent"}
+    (dataset / "meta/info.json").write_text(json.dumps(info))
+    args = _module.entity_training_args(dataset)
+    assert "--policy.object_future_rows=10" in args
+    assert "--policy.object_future_kind=latent" in args
+    assert "--policy.object_future_dim=128" in args
+
+
+def test_a_latent_shaped_view_that_says_keyframe_is_refused(tmp_path):
+    dataset = _dataset(tmp_path)
+    info = json.loads((dataset / "meta/info.json").read_text())
+    info["features"]["observation.future_keyframe"] = {"shape": [10, 128]}
+    info["features"]["observation.future_keyframe_mask"] = {"shape": [10]}
+    (dataset / "meta/info.json").write_text(json.dumps(info))
+    with pytest.raises(ValueError, match="keyframe view"):
+        _module.entity_training_args(dataset)

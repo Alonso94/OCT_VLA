@@ -59,10 +59,18 @@ def entity_training_args(dataset: Path) -> list[str]:
 
         shape = list(future.get("shape", []))
         mask = list(info["features"].get("observation.future_keyframe_mask", {}).get("shape", []))
-        if len(shape) != 2 or shape[1] != FUTURE_DIM or mask != shape[:1]:
+        # The view says what it holds (add_future_keyframe.py); a latent view
+        # carries the prior's cells, whose width is the prior's, not FUTURE_DIM.
+        kind = info.get("future_keyframe", {}).get("kind", "keyframe")
+        if kind not in ("keyframe", "latent"):
+            raise ValueError(f"unknown future_keyframe kind {kind!r}")
+        width = FUTURE_DIM if kind == "keyframe" else (shape[1] if len(shape) == 2 else None)
+        if len(shape) != 2 or shape[1] != width or mask != shape[:1]:
             raise ValueError(f"observation.future_keyframe is {shape} with mask {mask}; "
-                             f"expected [rows, {FUTURE_DIM}] and [rows]")
+                             f"expected [rows, {width}] and [rows] for a {kind} view")
         args += ["--policy.object_future=true", f"--policy.object_future_rows={shape[0]}"]
+        if kind == "latent":
+            args += ["--policy.object_future_kind=latent", f"--policy.object_future_dim={width}"]
     return args
 
 

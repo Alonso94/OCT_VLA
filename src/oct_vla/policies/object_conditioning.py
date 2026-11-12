@@ -199,8 +199,13 @@ class ObjectConditioningConfig:
     #: (`observation.future_keyframe`; conditioning/future.py). False: no such
     #: branch, and the checkpoint keys are exactly those of the arm alone.
     object_future: bool = False
-    #: Rows of the keyframe set (one per role in future.FUTURE_ROLES).
+    #: Rows of the keyframe set (one per role in future.FUTURE_ROLES), or the
+    #: prior's cells (N_MAX + 1) for the latent kind.
     object_future_rows: int = 3
+    #: "keyframe": decoded rows of future.FUTURE_DIM columns. "latent": the frozen
+    #: prior's query cells, `object_future_dim` wide (future.FutureLatentAttention).
+    object_future_kind: str = "keyframe"
+    object_future_dim: int = 24
 
     # --- accepted only so pre-cleanup checkpoints load; see _migrate_legacy ---
     object_injection_mode: str | None = None
@@ -233,6 +238,15 @@ class ObjectConditioningConfig:
                                  f"{self.object_conditioning!r} has no KV branch")
             if self.object_future_rows <= 0:
                 raise ValueError("object_future_rows must be positive")
+            from oct_vla.policies.conditioning.future import FUTURE_DIM, FUTURE_KINDS
+
+            if self.object_future_kind not in FUTURE_KINDS:
+                raise ValueError(f"object_future_kind must be one of {FUTURE_KINDS}")
+            if self.object_future_kind == "keyframe" and self.object_future_dim != FUTURE_DIM:
+                raise ValueError(f"object_future_dim={self.object_future_dim}, but keyframe "
+                                 f"rows are {FUTURE_DIM} wide")
+            if self.object_future_dim <= 0:
+                raise ValueError("object_future_dim must be positive")
         if self.object_width is not None:
             if self.object_width <= 0:
                 raise ValueError("object_width must be positive")
@@ -326,11 +340,13 @@ class ObjectConditioning(nn.Module):
         return self.layers[name]
 
     def add_future_layer(self, name: str, width: int, heads: int) -> nn.Module:
-        from oct_vla.policies.conditioning.future import FutureKVAttention
+        from oct_vla.policies.conditioning.future import FutureKVAttention, FutureLatentAttention
 
         if name in self.future:
             raise ValueError(f"duplicate future layer {name}")
-        self.future[name] = FutureKVAttention(self._config, width, heads=heads)
+        latent = getattr(self._config, "object_future_kind", "keyframe") == "latent"
+        branch = FutureLatentAttention if latent else FutureKVAttention
+        self.future[name] = branch(self._config, width, heads=heads)
         return self.future[name]
 
     @property
@@ -441,7 +457,8 @@ class ObjectConditionedPolicyMixin(VerifiedLoadMixin):
             future_mask = batched(batch.get(FUTURE_MASK), unbatched_ndim=1)
             if keyframe is None or future_mask is None:
                 raise ValueError(f"object_future needs {FUTURE_KEYFRAME} and {FUTURE_MASK}")
-            check_future_inputs(keyframe, future_mask, rows=self.config.object_future_rows)
+            check_future_inputs(keyframe, future_mask, rows=self.config.object_future_rows,
+                                dim=getattr(self.config, "object_future_dim", 24))
             if keyframe.shape[0] != tokens.shape[0]:
                 raise ValueError("future keyframe and entity batches differ in size")
             if target is not None:

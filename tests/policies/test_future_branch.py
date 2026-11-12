@@ -31,13 +31,20 @@ from oct_vla.policies.object_conditioning import (  # noqa: E402
 ROWS = 3
 
 
-def _config(future: bool):
+LATENT_ROWS, LATENT_DIM = 10, 16
+
+
+def _config(future: bool, kind: str = "keyframe"):
+    latent = kind == "latent"
     return SimpleNamespace(object_entity_normalizer=None, object_width=None,
                            object_visual_dim=None, object_future=future,
-                           object_future_rows=ROWS, object_conditioning="kv")
+                           object_future_rows=LATENT_ROWS if latent else ROWS,
+                           object_future_kind=kind,
+                           object_future_dim=LATENT_DIM if latent else FUTURE_DIM,
+                           object_conditioning="kv")
 
 
-def _model(future: bool, seed: int = 0):
+def _model(future: bool, seed: int = 0, kind: str = "keyframe"):
     from lerobot.policies.groot.action_head.cross_attention_dit import DiT
 
     torch.manual_seed(seed)
@@ -46,7 +53,7 @@ def _model(future: bool, seed: int = 0):
               positional_embeddings=None, final_dropout=False)
     owner = nn.Module()
     owner.model = dit
-    owner.object_conditioning = ObjectConditioning(_config(future), dit.inner_dim)
+    owner.object_conditioning = ObjectConditioning(_config(future, kind), dit.inner_dim)
     install_diffusers_kv(dit, owner.object_conditioning, conditioning_owner=owner)
     torch.manual_seed(seed + 1)
     for branch in owner.object_conditioning.layers.values():  # a trained kv model
@@ -195,3 +202,53 @@ def test_config_refuses_future_without_a_kv_branch():
 
     with pytest.raises(ValueError, match="no KV branch"):
         ControlGrootConfig(object_conditioning="scene_attn", object_future=True)
+
+
+def _latent_scene(seed=0, batch=2):
+    tokens, mask, _, _, hidden, context = _scene(seed, batch)
+    g = torch.Generator().manual_seed(seed + 100)
+    cells = torch.randn(batch, LATENT_ROWS, LATENT_DIM, generator=g)
+    cell_mask = torch.ones(batch, LATENT_ROWS, dtype=torch.bool)
+    cell_mask[:, 7:9] = False  # padded entity columns of the prior
+    return tokens, mask, cells, cell_mask, hidden, context
+
+
+def test_the_latent_kind_builds_its_own_projection_and_starts_as_kv():
+    from oct_vla.policies.conditioning.future import FutureLatentAttention
+
+    kv, latent = _model(False), _model(True, kind="latent")
+    assert all(isinstance(b, FutureLatentAttention)
+               for b in latent.object_conditioning.future.values())
+    _copy_kv(kv, latent)
+    scene = _latent_scene()
+    assert torch.equal(_run(kv, scene), _run(latent, scene))
+
+
+def test_the_latent_kind_learns_and_responds_to_the_cells():
+    owner = _model(True, kind="latent").train()
+    _run(owner, _latent_scene()).square().sum().backward()
+    assert all(b.to_v.weight.grad.abs().sum() > 0
+               for b in owner.object_conditioning.future.values())
+    owner = _model(True, kind="latent")
+    _train_future(owner)
+    scene = _latent_scene()
+    moved = list(scene)
+    moved[2] = scene[2] * 2.0 + 1.0
+    assert not torch.allclose(_run(owner, scene), _run(owner, tuple(moved)))
+
+
+def test_the_shape_contract_follows_the_kind():
+    cells = torch.zeros(2, LATENT_ROWS, LATENT_DIM)
+    mask = torch.ones(2, LATENT_ROWS, dtype=torch.bool)
+    check_future_inputs(cells, mask, rows=LATENT_ROWS, dim=LATENT_DIM)
+    with pytest.raises(ValueError):
+        check_future_inputs(cells, mask, rows=LATENT_ROWS)  # keyframe width expected
+
+
+@pytest.mark.parametrize("kind, dim", [("latent", 0), ("keyframe", 128), ("cells", 24)])
+def test_config_refuses_an_inconsistent_kind(kind, dim):
+    from oct_vla.policies.control_groot import ControlGrootConfig
+
+    with pytest.raises(ValueError, match="object_future"):
+        ControlGrootConfig(object_conditioning="kv", object_future=True,
+                           object_future_kind=kind, object_future_dim=dim)

@@ -77,6 +77,7 @@ def build_observation(
     obs, *, torch, np, control_space="cartesian", uint8_images=True,
     state_encoding="position", previous_joints=None, entity_max_entities=None,
     entity_noise=None, noise_rng=None, entity_visual=None, future_keyframe=False,
+    future=None,
 ):
     """The policy's input batch, laid out exactly as the exporter wrote it.
 
@@ -138,7 +139,14 @@ def build_observation(
             batch["observation.entity_visual"] = torch.tensor(visual[None], dtype=torch.float32)
         batch["observation.entity_tokens"] = torch.tensor([tokens], dtype=torch.float32)
         batch["observation.entity_mask"] = torch.tensor([mask], dtype=torch.bool)
-    if future_keyframe:
+    if future is not None:
+        # A policy-side source (prior/online.py): the frozen prior on this step.
+        from oct_vla.policies.conditioning.future import FUTURE_KEYFRAME, FUTURE_MASK
+
+        values, valid = future
+        batch[FUTURE_KEYFRAME] = torch.tensor(np.asarray(values)[None], dtype=torch.float32)
+        batch[FUTURE_MASK] = torch.tensor(np.asarray(valid)[None], dtype=torch.bool)
+    elif future_keyframe:
         # The oracle keyframe the server computed (tasks/shelf_restock/keyframes.py),
         # laid out as add_future_keyframe.py wrote it. Refused, never zero-filled.
         if obs.future_keyframe is None:
@@ -165,11 +173,14 @@ def run_episode(
     uint8_images=True, state_encoding="position", video=None,
     gripper_encoding="measured_aperture",
     entity_max_entities=None, model_ids=None, entity_noise=None, entity_visual=None,
-    future_keyframe="none",
+    future_keyframe="none", future_source=None,
 ) -> dict:
+    # A policy-side source asks the server for nothing; the oracle is served.
+    served = "none" if future_source is not None else future_keyframe
     observation = client.reset(seed, profile, control_space=control_space,
                                gripper_encoding=gripper_encoding, model_ids=model_ids,
-                               max_steps=max_steps, future_keyframe=future_keyframe)
+                               max_steps=max_steps, future_keyframe=served)
+    support_seeds = future_source.reset(seed, observation) if future_source is not None else None
     policy.reset()
     # GR00T (and any flow/diffusion head) draws each chunk's initial noise from torch's
     # global generator. Unseeded, a rollout was a fresh draw: 73/240 four-object scenes
@@ -191,6 +202,8 @@ def run_episode(
         "model_ids": sorted(set(observation.model_ids.values())),
         "layout": observation.layout,
         "future_keyframe": future_keyframe,
+        # The demonstrations a learned source was given on this scene.
+        "future_support_seeds": support_seeds,
         # Steps the oracle could not plan and sent an empty keyframe (exactly
         # kv): how far this rollout's "oracle" condition really was the oracle.
         "future_keyframe_unplannable_steps": 0,
@@ -217,6 +230,7 @@ def run_episode(
             entity_max_entities=entity_max_entities,
             entity_noise=entity_noise, noise_rng=noise_rng, entity_visual=entity_visual,
             future_keyframe=future_keyframe != "none",
+            future=future_source(observation) if future_source is not None else None,
         )
         if observation.joints is not None:
             previous_joints = joint_vector(observation.joints)
@@ -501,9 +515,29 @@ def main() -> int:
         if entity_visual.visual_dim != config.object_visual_dim:
             raise SystemExit(f"encoder gives {entity_visual.visual_dim}-d features; the "
                              f"checkpoint expects {config.object_visual_dim}")
-    # The future-keyframe branch reads its source from the checkpoint too. Only
-    # the oracle is served today; a learned prior will be a policy-side source.
-    future_keyframe = "oracle" if getattr(config, "object_future", False) else "none"
+    # The future-keyframe branch's source is the one its training view recorded:
+    # the server's oracle, or the frozen prior run here, policy-side, configured
+    # from the view so the rollout sees what training saw.
+    future_keyframe, future_source = "none", None
+    if getattr(config, "object_future", False):
+        info = json.loads((args.dataset_root / "meta" / "info.json").read_text())
+        provenance = info.get("future_keyframe")
+        if provenance is None:
+            raise SystemExit(f"{args.dataset_root} records no future_keyframe source, but the "
+                             "checkpoint has a future branch")
+        future_keyframe = provenance.get("source", "oracle")
+        kind = provenance.get("kind", "keyframe")
+        if kind != getattr(config, "object_future_kind", "keyframe"):
+            raise SystemExit(f"the view holds {kind} futures; the checkpoint reads "
+                             f"{config.object_future_kind}")
+        if future_keyframe == "pfn":
+            from oct_vla.prior.online import PriorFutureSource
+
+            future_source = PriorFutureSource(
+                provenance, args.dataset_root,
+                device="cuda" if torch.cuda.is_available() else "cpu")
+        elif future_keyframe != "oracle":
+            raise SystemExit(f"unknown future_keyframe source {future_keyframe!r}")
     if not entity_noise.is_clean and not conditioning:
         # Noise on entities a policy never reads would score a clean rollout
         # under a noisy label.
@@ -548,7 +582,7 @@ def main() -> int:
                     gripper_encoding=gripper_encoding, video=video,
                     entity_max_entities=entity_max_entities, model_ids=model_ids,
                     entity_noise=entity_noise, entity_visual=entity_visual,
-                    future_keyframe=future_keyframe,
+                    future_keyframe=future_keyframe, future_source=future_source,
                 )
                 outcome["evaluation_split"] = args.evaluation_split
                 results.append(outcome)
