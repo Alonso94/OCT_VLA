@@ -141,11 +141,16 @@ def build_observation(
         batch["observation.entity_mask"] = torch.tensor([mask], dtype=torch.bool)
     if future is not None:
         # A policy-side source (prior/online.py): the frozen prior on this step.
-        from oct_vla.policies.conditioning.future import FUTURE_KEYFRAME, FUTURE_MASK
+        from oct_vla.policies.conditioning.future import (
+            FUTURE_CONFIDENCE,
+            FUTURE_KEYFRAME,
+            FUTURE_MASK,
+        )
 
-        values, valid = future
+        values, valid, conf = future
         batch[FUTURE_KEYFRAME] = torch.tensor(np.asarray(values)[None], dtype=torch.float32)
         batch[FUTURE_MASK] = torch.tensor(np.asarray(valid)[None], dtype=torch.bool)
+        batch[FUTURE_CONFIDENCE] = torch.tensor([[float(conf)]], dtype=torch.float32)
     elif future_keyframe:
         # The oracle keyframe the server computed (tasks/shelf_restock/keyframes.py),
         # laid out as add_future_keyframe.py wrote it. Refused, never zero-filled.

@@ -242,6 +242,21 @@ def keyframe_rows(out: dict, i: int, q: Query) -> tuple[np.ndarray, np.ndarray]:
     return rows, np.ones(FUTURE_ROWS, bool)
 
 
+def confidence(out: dict, i: int) -> float:
+    """How sure the prior is of prediction ``i``: the product of its top pointer, event
+    and gripper probabilities (pointer only for a goal-only prior). In [0, 1]."""
+    def top(logits):
+        z = np.asarray(logits, np.float64)
+        z = np.exp(z - z.max())
+        return float(z.max() / z.sum())
+
+    value = top(out["pointer"][i])
+    for head in ("event", "gripper"):
+        if head in out:
+            value *= top(out[head][i])
+    return value
+
+
 def predicted_track(out: dict, i: int, q: Query) -> str:
     """The track the prior says acts next."""
     return q.order[int(out["pointer"][i].argmax())]

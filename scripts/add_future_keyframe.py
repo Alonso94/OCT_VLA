@@ -40,6 +40,8 @@ import shutil
 import sys
 from pathlib import Path
 
+import numpy as np
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -137,6 +139,7 @@ class _LearnedSource:
         hits = [A.predicted_track(out, n, q) == want
                 for n, (q, want) in enumerate(zip(queries, nxt)) if want is not None]
         self.hits += hits
+        conf = np.array([A.confidence(out, n) for n in range(len(queries))], np.float32)
         if self.args.kind == "latent":
             values, mask = out["latent"], out["latent_ok"]
         else:
@@ -145,7 +148,7 @@ class _LearnedSource:
             mask = np.stack([m for _, m in pairs])
         note = (f"supports {chosen}, predicted object = next recorded on "
                 f"{np.mean(hits):.2f} of {len(hits)} frames")
-        return values.astype(np.float32), mask.astype(bool), note
+        return values.astype(np.float32), mask.astype(bool), conf, note
 
     def provenance(self):
         return {"prior": str(self.args.prior.resolve()), "prior_config": self.model.config,
@@ -175,7 +178,11 @@ def main() -> int:
     from oct_vla.tasks.shelf_restock.keyframes import episode_keyframes
     from oct_vla.tasks.shelf_restock.spec import spec_for_rule
     from oct_vla.data.store import read_episode
-    from oct_vla.policies.conditioning.future import FUTURE_KEYFRAME, FUTURE_MASK
+    from oct_vla.policies.conditioning.future import (
+        FUTURE_CONFIDENCE,
+        FUTURE_KEYFRAME,
+        FUTURE_MASK,
+    )
     from project_dataset_view import link_tree
 
     parser = argparse.ArgumentParser()
@@ -216,11 +223,12 @@ def main() -> int:
     for name in ("split_manifest.json", "octvla_episode_manifest.json"):
         shutil.copy2(source / name, output / name)
 
-    real_rows, masks, episodes_done, frames_done = [], [], 0, 0
+    real_rows, masks, confidences, episodes_done, frames_done = [], [], [], 0, 0
     for path in sorted((source / "data").rglob("*.parquet")):
         table = pd.read_parquet(path)
         keyframe_column = [None] * len(table)
         mask_column = [None] * len(table)
+        confidence_column = [None] * len(table)
         for episode_index, rows in table.groupby("episode_index").groups.items():
             rows = table.loc[rows].sort_values("frame_index")
             entry = by_index[int(episode_index)]
@@ -237,8 +245,8 @@ def main() -> int:
                     raise SystemExit(f"episode {episode_index} frame {frame}: tokens and recorded "
                                      "scene disagree; the frames are not aligned")
             if learned is not None:
-                keyframes, mask, note = learned(int(episode_index), episode,
-                                                rows["frame_index"].to_numpy())
+                keyframes, mask, conf, note = learned(int(episode_index), episode,
+                                                      rows["frame_index"].to_numpy())
             else:
                 keyframes, mask = episode_keyframes(episode,
                                                     spec_for_rule(episode.metadata["rule"]))
@@ -250,10 +258,15 @@ def main() -> int:
                         f"keyframe on {int(mask.all(1).sum())} frames")
                 keyframes = keyframes[rows["frame_index"].to_numpy()]
                 mask = mask[rows["frame_index"].to_numpy()]
+                conf = None
             for position, index in enumerate(rows.index):
                 at = table.index.get_loc(index)
                 keyframe_column[at] = keyframes[position].tolist()
                 mask_column[at] = mask[position].astype(np.float32).tolist()
+                if conf is not None:
+                    confidence_column[at] = [float(conf[position])]
+            if conf is not None:
+                confidences.append(conf)
             real_rows.append(keyframes[mask])
             masks.append(mask.astype(np.float32))
             episodes_done += 1
@@ -264,6 +277,10 @@ def main() -> int:
             raise SystemExit(f"{path}: a row got no keyframe")
         table[FUTURE_KEYFRAME] = keyframe_column
         table[FUTURE_MASK] = mask_column
+        if learned is not None:
+            if any(value is None for value in confidence_column):
+                raise SystemExit(f"{path}: a row got no confidence")
+            table[FUTURE_CONFIDENCE] = confidence_column
         target = output / path.relative_to(source)
         target.parent.mkdir(parents=True, exist_ok=True)
         table.to_parquet(target, index=False)
@@ -283,6 +300,7 @@ def main() -> int:
                                "collection": str(args.collection.resolve()),
                                "rows": rows_n, "dim": dim}
     if learned is not None:
+        info["features"][FUTURE_CONFIDENCE] = {"dtype": "float32", "shape": [1], "names": None}
         info["future_keyframe"].update(learned.provenance())
         learned.save_support(output / "meta" / "pfn_support.npz")
     (output / "meta" / "info.json").write_text(json.dumps(info, indent=4) + "\n")
@@ -290,6 +308,8 @@ def main() -> int:
     stats = json.loads(stats_path.read_text())
     stats[FUTURE_KEYFRAME] = _stats(real)
     stats[FUTURE_MASK] = _stats(np.concatenate(masks))
+    if confidences:
+        stats[FUTURE_CONFIDENCE] = _stats(np.concatenate(confidences)[:, None])
     stats_path.write_text(json.dumps(stats, indent=4) + "\n")
     print(f"\nwrote {output}: {episodes_done} episodes, {frames_done} frames, "
           f"{len(real)} keyframe rows, {linked} video files linked")

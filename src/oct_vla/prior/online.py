@@ -25,7 +25,8 @@ from . import shelf_adapter as A
 
 
 class PriorFutureSource:
-    """Per-step PFN keyframe rows ``[3, 24]`` or latent cells ``[N_MAX + 1, W]``, and a mask."""
+    """Per step: PFN keyframe rows ``[3, 24]`` or latent cells ``[N_MAX + 1, W]``, their
+    mask, and the prior's confidence (``shelf_adapter.confidence``)."""
 
     name = "pfn"
 
@@ -64,7 +65,7 @@ class PriorFutureSource:
         self._initial = (observation.scene, observation.eef)
         return [self.pool[i].seed for i in chosen]
 
-    def __call__(self, observation) -> tuple[np.ndarray, np.ndarray]:
+    def __call__(self, observation) -> tuple[np.ndarray, np.ndarray, float]:
         if self._demos is None:
             raise RuntimeError("PriorFutureSource called before reset()")
         supports = getattr(observation, "supports", ())
@@ -73,7 +74,8 @@ class PriorFutureSource:
         q = A.query(*self._initial, observation.scene, observation.eef, supports)
         out = A.infer(self.model, A.pack(self._demos, [q]), self.lang, self.device,
                       latent=self.kind == "latent")
+        conf = A.confidence(out, 0)
         if self.kind == "latent":
-            return out["latent"][0].astype(np.float32), out["latent_ok"][0].astype(bool)
+            return out["latent"][0].astype(np.float32), out["latent_ok"][0].astype(bool), conf
         rows, mask = A.keyframe_rows(out, 0, q)
-        return rows, mask
+        return rows, mask, conf

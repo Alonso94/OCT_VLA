@@ -46,14 +46,15 @@ START = {"a": (-0.3, -0.25, 0.79), "b": (0.1, -0.25, 0.79)}
 def test_keyframe_rows_from_an_observation_without_task_context(tmp_path):
     source = PriorFutureSource(_view(tmp_path), tmp_path)
     source.reset(800, _observation(**START))
-    rows, mask = source(_observation(**START))
+    rows, mask, conf = source(_observation(**START))
     assert rows.shape == (3, 24) and mask.all() and np.isfinite(rows).all()
+    assert 0.0 < conf <= 1.0
 
 
 def test_latent_cells_have_the_priors_shape(tmp_path):
     source = PriorFutureSource(_view(tmp_path, "latent"), tmp_path)
     source.reset(800, _observation(**START))
-    cells, mask = source(_observation(**START))
+    cells, mask, _ = source(_observation(**START))
     assert cells.shape == (N_MAX + 1, 16) and mask.sum() == 7  # 2 movables, 2 grippers, 2 decks, event
 
 
@@ -77,3 +78,30 @@ def test_a_different_prior_or_adapter_is_refused(tmp_path):
 def test_calling_before_reset_is_refused(tmp_path):
     with pytest.raises(RuntimeError, match="reset"):
         PriorFutureSource(_view(tmp_path), tmp_path)(_observation(**START))
+
+
+def test_the_exporters_learned_source_writes_rows_and_confidence(tmp_path):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "add_future_keyframe", Path(__file__).parents[2] / "scripts/add_future_keyframe.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    from oct_vla.data.episode import Episode
+
+    torch.manual_seed(0)
+    demo_episode = _demo()
+    episode = Episode(seed=9, instruction="restock", samples=demo_episode.samples,
+                      success=True, metadata={"rule": "leftmost"})
+    for kind, shape in (("keyframe", (3, 24)), ("latent", (N_MAX + 1, 16))):
+        source = object.__new__(module._LearnedSource)
+        source.A, source.k, source.hits = A, 2, []
+        source.args = SimpleNamespace(seed=0, kind=kind, device="cpu")
+        source.pool_index = [0, 1, 2]
+        source.demos = {i: A.support_demo(demo_episode, SUPPORTS) for i in range(3)}
+        source.model, source.lang = KeyframePFN(width=16, heads=2, layers=1), None
+        frames = np.arange(len(episode.samples))
+        values, mask, conf, note = source(1, episode, frames)
+        assert values.shape == (len(frames), *shape) and mask.shape == (len(frames), shape[0])
+        assert conf.shape == (len(frames),) and ((conf > 0) & (conf <= 1)).all()
+        assert "supports [0, 2]" in note  # never the episode itself (index 1)

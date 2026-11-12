@@ -169,6 +169,9 @@ def test_the_live_builder_passes_the_servers_keyframe_and_refuses_without_it():
     # its width: here latent cells [10, 128].
     cells, valid = np.ones((10, 128), np.float32), np.arange(10) < 7
     batch = module.build_observation(obs, torch=torch, np=np, entity_max_entities=16,
-                                     future_keyframe=True, future=(cells, valid))
+                                     future_keyframe=True, future=(cells, valid, 0.25))
     assert batch[FUTURE_KEYFRAME].shape == (1, 10, 128)
     assert batch[FUTURE_MASK][0].tolist() == valid.tolist()
+    from oct_vla.policies.conditioning.future import FUTURE_CONFIDENCE
+
+    assert batch[FUTURE_CONFIDENCE].tolist() == [[0.25]]
