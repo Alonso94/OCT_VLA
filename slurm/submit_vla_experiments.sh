@@ -82,7 +82,7 @@ case "$CORPUS" in
     declare -A DATASET=([F]=three_object_v4l_eeabs)
     declare -A TAG=([F]=v4l_eeabs)
     LETTER=([pi05]=P4 [smolvla]=S4 [groot]=G4) ;;
-  v4_leftmost_pfn|v4_leftmost_pfngoal|v4_leftmost_pfnlat)
+  v4_leftmost_pfn|v4_leftmost_pfngoal|v4_leftmost_pfnlat|v4_leftmost_pfnft|v4_leftmost_pfnscr)
     # PFN-VLA step 3: the frozen prior's prediction instead of the oracle
     # (add_future_keyframe.py --keyframes pfn). pfn = interaction prior,
     # decoded rows; pfngoal = goal-only prior; pfnlat = interaction prior,
@@ -97,6 +97,10 @@ case "$CORPUS" in
       pfn)     LETTER=([pi05]=P6 [smolvla]=S6 [groot]=G6) ;;
       pfngoal) LETTER=([pi05]=P7 [smolvla]=S7 [groot]=G7) ;;
       pfnlat)  LETTER=([pi05]=P8 [smolvla]=S8 [groot]=G8) ;;
+      # Stage B (G1b′): the prior calibrated on real demos (F1), and the same
+      # architecture trained on the real demos alone (S1, no pretraining).
+      pfnft)   LETTER=([pi05]=P9 [smolvla]=S9 [groot]=G9) ;;
+      pfnscr)  LETTER=([pi05]=PS [smolvla]=SS [groot]=GS) ;;
     esac ;;
   v4_leftmost_fk)
     # v4_leftmost plus the oracle next-interaction keyframe
@@ -107,7 +111,7 @@ case "$CORPUS" in
     declare -A TAG=([F]=v4lfk_eeabs)
     declare -A STAGE1_TAG=([F]=v4l_eeabs)
     LETTER=([pi05]=P5 [smolvla]=S5 [groot]=G5) ;;
-  *) echo "CORPUS must be paired_full, paired_full_r19, paired_full_r38, paired_full_vis, identity, v4_leftmost, v4_leftmost_fk or v4_leftmost_pfn{,goal,lat}" >&2; exit 2 ;;
+  *) echo "CORPUS must be paired_full, paired_full_r19, paired_full_r38, paired_full_vis, identity, v4_leftmost, v4_leftmost_fk or v4_leftmost_pfn{,goal,lat,ft,scr}" >&2; exit 2 ;;
 esac
 for regime in "${!DATASET[@]}"; do
   # A per-seed view ({prior}) is checked per seed in stage 2.
