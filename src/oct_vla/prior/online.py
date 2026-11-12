@@ -46,7 +46,18 @@ class PriorFutureSource:
                              "(instruction or EEF offset); re-export it")
         self.device = device
         self.model = A.load_prior(provenance["prior"], device)
-        if self.model.config != provenance["prior_config"]:
+        # Compare with the recorded config's defaults filled in: a field added to
+        # the model after the export (e.g. yaw_residual) loads at its default, as
+        # the checkpoint itself does, and must not read as a different prior.
+        import inspect
+
+        from .model import KeyframePFN
+
+        recorded = {name: p.default for name, p in
+                    inspect.signature(KeyframePFN.__init__).parameters.items()
+                    if p.default is not inspect.Parameter.empty}
+        recorded.update(provenance["prior_config"])
+        if self.model.config != recorded:
             raise ValueError(f"{provenance['prior']} is not the prior the view was exported with")
         self.lang = load_language(Path(provenance["lang"])) if provenance.get("lang") else None
         self.pool_path = Path(support_pool or Path(dataset_root) / provenance["support_pool"])

@@ -116,3 +116,11 @@ def test_a_support_pool_override_replaces_the_views_own(tmp_path):
     source = PriorFutureSource(view, tmp_path, support_pool=other)
     assert source.pool_path == other
     assert all(900 <= s < 904 for s in source.reset(800, _observation(**START)))
+
+
+def test_a_view_exported_before_a_new_model_field_still_matches(tmp_path):
+    view = _view(tmp_path)
+    older = {k: v for k, v in view["prior_config"].items() if k != "yaw_residual"}
+    PriorFutureSource({**view, "prior_config": older}, tmp_path)  # loads at the default
+    with pytest.raises(ValueError, match="not the prior"):
+        PriorFutureSource({**view, "prior_config": {**older, "yaw_residual": True}}, tmp_path)

@@ -116,3 +116,11 @@ def test_only_groot_takes_kv_rel():
     from oct_vla.policies.object_conditioning import CORE_ARMS
 
     assert "kv_rel" not in CORE_ARMS
+
+
+def test_the_composer_stays_small_at_host_width():
+    from oct_vla.policies.conditioning.relational import COMPOSER_WIDTH
+
+    composer = RelationalComposer(1536)
+    assert composer.query.out_features == COMPOSER_WIDTH
+    assert sum(p.numel() for p in composer.parameters()) < 1_000_000

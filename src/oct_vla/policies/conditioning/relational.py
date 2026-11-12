@@ -32,6 +32,10 @@ _POS = slice(0, 3)
 _TYPES = slice(13, 17)
 #: Relative positions in decimetres: shelf-scale offsets become O(1).
 _POS_SCALE = 10.0
+#: Width the relations are composed at. At the host's width (1536 on GR00T) the
+#: composer added ~190 M parameters and ran a 48 GB card out of memory; one
+#: relation step needs far less, and `out` projects back to the entity width.
+COMPOSER_WIDTH = 128
 
 
 class RelationalComposer(nn.Module):
@@ -39,7 +43,7 @@ class RelationalComposer(nn.Module):
 
     def __init__(self, width: int, hidden: int | None = None) -> None:
         super().__init__()
-        hidden = hidden or width
+        hidden = hidden or min(width, COMPOSER_WIDTH)
         self.query = nn.Linear(width, hidden, bias=False)
         self.key = nn.Linear(width, hidden, bias=False)
         self.value = nn.Linear(width, hidden, bias=False)
