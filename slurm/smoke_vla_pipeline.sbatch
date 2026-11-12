@@ -62,11 +62,16 @@ fi
 
 arm_env() {
   case "$1" in
-    rgb_cont) echo TRAIN_VARIANT=rgb ;;
-    *)        echo TRAIN_VARIANT=object CONDITIONING="$1" ;;
+    rgb_cont)    echo TRAIN_VARIANT=rgb ;;
+    kv_confgate) echo TRAIN_VARIANT=object CONDITIONING=kv FUTURE_GATE=confidence ;;
+    *)           echo TRAIN_VARIANT=object CONDITIONING="$1" ;;
   esac
 }
-for arm in rgb_cont kv kv_adaln kv_tokens; do
+# Which arms to exercise (default: the core set). A view with a future keyframe
+# switches the future branch on for every object arm (entity_training_args.py).
+ARMS="${SMOKE_ARMS:-rgb_cont kv kv_adaln kv_tokens}"
+ROLLOUT_ARMS="${SMOKE_ROLLOUT_ARMS:-kv_adaln kv_tokens}"
+for arm in $ARMS; do
   step "init check: $arm"
   # shellcheck disable=SC2046
   env "${common[@]}" $(arm_env $arm) STAGE1_CHECKPOINT="$STAGE1" TRAIN_TAG="check_$arm" \
@@ -74,7 +79,7 @@ for arm in rgb_cont kv kv_adaln kv_tokens; do
 done
 cp "$LOCAL"/run_metadata/*_init_check.json "$REPORTS/" 2>/dev/null || true
 
-for arm in rgb_cont kv kv_adaln kv_tokens; do
+for arm in $ARMS; do
   step "stage 2: $arm"
   # shellcheck disable=SC2046
   env "${common[@]}" $(arm_env $arm) STAGE1_CHECKPOINT="$STAGE1" TRAIN_TAG="s2_$arm" \
@@ -82,7 +87,7 @@ for arm in rgb_cont kv kv_adaln kv_tokens; do
 done
 du -sh "$LOCAL"/*_s2_* 2>/dev/null | sed 's/^/  stage2 size: /' | tee -a "$REPORTS/summary.txt"
 
-for arm in kv_adaln kv_tokens; do
+for arm in $ROLLOUT_ARMS; do
   step "rollout: $arm"
   RUN2=$(ls -d "$LOCAL"/*_s2_"$arm" | head -1)
   EVAL_CHECKPOINT="$RUN2/checkpoints/last/pretrained_model" \
