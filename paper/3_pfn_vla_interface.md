@@ -26,7 +26,7 @@ depends on it.
 | **Support demos** ("the support") | The K example demonstrations shown to the PFN at inference time, as in few-shot prompting. They show the rule, e.g. "move the objects rightmost-first". The PFN reads them in context, with no gradient step. |
 | **Query** | The current scene, for which the PFN predicts what happens next. |
 | **Keyframe** | Three rows in the 17-column entity schema plus a role and an event one-hot (`data/future_keyframes.py`). They give the object at the next event, the acting gripper's pose and aperture at that event, and the object's goal. The event is grasp or place. |
-| **Oracle keyframe** | The true keyframe, computed from simulator state with the expert's own planners (`tasks/shelf_restock/keyframes.py`). It is privileged and can never be deployed: an upper bound only. |
+| **Oracle keyframe** | The true keyframe, computed from simulator state with the expert's own planners (`tasks/shelf_restock/keyframes.py`). It is privileged and can never be deployed: a privileged-information reference, not a strict upper bound (it is trained under a different input distribution, so a learned source could beat it). |
 | **Latent query cells** | The PFN's internal embedding of each current-scene entity after it has attended to every support demo and to the instruction (`KeyframePFN.query_cells`). This is what the PFN *knows* before its heads decode it into a keyframe. |
 
 ## 3. Why test the oracle keyframe first
@@ -48,7 +48,7 @@ test checks link 2 on its own (gate G2).
 
 **What it supports:** "future-keyframe conditioning through a second KV branch can
 improve a VLA beyond current-state object tokens", once it holds on three seeds. In the
-paper it is the upper-bound row.
+paper it is the privileged-reference row.
 
 **What it does not support:**
 - that the PFN works, since the PFN is not in the loop;
@@ -64,7 +64,7 @@ paper it is the upper-bound row.
 This was the plan's design decision, for three reasons:
 
 1. **Every stage can be checked.** A keyframe has a ground truth, so it can be scored
-   offline (G1). It has an oracle upper bound (G2) and a measurable oracle→PFN gap
+   offline (G1). It has an oracle reference (G2) and a measurable oracle→PFN gap
    (G3). A failure can always be placed in one link.
 2. **GEMIL's lesson.** There the end-to-end consumer ignored its context. A narrow,
    supervised bottleneck forces the support's information through. A rich latent lets
@@ -196,6 +196,25 @@ says what it tells GEMIL.
     default is invisible when supports agree with it, so the no-support condition is
     needed to see what the support actually contributes.
 
+### Compaction: a coverage decision, not a confidence problem (2026-11-12)
+
+The prior has no vocabulary for the compactor's push, about 28 % of shelf frames. Two
+facts settle how to treat it:
+- **The oracle never describes the push.** Once a placed object is let go, the oracle
+  keyframe points to the next grasp. The G2 policies trained on that.
+- **Stage B uses the same definition.** Its real targets on compaction frames are the
+  next recorded grasp.
+
+So calibration is the first fix, and G1b′'s per-stage table tests it. If compaction
+accuracy stays low, the deployable alternative is a coverage gate: an observable stage
+classifier that masks the prior during compaction (exactly kv there). Not the
+confidence gate: the frozen prior is overconfident (above), and predictive confidence
+does not detect missing vocabulary.
+
+**For GEMIL:** a synthetic prior meets behaviours outside its program grammar. Decide
+explicitly whether calibration should teach it to look past them, or whether a
+coverage gate should switch it off there; do not expect its confidence to say so.
+
 ### Known defects of the frozen prior (found 2026-11-12)
 
 - **Object yaw stuck 180° off.** P1's object-pose head predicts yaw as a unit vector,
@@ -249,7 +268,7 @@ says what it tells GEMIL.
     stage-2 initialisation check (`scripts/check_stage2_init.py`) now asserts that
     gradient reaches it.
 - **For GEMIL:**
-  - GEMIL has no equivalent split. It should report an **oracle-cost upper bound**: the
+  - GEMIL has no equivalent split. It should report an **oracle-cost reference**: the
     planner minimising the true task distance d_z. That separates "the cost was
     inferred wrongly" from "a correct cost was used badly", which GEMIL's end-to-end
     numbers cannot.
