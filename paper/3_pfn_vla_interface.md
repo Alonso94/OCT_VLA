@@ -289,6 +289,48 @@ exactly there; report it with its empty share.
 
 A learned prior always predicts, so it has no such gap.
 
+### Main shelf table, first read (2026-11-13; GR00T, train on 3 leftmost objects)
+
+Successes per 60 scenes (3 training seeds × 20), per seed in brackets, then mean
+transfers per episode. Rows 3 (kv_rel), and seed 1002 of frozen-PFN / seed 1000 of
+latent, were still running (two cells restarted off the slow node a0423).
+
+| Arm | 3 seen | 3 held-out sizes | 2 objects | 4 objects |
+|---|---|---|---|---|
+| rgb_cont | 3 [0,1,2] 0.72 | 0 0.02 | 16 [6,3,7] 0.92 | 0 0.40 |
+| kv | 24 [7,10,7] 1.42 | 3 [0,2,1] 0.28 | 31 [9,11,11] 1.27 | 5 [2,1,2] 0.70 |
+| oracle keyframe | 33 [13,7,13] 1.88 | 2 0.22 | 34 1.27 | 1 0.53 |
+| PFN goal-only, frozen | 24 [6,8,10] 1.42 | 7 [3,1,3] 0.53 | 38 [13,10,15] 1.42 | 2 0.90 |
+| PFN calibrated (F1) | 20 [10,2,8] 1.43 | 1 0.17 | 35 [12,10,13] 1.30 | 6 [1,0,5] 1.03 |
+| PFN calibrated + confidence gate | 29 [10,11,8] 1.63 | 3 0.25 | 34 1.33 | 3 0.70 |
+| PFN from scratch (S1) | 23 [8,7,8] 1.37 | 1 0.20 | 36 1.37 | 3 0.58 |
+
+Frozen-interaction and latent rows (2 seeds so far) are omitted until complete.
+
+**Reading** (scene-paired against kv, McNemar for success, sign test for transfers):
+- **Object state helps; replicated on the v4 corpus.** kv against rgb_cont: seen +22/−1
+  (p < 0.001), 2 objects +19/−4 (p < 0.001).
+- **No PFN arm beats kv on task success** in any condition (every paired p ≥ 0.23).
+- **Lead: the calibrated prior gets further at 4 objects, and the scratch prior does
+  not.**
+  - Calibrated: more transfers than kv on 28 scenes, fewer on 12 (p = 0.017); more
+    wins than losses on every seed (12/3, 7/3, 9/6); mean difference +0.45, −0.05,
+    +0.60.
+  - From scratch, same real data: 14/14.
+
+  This is the first closed-loop sign that synthetic pretraining matters off the
+  real-data distribution (cardinality extrapolation). It is partial progress, not
+  success, and it needs the 4-object stage breakdown before it is a claim.
+- **Goal-only leans the same way off-distribution** (lead, p ≈ 0.08):
+  - held-out sizes: more transfers on 18 scenes, fewer on 8;
+  - 4 objects: 26 against 14.
+
+  This is consistent with G1b, where goal-only was the more reliable prior.
+- **The confidence gate is ahead on seen scenes on every seed** (10/11/8 against
+  7/10/7; transfers +0.22), but not significantly (success +12/−7, p = 0.36).
+- **The oracle row is unreliable off-distribution** (empty keyframes, above), so the
+  4-object comparison is against kv, not the oracle.
+
 ### G2: oracle keyframe into GR00T
 
 - **Question:** can GR00T use a keyframe at all (Section 3)?
