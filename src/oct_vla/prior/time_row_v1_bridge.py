@@ -102,6 +102,9 @@ def a0_paired_predictions(pred: dict) -> dict:
     A0 names one acting arm, so the other arm's event is HOLD and its position is not
     predicted (NaN)."""
     B = len(pred["pointer"])
+    if "gripper" not in pred:  # a goal-only prior: object and goal, nothing per arm
+        return {"group_pointer": pred["pointer"].argmax(-1), "goal": pred["final"],
+                "goal_only": np.ones(B, bool)}
     arm = pred["gripper"].argmax(-1)
     event = pred["event"].argmax(-1) + 1
     pos = np.full((B, 2, 3), np.nan, np.float32)

@@ -101,6 +101,15 @@ def _to_metric(out) -> dict:
 
 def score(pred: dict, targets: dict, metas: list) -> dict:
     valid = np.asarray(targets["target_valid"]) > 0.5
+    if "goal_only" in pred:  # predicts object and goal only; nothing else is scored
+        ptr = pred["group_pointer"] == targets["g_object"]
+        goal = np.linalg.norm(pred["goal"][:, :3] - targets["g_goal"][:, :3], axis=-1)
+        out = {"n": int(valid.sum()), "group_pointer": float(np.mean(ptr[valid])),
+               "goal_cm": float(np.median(goal[valid]) * 100)}
+        pairs = [(i, m["pair"]) for i, m in enumerate(metas) if m["pair"] > i]
+        if pairs:
+            out["contrast_pointer"] = float(np.mean([ptr[i] and ptr[j] for i, j in pairs]))
+        return out
     part_t = np.asarray(targets["y_participation"]) > 0.5
     acting = part_t.argmax(-1)
     rows = np.arange(len(acting))

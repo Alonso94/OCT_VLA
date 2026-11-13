@@ -219,6 +219,54 @@ upper-shelf band, which happens during lowering, while it is still held. So
 
 They need different fixes, and the rollout JSONs cannot tell them apart.
 
+### 2.6b Step 0 result: where placed objects are lost (2026-11-14) [verified]
+
+**Setup.**
+- 18 traced rollouts: kv, PFN goal-only, PFN calibrated; 3 seeds; 4-object and
+  held-out-size scenes.
+- **All 360 episodes reproduce their scored outcomes exactly.**
+- `scripts/diagnose_placement_loss.py`; results in `octvla-prior/results/diagnosis/`.
+- "Contact" means an arm within 0.20 m at the step a resting object starts to move, so
+  this is attribution, not proof.
+
+**Loss attribution, 4 objects** (share of placed-then-lost objects):
+
+| Arm | (a) never released | (b) fell, no arm near | (c) compactor | (d) left arm, carrying | (d) left arm, empty |
+|---|---|---|---|---|---|
+| kv (61) | 2 % | 33 % | 10 % | 13 % | 43 % |
+| goal-only (51) | 6 % | 22 % | 25 % | 27 % | 20 % |
+| calibrated (54) | 7 % | 28 % | 28 % | 13 % | 24 % |
+
+**By transfer index:**
+- **First objects** are lost mostly to the left arm coming back into contact after release
+  (kv: 21 of 33) and to falls with no arm near (12 of 33).
+- **Third objects (PFN arms)** are lost mostly to the compactor (goal-only 7 of 10,
+  calibrated 9 of 13).
+- **Held-out sizes:** the same pattern, with more objects never released (14–19 %).
+
+**Validity of the goal fed to GR00T** (on the upper shelf and clear of resting objects),
+by transfer index:
+
+| Prior | #1 | #2 | #3 | #4 |
+|---|---|---|---|---|
+| goal-only, 4 objects | 55/56 | 42/45 | 13/19 | 5/5 |
+| calibrated, 4 objects | 53/54 | 40/45 | 22/28 | 8/11 |
+
+**Verdict: mostly H2 (execution), with H1 growing from the third transfer.**
+- Most losses are contact or instability that no goal prior addresses:
+  - the releasing arm disturbing what it just placed;
+  - objects placed where they fall.
+- Goal quality is a genuine secondary problem later in the sequence: 21–32 % of
+  third-transfer goals are invalid.
+- Compactor knock-offs dominate the later losses of the PFN arms.
+
+**Implications for the priors:**
+- **P (relational placement, validity):** targets the later-transfer goals.
+- **Q (push):** targets the compactor losses. Q is the prior GR00T would need to
+  *execute* a push, and its value needs closed-loop testing.
+- **Most first-transfer losses lie on GR00T's side:** release and retreat behaviour,
+  stable placement. A prior can only help there indirectly.
+
 ### 2.7 Two explanations to separate before building anything [hypothesis]
 
 - **H1, later goals are wrong:** goal error or invalid goals grow with the transfer
