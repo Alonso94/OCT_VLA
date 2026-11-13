@@ -331,6 +331,39 @@ Frozen-interaction and latent rows (2 seeds so far) are omitted until complete.
 - **The oracle row is unreliable off-distribution** (empty keyframes, above), so the
   4-object comparison is against kv, not the oracle.
 
+### Where the prior helps: per-stage breakdown (2026-11-13)
+
+On 4-object and held-out-size scenes, against kv, per training seed (s1000/s1001/s1002).
+
+**Lifting is unchanged:** every arm lifts something in 52–57 of 60 four-object scenes.
+The prior's grasp information adds nothing.
+
+**The gain is in keeping the first transfer.** First transfers completed, given a lift:
+
+| | 4 objects | held-out sizes |
+|---|---|---|
+| kv | 9/19, 3/18, 9/20 | 1/10, 3/16, 4/18 |
+| PFN goal-only (frozen) | **14/18, 13/20, 10/18** | **7/13, 6/15, 5/13** |
+| PFN calibrated | **16/19, 8/17, 10/18** | 3/14, 3/14, 1/17 |
+| PFN from scratch | 5/19, 7/18, 8/20 | 3/13, 2/14, 3/12 |
+
+- **The failure being prevented is "placed, then lost":** the object reaches the shelf
+  and ends off it. At 4 objects, kv loses 33 of its 57 first objects that way; the
+  goal-only and calibrated priors lose 22, the scratch prior 38.
+- **Later stages (2nd, 3rd transfer) do not improve,** which is why task success does not
+  move.
+- **Reading.** The useful prior is a **placement goal**: where the object should end up.
+  It stabilises the first placement exactly when the scene leaves the VLA's training
+  distribution (more objects, unseen sizes).
+  - Goal-only does it on every seed in both conditions.
+  - Calibrated does it on every seed at 4 objects.
+  - The from-scratch prior, trained on the same real demos, never does.
+  - Synthetic pretraining is what makes the goal extrapolate. Even the frozen goal-only
+    prior, at 6 cm goal error, helps.
+- **What this does not yet show:** task success, or chaining past the first transfer.
+  The next question is why later transfers still fail: compaction knocking earlier
+  objects, or the goal for the k-th object.
+
 ### G2: oracle keyframe into GR00T
 
 - **Question:** can GR00T use a keyframe at all (Section 3)?
