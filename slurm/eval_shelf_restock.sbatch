@@ -88,6 +88,8 @@ EXEC_FLAG=()
 # another rule's oracle keyframe (oracle source).
 [ -n "${EVAL_SUPPORT_POOL:-}" ] && EXEC_FLAG+=(--future-support-pool "$EVAL_SUPPORT_POOL")
 [ -n "${EVAL_ORACLE_RULE:-}" ] && EXEC_FLAG+=(--oracle-rule "$EVAL_ORACLE_RULE")
+# Per-step traces for the placement-loss diagnosis.
+[ -n "${EVAL_TRACE_DIR:-}" ] && EXEC_FLAG+=(--trace-dir "$EVAL_TRACE_DIR")
 
 VIDEO_FLAG=()
 if [ -n "${EVAL_VIDEO_DIR:-}" ]; then

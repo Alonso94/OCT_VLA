@@ -178,7 +178,7 @@ def run_episode(
     uint8_images=True, state_encoding="position", video=None,
     gripper_encoding="measured_aperture",
     entity_max_entities=None, model_ids=None, entity_noise=None, entity_visual=None,
-    future_keyframe="none", future_source=None,
+    future_keyframe="none", future_source=None, trace_path=None,
 ) -> dict:
     # A policy-side source asks the server for nothing; the oracle is served.
     served = "none" if future_source is not None else future_keyframe
@@ -227,6 +227,10 @@ def run_episode(
     # step in and the scene's initial layout is never shown.
     if video is not None:
         video.add(observation, {"step": 0, "transfers": 0, "lifted": 0})
+    # Per-step trace for the placement-loss diagnosis (paper/4 §2.6-2.7): what every
+    # object and gripper did, and the future rows actually fed. Read-only; it never
+    # changes the rollout.
+    trace = _Trace(observation) if trace_path is not None else None
     for step in range(max_steps):
         batch = build_observation(
             observation,
@@ -241,6 +245,8 @@ def run_episode(
             future_keyframe=future_keyframe != "none",
             future=future_source(observation) if future_source is not None else None,
         )
+        if trace is not None:
+            trace.add(observation, batch)
         if observation.joints is not None:
             previous_joints = joint_vector(observation.joints)
         with torch.no_grad():
@@ -272,7 +278,55 @@ def run_episode(
     if video is not None:
         result["video"] = str(video.close() or "")
         result["video_frames"] = video.frames
+    if trace is not None:
+        trace.add(observation, None)
+        result["trace"] = str(trace.save(trace_path))
     return result
+
+
+class _Trace:
+    """Object positions, gripper positions and apertures, and the future rows fed, per step.
+
+    Objects are in sorted track order (`tracks`). Step i is the observation the policy
+    acted on at step i; the last entry is the final observation."""
+
+    def __init__(self, first) -> None:
+        import numpy as np
+
+        self.np = np
+        self.tracks = sorted(o.track_id for o in first.scene.objects)
+        self.objects, self.eef, self.gripper, self.future, self.future_mask = [], [], [], [], []
+
+    def add(self, obs, batch) -> None:
+        np = self.np
+        pos = {o.track_id: o.pose.position for o in obs.scene.objects}
+        self.objects.append([pos.get(t, (np.nan,) * 3) for t in self.tracks])
+        self.eef.append([obs.eef.left.pose.position, obs.eef.right.pose.position])
+        self.gripper.append([obs.eef.left.gripper, obs.eef.right.gripper])
+        rows = None if batch is None else batch.get("observation.future_keyframe")
+        mask = None if batch is None else batch.get("observation.future_keyframe_mask")
+        self.future.append(None if rows is None else rows[0].float().cpu().numpy())
+        self.future_mask.append(None if mask is None else mask[0].cpu().numpy())
+
+    def save(self, path):
+        np = self.np
+        from pathlib import Path
+
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fed = [f for f in self.future if f is not None]
+        extra = {}
+        if fed:
+            shape = fed[0].shape
+            extra["future"] = np.stack([f if f is not None else np.full(shape, np.nan, np.float32)
+                                        for f in self.future])
+            extra["future_mask"] = np.stack([m if m is not None else np.zeros(shape[0], bool)
+                                             for m in self.future_mask])
+        np.savez_compressed(path, tracks=np.array(self.tracks),
+                            objects=np.asarray(self.objects, np.float32),
+                            eef=np.asarray(self.eef, np.float32),
+                            gripper=np.asarray(self.gripper, np.float32), **extra)
+        return path
 
 
 def main() -> int:
@@ -341,6 +395,9 @@ def main() -> int:
         "fully closed-loop; the trained default of 50 is 3.3 s of open loop at "
         "15 Hz.",
     )
+    parser.add_argument("--trace-dir", type=Path, default=None,
+                        help="Write a per-step trace (.npz) per episode here: objects, "
+                             "grippers, the future rows fed (placement-loss diagnosis)")
     parser.add_argument("--future-support-pool", type=Path, default=None,
                         help="Support-swap intervention (learned future source only): draw "
                              "the prior's demonstrations from this pool "
@@ -610,6 +667,8 @@ def main() -> int:
                     entity_max_entities=entity_max_entities, model_ids=model_ids,
                     entity_noise=entity_noise, entity_visual=entity_visual,
                     future_keyframe=future_keyframe, future_source=future_source,
+                    trace_path=(args.trace_dir / f"{profile}_seed{seed}.npz"
+                                if args.trace_dir is not None else None),
                 )
                 outcome["evaluation_split"] = args.evaluation_split
                 results.append(outcome)

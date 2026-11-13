@@ -175,3 +175,31 @@ def test_the_live_builder_passes_the_servers_keyframe_and_refuses_without_it():
     from oct_vla.policies.conditioning.future import FUTURE_CONFIDENCE
 
     assert batch[FUTURE_CONFIDENCE].tolist() == [[0.25]]
+
+
+def test_rollout_trace_records_objects_grippers_and_fed_rows(tmp_path):
+    spec = importlib.util.spec_from_file_location(
+        "eval_trace_policy", Path(__file__).parents[1] / "scripts/eval_shelf_restock_policy.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def obs(x):
+        pose = Pose((x, 0.0, 0.9), (0.0, 0.0, 0.0, 1.0))
+        scene = ObjectScene(0.0, (ObjectState("b", pose, (0.05, 0.05, 0.1), 1.0, 1.0),
+                                  ObjectState("a", Pose((0.3, 0, 0.9), (0, 0, 0, 1)),
+                                              (0.05, 0.05, 0.1), 1.0, 1.0)))
+        return SimpleNamespace(scene=scene, eef=EEFState(ArmState(pose, 0.2), ArmState(pose, 0.8)))
+
+    torch = pytest.importorskip("torch")
+    import numpy as np
+
+    trace = module._Trace(obs(0.0))
+    rows = torch.ones(1, 3, 24)
+    trace.add(obs(0.1), {"observation.future_keyframe": rows,
+                         "observation.future_keyframe_mask": torch.ones(1, 3, dtype=torch.bool)})
+    trace.add(obs(0.2), None)
+    saved = np.load(trace.save(tmp_path / "t.npz"))
+    assert saved["tracks"].tolist() == ["a", "b"]
+    assert saved["objects"].shape == (2, 2, 3) and saved["objects"][1, 1, 0] == pytest.approx(0.2)
+    assert saved["gripper"][0].tolist() == pytest.approx([0.2, 0.8])
+    assert saved["future"].shape == (2, 3, 24) and np.isnan(saved["future"][1]).all()
