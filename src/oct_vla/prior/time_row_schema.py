@@ -72,6 +72,12 @@ POSE_DIM = 5
 #: Reserved fields: present in the schema, always masked in v1.
 RESERVED = {"orientation": 4, "codes": 8}
 
+#: --- TIME_ROW_V2: the v2 grammar (programs_v2, generator_v2) ---
+#: Adds the push events (`contact`, `push`) and gripper orientation: a 6D rotation
+#: (approach axis, closing axis) per gripper, in the inputs and as a per-arm target.
+SCHEMA_VERSION_V2 = "time-row-v2"
+ROT_DIM = 6
+
 #: Label arrays of one row, with their per-row shape. Support labels carry a [K, T]
 #: prefix, query targets none.
 ROW_LABELS = {
@@ -86,3 +92,14 @@ ROW_LABELS = {
     "g_goal": (POSE_DIM,),
     "target_valid": (),
 }
+
+
+def _v2_events():
+    from .generator_v2 import EVENTS_V2
+
+    return EVENTS_V2
+
+
+ARM_EVENTS_V2 = ("hold",) + _v2_events()[1:]
+GROUP_EVENTS_V2 = ("none",) + _v2_events()[1:]
+ROW_LABELS_V2 = {**ROW_LABELS, "y_rot": (N_ARMS, ROT_DIM)}

@@ -37,7 +37,11 @@ from . import programs as P
 from . import time_row_schema as S
 from .batches import ItemConfig, _differ, _instruction_index, _partner, _scene_for, _target
 from .generator import K_MAX, N_MAX, S_MAX, Episode, Infeasible, interpolate
+from .programs_v2 import ALL_INSTRUCTIONS_V2, ProgramV2
 from .schema import APERTURE, N_FEATURES, OPEN, POS
+
+#: Keyframes per v2 episode: v1's plus two push keyframes per object.
+S_MAX_V2 = S_MAX + 2 * 4
 
 
 @dataclass(frozen=True)
@@ -47,8 +51,28 @@ class TimeRowConfig:
     rows_per_segment: int = 1
 
     @property
+    def v2(self) -> bool:
+        """The grammar is the programs': v2 (push prior, gripper orientation) or v1."""
+        return isinstance(self.item.programs[0], ProgramV2)
+
+    @property
+    def n_features(self) -> int:
+        from .generator_v2 import N_FEATURES_V2
+
+        return N_FEATURES_V2 if self.v2 else N_FEATURES
+
+    @property
+    def labels(self) -> dict:
+        return S.ROW_LABELS_V2 if self.v2 else S.ROW_LABELS
+
+    @property
+    def schema(self) -> str:
+        return S.SCHEMA_VERSION_V2 if self.v2 else S.SCHEMA_VERSION
+
+    @property
     def t_max(self) -> int:
-        return S_MAX + (S_MAX - 1) * self.rows_per_segment
+        s_max = S_MAX_V2 if self.v2 else S_MAX
+        return s_max + (s_max - 1) * self.rows_per_segment
 
 
 def row_labels(ep: Episode, next_index: int | None, cols=None) -> dict:
@@ -68,6 +92,9 @@ def row_labels(ep: Episode, next_index: int | None, cols=None) -> dict:
         "g_goal": np.zeros(S.POSE_DIM, np.float32),
         "target_valid": np.float32(0.0),
     }
+    v2 = ep.keyframes[0].feats.shape[1] > N_FEATURES
+    if v2:
+        out["y_rot"] = np.zeros((S.N_ARMS, S.ROT_DIM), np.float32)
     if next_index is None:
         return out
     kf = ep.keyframes[next_index]
@@ -77,6 +104,8 @@ def row_labels(ep: Episode, next_index: int | None, cols=None) -> dict:
         out["y_pos"][a] = kf.feats[n + a, POS]
         out["y_aperture"][a] = kf.feats[n + a, APERTURE]
         out["y_engaged"][a] = float(kf.feats[n + a, APERTURE] < OPEN - 1e-9)
+        if v2:
+            out["y_rot"][a] = kf.feats[n + a, N_FEATURES:N_FEATURES + S.ROT_DIM]
         if kf.gripper == a:
             out["y_participation"][a] = 1.0
             out["y_event"][a] = kf.event
@@ -111,7 +140,7 @@ _INT_LABELS = ("y_event", "y_object", "g_event", "g_object")
 def _empty_inputs(cfg: TimeRowConfig) -> dict:
     t = cfg.t_max
     inp = {
-        "s_feats": np.zeros((K_MAX, t, N_MAX, N_FEATURES), np.float32),
+        "s_feats": np.zeros((K_MAX, t, N_MAX, cfg.n_features), np.float32),
         "s_types": np.full((K_MAX, N_MAX), -1, np.int8),
         "s_row_valid": np.zeros((K_MAX, t), bool),
         # Within-demo time: segment index + alpha. Supports are labelled, so their time
@@ -119,7 +148,7 @@ def _empty_inputs(cfg: TimeRowConfig) -> dict:
         "s_row_time": np.zeros((K_MAX, t), np.float32),
         "demo_valid": np.zeros(K_MAX, bool),
         **{f"s_{k}": np.zeros((K_MAX, t, *shape), np.int64 if k in _INT_LABELS else np.float32)
-           for k, shape in S.ROW_LABELS.items()},
+           for k, shape in cfg.labels.items()},
     }
     # Padding must not look like a pointer to column 0.
     inp["s_y_object"].fill(-1)
@@ -156,20 +185,41 @@ def pack_time_row_item(
     qinv = np.argsort(qperm)
     kf = q.keyframes
     current = kf[j].feats if alpha == 0 else interpolate(kf[j], kf[j + 1], alpha)
-    q_feats = np.zeros((2, N_MAX, N_FEATURES), np.float32)
+    q_feats = np.zeros((2, N_MAX, cfg.n_features), np.float32)
     q_feats[0, : len(qperm)] = kf[0].feats[qperm]
     q_feats[1, : len(qperm)] = current[qperm]
     q_types = np.full(N_MAX, -1, np.int8)
     q_types[: len(qperm)] = q.types[qperm]
     inp.update({
         "q_feats": q_feats, "q_types": q_types,
-        "lang_kind": np.int64(kind), "lang_index": np.int64(_instruction_index(rng, kind, prog)),
+        "lang_kind": np.int64(kind), "lang_index": np.int64(_language(rng, kind, prog)),
     })
     targets = row_labels(q, j + 1, qinv)
     meta = {"program": int(prog.id), "j": int(j), "alpha": float(alpha),
             "n_objects": int(q.scene.n), "support_perms": [p.tolist() for p in used],
             "query_perm": qperm.tolist(), "conflict": False, "pair": -1}
     return inp, targets, meta
+
+
+def _scenes(rng, progs):
+    """v1's `_scene_for`, or the v2 generator for v2 programs."""
+    if isinstance(progs[0], ProgramV2):
+        from .generator_v2 import scene_for_v2
+
+        return scene_for_v2(rng, progs)
+    return _scene_for(rng, progs)
+
+
+def _language(rng, kind: int, prog) -> int:
+    """v1's instruction index, against the v2 instruction table for v2 programs."""
+    if not isinstance(prog, ProgramV2):
+        return _instruction_index(rng, kind, prog)
+    if kind == 0:
+        return -1
+    if kind == 1:
+        return ALL_INSTRUCTIONS_V2.index(
+            P.AMBIGUOUS_INSTRUCTIONS[rng.integers(len(P.AMBIGUOUS_INSTRUCTIONS))])
+    return ALL_INSTRUCTIONS_V2.index(prog.instructions()[rng.integers(2)])
 
 
 def sample_time_row_items(rng: np.random.Generator, cfg: TimeRowConfig,
@@ -183,8 +233,8 @@ def sample_time_row_items(rng: np.random.Generator, cfg: TimeRowConfig,
     if kind == 2 and rng.random() < ic.support_dropout:  # explicit, language only
         k = 0
     if not conflict:
-        demos = [_scene_for(rng, [prog])[0] for _ in range(k)]
-        (q,) = _scene_for(rng, [prog])
+        demos = [_scenes(rng, [prog])[0] for _ in range(k)]
+        (q,) = _scenes(rng, [prog])
         j = int(rng.integers(len(q.keyframes) - 1))
         alpha = 0.0 if rng.random() < ic.on_keyframe else float(rng.uniform(0, 0.9))
         return [pack_time_row_item(rng, prog, demos, q, j, alpha, kind, cfg)]
@@ -192,7 +242,7 @@ def sample_time_row_items(rng: np.random.Generator, cfg: TimeRowConfig,
     if other is None:
         raise Infeasible("no partner program")
     for _ in range(20):
-        qa, qb = _scene_for(rng, [prog, other])
+        qa, qb = _scenes(rng, [prog, other])
         common = [i for i in range(min(len(qa.keyframes), len(qb.keyframes)) - 1)
                   if np.allclose(qa.keyframes[i].feats, qb.keyframes[i].feats)
                   and _differ(_target(qa, i), _target(qb, i))]
@@ -201,7 +251,7 @@ def sample_time_row_items(rng: np.random.Generator, cfg: TimeRowConfig,
     else:
         raise Infeasible("partners never diverge from a shared state")
     j = int(rng.choice(common))
-    pairs = [_scene_for(rng, [prog, other]) for _ in range(k)]
+    pairs = [_scenes(rng, [prog, other]) for _ in range(k)]
     # The partners share the query state and the support *scenes*; the same permutations
     # keep their columns aligned, so only the program differs.
     perms = [rng.permutation(len(d[0].types)) for d in pairs] + [rng.permutation(len(qa.types))]
@@ -266,7 +316,7 @@ def build_time_row_eval_set(out: Path, name: str, split: str, items: int, chunk:
     os.replace(tmp, path)
     (out / f"{split}.meta.jsonl").write_text("\n".join(json.dumps(m) for m in metas) + "\n")
     manifest = {
-        "schema": S.SCHEMA_VERSION, "name": name, "split": split, "items": len(metas),
+        "schema": cfg.schema, "name": name, "split": split, "items": len(metas),
         "chunk": chunk, "rows_per_segment": cfg.rows_per_segment,
         "item_config": {f.name: [p.id for p in cfg.item.programs] if f.name == "programs"
                         else getattr(cfg.item, f.name) for f in dataclasses.fields(cfg.item)},

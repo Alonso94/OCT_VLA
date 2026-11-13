@@ -39,10 +39,18 @@ def main() -> int:
     ap.add_argument("--rows-per-segment", type=int, default=1)
     ap.add_argument("--show", type=int, default=1)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--grammar", choices=("v1", "v2"), default="v1",
+                    help="v2: the push prior (programs_v2, generator_v2)")
     args = ap.parse_args()
     rng = np.random.default_rng(args.seed)
-    cfg = TimeRowConfig(item=ItemConfig(programs=P.program_split(args.split)),
-                        rows_per_segment=args.rows_per_segment)
+    if args.grammar == "v2":
+        from oct_vla.prior.programs_v2 import program_split_v2
+
+        programs = program_split_v2(args.split)
+    else:
+        programs = P.program_split(args.split)
+    cfg = TimeRowConfig(item=ItemConfig(programs=programs), rows_per_segment=args.rows_per_segment)
+    from oct_vla.prior.time_row_batches import _scenes
 
     mismatches, counts = Counter(), Counter()
     shown = 0
@@ -51,8 +59,8 @@ def main() -> int:
         prog = cfg.item.programs[rng.integers(len(cfg.item.programs))]
         k = int(rng.integers(1, 5))
         try:
-            demos = [_scene_for(rng, [prog])[0] for _ in range(k)]
-            (q,) = _scene_for(rng, [prog])
+            demos = [_scenes(rng, [prog])[0] for _ in range(k)]
+            (q,) = _scenes(rng, [prog])
         except Infeasible:
             continue
         j = int(rng.integers(len(q.keyframes) - 1))
@@ -60,6 +68,8 @@ def main() -> int:
         inputs, targets, meta = pack_time_row_item(rng, prog, demos, q, j, alpha, 1, cfg)
         done += 1
         counts[f"arm={prog.arm}"] += 1
+        if getattr(prog, "compact", "none") != "none":
+            counts["compacting"] += 1
 
         def check(where, ep, kf_index, labels, inv):
             kf = ep.keyframes[kf_index]
@@ -81,6 +91,10 @@ def main() -> int:
                 want_obj = inv[kf.obj] if acting else -1
                 if labels["y_event"][a] != want_ev or labels["y_object"][a] != want_obj:
                     mismatches[f"{where}:arm_event_object"] += 1
+                if "y_rot" in labels and not np.allclose(labels["y_rot"][a],
+                                                         kf.feats[n + a, 9:15], atol=1e-5):
+                    mismatches[f"{where}:rotation"] += 1
+            counts[f"event={kf.event}"] += 1
 
         for d, ep in enumerate(demos):
             inv = np.argsort(np.asarray(meta["support_perms"][d]))
@@ -88,7 +102,7 @@ def main() -> int:
             for r in np.flatnonzero(inputs["s_row_valid"][d]):
                 seg = int(np.floor(inputs["s_row_time"][d, r] + 1e-6))
                 labels = {k[2:]: inputs[k][d, r] for k in inputs
-                          if k.startswith("s_") and k[2:] in S.ROW_LABELS}
+                          if k.startswith("s_") and k[2:] in cfg.labels}
                 if seg == last:
                     counts["terminal"] += 1
                     if labels["target_valid"] != 0:
@@ -106,7 +120,8 @@ def main() -> int:
 
     print(f"\nchecked {done} items ({args.split}, rows/segment {args.rows_per_segment}): "
           f"{counts['labels']} labelled rows, {counts['terminal']} terminal rows; "
-          + ", ".join(f"{k} {v}" for k, v in sorted(counts.items()) if k.startswith("arm=")))
+          + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())
+                      if k.startswith(("arm=", "event=", "compacting"))))
     print("mismatches:", dict(mismatches) if mismatches else "none")
     return 1 if mismatches else 0
 

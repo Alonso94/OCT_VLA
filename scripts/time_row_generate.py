@@ -31,9 +31,17 @@ def main() -> int:
     ap.add_argument("--splits", nargs="+", default=["train", "composition", "shelf_family"])
     ap.add_argument("--rows-per-segment", type=int, default=1)
     ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--grammar", choices=("v1", "v2"), default="v1",
+                    help="v2: the push prior (programs_v2, generator_v2)")
     args = ap.parse_args()
     for split in args.splits:
-        cfg = TimeRowConfig(item=ItemConfig(programs=P.program_split(split)),
+        if args.grammar == "v2":
+            from oct_vla.prior.programs_v2 import program_split_v2
+
+            programs = program_split_v2(split)
+        else:
+            programs = P.program_split(split)
+        cfg = TimeRowConfig(item=ItemConfig(programs=programs),
                             rows_per_segment=args.rows_per_segment)
         path = build_time_row_eval_set(args.out, args.name, split, args.items,
                                        workers=args.workers, cfg=cfg)
