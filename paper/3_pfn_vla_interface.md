@@ -364,6 +364,23 @@ The prior's grasp information adds nothing.
   The next question is why later transfers still fail: compaction knocking earlier
   objects, or the goal for the k-th object.
 
+### Relational composer (`kv_rel`, RQ2): no effect (2026-11-13) [verified]
+
+3 seeds × 20 scenes, scene-paired against kv (`eval/G4F-kv_rel-s100?-{seen,heldout,count}.json`):
+
+| | kv | kv_rel | paired success | more / fewer transfers |
+|---|---|---|---|---|
+| seen | 24/60 | 25/60 [8, 7, 10] | +11 / −10, p = 1.00 | 21 / 16 |
+| held-out sizes | 3/60 | 2/60 | +2 / −3, p = 1.00 | 9 / 8 |
+| 2 objects | 31/60 | 33/60 | +14 / −12, p = 0.85 | 14 / 16 |
+| 4 objects | 5/60 | 4/60 | +4 / −5, p = 1.00 | 11 / 18 |
+
+- A learned relation step over the entity set adds nothing over flat object tokens.
+  This is the same verdict as the PFN's difference-edges ablation.
+- With no gain, the planned relation-disruption control has nothing to explain.
+- Both relational results are negative, so the paper should report RQ2 as a negative
+  result, not build on relational composition.
+
 ### G2: oracle keyframe into GR00T
 
 - **Question:** can GR00T use a keyframe at all (Section 3)?
