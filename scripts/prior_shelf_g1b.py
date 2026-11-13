@@ -123,6 +123,10 @@ def main() -> int:
                              "held-out check for a prior fine-tuned on the training seeds)")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--supports-from-run", action="store_true",
+                        help="Draw each run's support demos only from the episodes it was "
+                             "trained on (its config.json), for the low-data curve: a run "
+                             "must not be shown demonstrations it was not given")
     args = parser.parse_args()
     if args.out.exists():
         raise SystemExit(f"Refusing to overwrite {args.out}")
@@ -155,6 +159,16 @@ def main() -> int:
     args.out.parent.mkdir(parents=True, exist_ok=True)
     for run in args.runs:
         model = A.load_prior(run, args.device)
+        run_demos = demos
+        if args.supports_from_run:
+            trained = json.loads((run / "config.json").read_text()).get("episodes")
+            if trained:  # a pretrained-only run has none: it saw no real demos
+                run_demos = {r: [d for d in demos[r] if d.seed in set(trained.get(r, []))]
+                             for r in demos}
+                if any(not v for v in run_demos.values()):
+                    raise SystemExit(f"{run.name}: no support demo left for a rule")
+            print(f"{run.name}: support pools "
+                  f"{ {r: len(v) for r, v in run_demos.items()} }", flush=True)
         name = run.name
         for rule in RULE_SELECT:
             other = next(r for r in RULE_SELECT if r != rule)
@@ -169,11 +183,12 @@ def main() -> int:
                     if condition == "none":
                         support = []
                     else:
-                        pool = [d for j, d in enumerate(demos[rule if condition == "same"
-                                                              else other])
+                        pool = [d for j, d in enumerate(run_demos[rule if condition == "same"
+                                                                  else other])
                                 if not (condition == "same" and j == i
                                         and args.query_split == "all")]
-                        support = [pool[j] for j in rng.choice(len(pool), args.k, replace=False)]
+                        k = min(args.k, len(pool))
+                        support = [pool[j] for j in rng.choice(len(pool), k, replace=False)]
                     ref = _reference(ep)
                     ref_rows, ref_mask = oracle_future_keyframes(ep)
                     frames = [t for t in range(0, len(ep.samples), args.stride)

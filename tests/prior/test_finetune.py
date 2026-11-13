@@ -77,3 +77,26 @@ def test_a_mixed_batch_trains():
     total, terms = M.loss(model, model(b), b)
     total.backward()
     assert torch.isfinite(total) and all(np.isfinite(v) for v in terms.values())
+
+
+def test_a_low_data_subset_is_deterministic_and_training_only():
+    eps = [_episode(s) for s in (101, 105, 110, 150, 360)]
+    a = FT.subset(eps, 2, seed=0, rule="leftmost")
+    assert a == FT.subset(list(reversed(eps)), 2, seed=0, rule="leftmost")  # listing order
+    assert len(a) == 2 and [e.seed for e in a] == sorted(e.seed for e in a)
+    # Another seed or rule draws independently; None or n >= len keeps everything.
+    draws = {tuple(e.seed for e in FT.subset(eps, 2, seed=s, rule="leftmost")) for s in range(10)}
+    assert len(draws) > 1
+    assert [e.seed for e in FT.subset(eps, None, 0, "rightmost")] == [101, 105, 110, 150, 360]
+    with pytest.raises(ValueError, match="not a training seed"):
+        FT.subset(eps + [_episode(210)], 2, 0, "leftmost")
+    with pytest.raises(ValueError, match="at least one"):
+        FT.subset(eps, 0, 0, "leftmost")
+
+
+def test_two_demos_per_rule_still_train():
+    eps = {r: FT.subset([_episode(s) for s in (101, 102, 103)], 2, 0, r)
+           for r in ("leftmost", "rightmost")}
+    data = FT.build(eps, {r: SUPPORTS for r in eps})
+    batch = FT.sample(data, np.random.default_rng(0), 8, pair_fraction=0.5)
+    assert len(batch["t_obj"]) >= 8

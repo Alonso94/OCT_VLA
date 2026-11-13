@@ -57,6 +57,10 @@ def main() -> int:
     ap.add_argument("--pair-fraction", type=float, default=0.25,
                     help="Share of the real items that are frame-0 conflict pairs")
     ap.add_argument("--stride", type=int, default=2)
+    ap.add_argument("--demos-per-rule", type=int, default=None,
+                    help="Low-data curve (G1c): train on this many demos of each rule")
+    ap.add_argument("--subset-seed", type=int, default=None,
+                    help="Which demos (default: --seed); the same for every recipe")
     ap.add_argument("--lr", type=float, default=None,
                     help="Default 1e-4 fine-tuning, 3e-4 from scratch")
     ap.add_argument("--warmup", type=int, default=200)
@@ -113,9 +117,10 @@ def main() -> int:
             ep = read_episode(d)
             if ep.success:
                 eps.append(ep)
-        episodes[rule] = eps
+        subset_seed = args.seed if args.subset_seed is None else args.subset_seed
+        episodes[rule] = FT.subset(eps, args.demos_per_rule, subset_seed, rule)
         supports[rule] = shelf_support_entities(spec_for_rule(rule))
-        print(f"{rule}: {len(eps)} training episodes", flush=True)
+        print(f"{rule}: {len(episodes[rule])} of {len(eps)} training episodes", flush=True)
     data = FT.build(episodes, supports, stride=args.stride)
     print({r: len(v) for r, v in data.items.items()}, f"{len(data.pairs)} conflict pairs",
           flush=True)

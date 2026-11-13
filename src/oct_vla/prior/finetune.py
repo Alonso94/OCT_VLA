@@ -68,6 +68,27 @@ def split_of(seed: int) -> str:
     raise ValueError(f"seed {seed} is in no three-object split")
 
 
+def subset(episodes: list, n: int | None, seed: int, rule: str) -> list:
+    """``n`` of one rule's training episodes, the same for a given (seed, rule).
+
+    The low-data curve (G1c) trains on these. Drawn from training seeds only, so a
+    subset can never reach validation, and returned in seed order so the selection
+    does not depend on directory listing."""
+    import zlib
+
+    if n is None or n >= len(episodes):
+        return sorted(episodes, key=lambda e: int(e.seed))
+    if n < 1:
+        raise ValueError("a subset needs at least one demonstration per rule")
+    for ep in episodes:
+        if split_of(int(ep.seed)) != "train":
+            raise ValueError(f"seed {ep.seed} is not a training seed")
+    ordered = sorted(episodes, key=lambda e: int(e.seed))
+    rng = np.random.default_rng([seed, zlib.crc32(rule.encode())])
+    chosen = sorted(rng.choice(len(ordered), n, replace=False))
+    return [ordered[i] for i in chosen]
+
+
 @dataclass
 class Item:
     query: A.Query
