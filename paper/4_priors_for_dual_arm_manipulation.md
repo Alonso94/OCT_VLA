@@ -353,6 +353,25 @@ That keeps the gain in in-context inference, not a larger behaviour library.
 - **Support-to-support attention,** so demos are compared with each other before the
   query reads them.
 
+## 4b. Two kinds of change: grammar versus formulation (2026-11-13)
+
+This document is about the **prior grammar**: what the synthetic world contains.
+A separate line of work changes the **formulation**:
+- supports become labelled time rows (observed scene → next-event target);
+- the target becomes paired left/right gripper subgoals at a shared event boundary, plus
+  the object pointer and goal;
+- point and mixture heads.
+
+Its contract and Phase 0–1 record are in `5_time_row_pfn_design.md`.
+
+The two must be ablated separately. The formulation is screened first on the
+**unchanged v1 generator**; grammar changes (P/Q/B/S) come after, trained under both
+formulations. Otherwise a gain cannot be attributed.
+
+On v1 data, paired targets carry little beyond v1's single acting arm (only handovers
+and the idle arm's recorded motion differ). So the formulation's pairing can only be
+tested properly once mechanism B generates concurrent two-arm events.
+
 ## 5. Proposed programme (plan rev. 6.1)
 
 0. **Diagnose before building** (no training):
