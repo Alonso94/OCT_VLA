@@ -183,7 +183,117 @@ t= 3.00 | L: idle hold        (-0.05,-0.14,1.05)         | R: ACT  place   obj 6
 - If H2 holds, the time-row work should be judged on RoboTwin's bimanual tasks and on
   in-context inference, not on shelf success.
 
-## 8. Claim ledger
+## 8. Decisions after review (user, 2026-11-13)
+
+1. **Rows.**
+   - A row is one time step holding every object (position and orientation), both
+     grippers' current state, and the two target columns.
+   - Every row on the way to an event shares that event's target, so the prior learns
+     from the whole approach.
+   - **Denser rows:** packs with 4 in-between rows per segment were added at
+     `eval/time_row_v1_r4/`. 0 mismatches over 23,540 labelled rows; 10–15 MB per split.
+   - [limitation] Synthetic in-between rows are linear blends; real recordings will
+     give genuine approach paths (every recorded frame, subsampled).
+2. **Both arms are always supervised.**
+   - A static arm's target is its own pose at the event, which equals its current pose
+     when it does not move.
+   - An arm that moves without changing its grip (the post-place retreat, the giver's
+     carry) gets its true destination.
+   - Participation and engaged stay as label information, not as loss masks. This
+     replaces open decision 2 of §6.
+3. **Shared next event, kept.** Both arms are read at the same boundary τ(t).
+4. **The query's initial row is an ablation.** The data always carries the initial and
+   current rows; the model config chooses whether to read the initial one. TabPFN's
+   form is the current row only.
+5. **Push is a synthetic pretraining prior**, with its own end-effector orientation,
+   not taken from real data. The v1 keyframe interface stays skip-push. Design in §10;
+   **not implemented, pending approval**.
+
+## 9. Proposed model: TabPFN-style 2D attention over set-valued rows (Phase 2, not started)
+
+- **The idea:** in-context items are support rows with their target values. The query
+  row has its target cells masked, and the model predicts them by attending over rows
+  and within rows, as TabPFN does.
+- **The obstacle:** TabPFN's across-row attention runs *per column*, assuming a column
+  means the same thing in every row. Here that holds for:
+  - the left gripper, the right gripper;
+  - the left target, the right target;
+  - time.
+
+  It does **not** hold for object columns across demos: different objects, in arbitrary
+  order.
+- **The design:**
+  - **Within-row attention** over all cells of a row: every object, both gripper cells,
+    both target cells, and a time cell. Per-object information is kept, which is needed
+    to point at the next object.
+  - **Across-row attention per aligned column:** left gripper, right gripper, left
+    target, right target, time, and a pooled object-set token. Each attends over every
+    support row of every demo plus the query row. Object cells are aligned only within
+    a demo (tracks), so they join across-row attention through the pooled set token,
+    or through within-demo attention down their own track.
+  - **Query target cells** start as a learned mask token. They never see their own
+    label.
+  - **Readout:** the paired targets come from the query's two target cells. The object
+    pointer and goal come from the query's object cells, after they have attended to the
+    target cells.
+- **Controls** (§7):
+  - A0, the v1 `KeyframePFN`;
+  - A1, the v1 encoder with a paired head;
+  - the query's initial row on or off (decision 4);
+  - rows per segment, 1 or 4.
+
+## 10. Proposed synthetic push prior (decision 5; not implemented)
+
+**Program.**
+- A new **v2 program list** with a compaction field: `none` or `toward_neighbour`.
+- v1's 480 programs and their ids stay unchanged; v2 programs are enumerated
+  separately.
+
+**Execution.** After a placement next to a previous object, the *other* arm compacts:
+1. **Approach:** a gripper pose beside the placed object, on the side away from the
+   neighbour, gripper closed, **end-effector oriented horizontally**, approach axis
+   along the push direction. A grasp is top-down, so the two contact modes differ in
+   orientation.
+2. **Contact (keyframe):** the gripper touches the far face of the object.
+3. **Push end (keyframe):** the object slides along the row until the gap to its
+   neighbour is the compacted gap. The gripper ends at the object's new far face.
+   Nothing else moves; there is no penetration; the pushing arm must be able to reach.
+4. **Retreat.**
+
+**Events.** A new `push` event for the compacting arm (participating). The holder of
+the next transfer is idle or engaged as usual. Under the shared boundary the right
+arm's push is its own event, so its target is the push contact or end pose.
+
+**Gripper orientation.**
+- The time-row schema's reserved `orientation` slot is filled for synthetic grippers:
+  a 6D rotation (two columns), matching the entity-token convention, so real data can
+  fill it later.
+- Grasp and place are top-down with the wrist yaw set to the object's yaw. A push is
+  horizontal along the push direction.
+- The yaw saddle lesson applies: predict rotations relative to a reference, never as a
+  bare normalised vector.
+
+**Variety.** Push from either side; contact on the face or a corner offset; one or
+several pushes; compaction after every placement or only once at the end.
+
+**Task conditioning.**
+- **Conflict pairs:** the same scene and supports, with and without compaction, so only
+  the demos (or an explicit instruction phrase) say whether a task compacts.
+- **The no-support baseline** must not solve it, so compaction cannot be inferred from
+  the scene alone.
+
+**Exclusion.** The exact shelf program (leftmost / rightmost / middle × higher × chain ×
+left mover × right compactor) stays out of pretraining. Its components appear with
+other partners.
+
+**Tests:**
+- a pushed object ends at the compacted gap;
+- other objects are untouched;
+- the pushing gripper is horizontal and at the contact face;
+- the compaction flag is recoverable only from support or language;
+- v1 programs are unchanged.
+
+## 11. Claim ledger
 
 No claims. Phase 1 establishes a verified data contract only. It says nothing about
 whether the time-row formulation learns better, and nothing about any robot behaviour.
