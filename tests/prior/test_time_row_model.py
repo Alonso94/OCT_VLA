@@ -118,3 +118,47 @@ def test_the_bridge_rebuilds_v1_keyframe_tables():
     with torch.no_grad():
         out = a1.forward_paired(M.to_torch(kb, None, "cpu"), teacher=False)
     assert out["pos"].shape == (1, 2, 3) and out["group_pointer"].shape == (1, 9)
+
+
+# --- the object-relative head (anchor="object") --------------------------------------
+
+@pytest.mark.parametrize("grammar,cfg", [("v1", V1), ("v2", V2)])
+def test_object_anchor_learns_on_both_grammars(grammar, cfg):
+    inputs, targets, _ = _batch(cfg)
+    model = _model(grammar, anchor="object").train()
+    b = to_torch_time_row(inputs, targets, None, "cpu")
+    total, _ = paired_loss(model(b), b, grammar == "v2")
+    total.backward()
+    assert torch.isfinite(total)
+    assert all(p.grad is not None and p.grad.abs().sum() > 0 for p in model.parameters())
+
+
+def test_object_anchor_starts_each_arm_where_its_event_says():
+    """Same weights, two anchors: the positions differ by exactly anchor - current gripper."""
+    from oct_vla.prior import time_row_schema as S
+    from oct_vla.prior.time_row_model import _gripper_columns, anchor_kinds
+
+    inputs, targets, _ = _batch(V1, size=8, seed=4)
+    grip, obj = _model(), _model(anchor="object")
+    obj.load_state_dict(grip.state_dict())
+    b = to_torch_time_row(inputs, targets, None, "cpu")
+    with torch.no_grad():
+        a, o = grip.eval()(b, teacher=True), obj.eval()(b, teacher=True)
+    cur = M.normalise(b["q_feats"][:, -1][..., :9])[..., :3]
+    cols = _gripper_columns(b["q_types"].long())
+    kinds = anchor_kinds(S.ARM_EVENTS)[b["t_y_event"].long()]
+    for i in range(8):
+        for arm in range(2):
+            g = cur[i, cols[i, arm]]
+            want = {0: g, 1: cur[i, b["t_y_object"][i, arm].clamp_min(0)],
+                    2: o["goal"][i, :3]}[int(kinds[i, arm])]
+            torch.testing.assert_close(o["pos"][i, arm] - a["pos"][i, arm], want - g)
+    assert (kinds == 1).any() and (kinds == 0).any()
+
+
+def test_a1_takes_the_anchor_and_old_configs_default_to_the_gripper():
+    model = KeyframePairedPFN(width=32, heads=4, layers=2, use_edges=False, anchor="object")
+    assert model.config["anchor"] == "object" and model.paired.anchor == "object"
+    assert _model().config["anchor"] == "gripper"
+    with pytest.raises(ValueError):
+        _model(anchor="elsewhere")

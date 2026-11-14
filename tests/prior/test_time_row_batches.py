@@ -202,3 +202,41 @@ def test_eval_packs_are_deterministic_and_never_overwritten(tmp_path):
         build_time_row_eval_set(tmp_path / "a", "t", "shelf_family", 20, chunk=10, workers=1, cfg=cfg)
     assert all(P.ALL_PROGRAMS[m["program"]] in P.SHELF_FAMILY for m in ma)
     assert _differ is not None and _target is not None  # v1 helpers reused, not copied
+
+
+# --- approach waypoints (TimeRowConfig.waypoints) ------------------------------------
+
+def test_waypoint_labels_sit_above_the_acting_target_and_clear_the_others():
+    from oct_vla.data.future_keyframes import WAYPOINT_CLEARANCE, WAYPOINT_LIFT
+    from oct_vla.prior.schema import SIZE
+
+    seen_raised = False
+    for arm in P.ARMS:
+        for ep in _episodes(ARM_PROGRAMS[arm], 5):
+            n = ep.scene.n
+            for j in range(len(ep.keyframes) - 1):
+                lab = row_labels(ep, j + 1, waypoints=True)
+                kf = ep.keyframes[j + 1]
+                act, idle = kf.gripper, 1 - kf.gripper
+                np.testing.assert_allclose(lab["y_wp"][idle], lab["y_pos"][idle])
+                np.testing.assert_allclose(lab["y_wp"][act, :2], lab["y_pos"][act, :2])
+                assert lab["y_wp"][act, 2] >= lab["y_pos"][act, 2] + WAYPOINT_LIFT - 1e-6
+                for i in range(n):
+                    if i == kf.obj:
+                        continue
+                    d = np.linalg.norm(kf.feats[i, POS][:2] - lab["y_pos"][act, :2])
+                    if d <= 0.10 + 0.5 * kf.feats[i, SIZE][:2].max():
+                        top = kf.feats[i, POS][2] + 0.5 * kf.feats[i, SIZE][2]
+                        assert lab["y_wp"][act, 2] >= top + WAYPOINT_CLEARANCE - 1e-6
+                        seen_raised |= lab["y_wp"][act, 2] > lab["y_pos"][act, 2] + WAYPOINT_LIFT + 1e-6
+            assert row_labels(ep, None, waypoints=True)["y_wp"].tolist() == [[0.0] * 3] * 2
+    assert seen_raised  # some neighbour actually raised a waypoint
+
+
+def test_waypoint_config_adds_the_label_and_versions_the_schema():
+    cfg = TimeRowConfig(item=ItemConfig(language=(1, 0, 0)), waypoints=True)
+    inputs, targets, _ = sample_time_row_batch(np.random.default_rng(0), cfg, 3)
+    assert cfg.schema.endswith(S.WAYPOINT_SUFFIX)
+    assert inputs["s_y_wp"].shape[-2:] == (2, 3) and targets["y_wp"].shape == (3, 2, 3)
+    plain = TimeRowConfig(item=ItemConfig(language=(1, 0, 0)))
+    assert "y_wp" not in plain.labels and not plain.schema.endswith(S.WAYPOINT_SUFFIX)

@@ -103,12 +103,39 @@ def _gather_cells(cells: torch.Tensor, index: torch.Tensor) -> torch.Tensor:
     return out.squeeze(-2) if single else out
 
 
-class PairedHead(nn.Module):
-    """Paired next-event targets from label cells [B, 3, W] and query entity cells."""
+#: Where an arm's predicted position is anchored, by its next event (``anchor="object"``):
+#: at the pointed object for an event that touches one, at the predicted goal for a
+#: place, at the arm's own current position otherwise (hold, release).
+OBJECT_ANCHORED = ("grasp", "regrasp", "contact", "push")
+GOAL_ANCHORED = ("place",)
+ANCHORS = ("gripper", "object")
 
-    def __init__(self, width: int, n_arm_events: int, n_group_events: int, rot: bool):
+
+def anchor_kinds(arm_events: tuple[str, ...]) -> torch.Tensor:
+    """Per arm event: 0 = current gripper, 1 = pointed object, 2 = predicted goal."""
+    return torch.tensor([1 if e in OBJECT_ANCHORED else 2 if e in GOAL_ANCHORED else 0
+                         for e in arm_events])
+
+
+class PairedHead(nn.Module):
+    """Paired next-event targets from label cells [B, 3, W] and query entity cells.
+
+    ``anchor="gripper"`` (the pilot head): each arm's position is a residual from its
+    current position, so the head must output the whole object-to-arm offset.
+    ``anchor="object"``: a residual from the anchor its next event names
+    (``anchor_kinds``). Training anchors on the true event and object (teacher forcing,
+    as the goal already does); inference on the head's own argmax."""
+
+    def __init__(self, width: int, n_arm_events: int, n_group_events: int, rot: bool,
+                 anchor: str = "gripper"):
         super().__init__()
-        self.rot = rot
+        if anchor not in ANCHORS:
+            raise ValueError(f"anchor must be one of {ANCHORS}")
+        self.rot, self.anchor = rot, anchor
+        names = S.ARM_EVENTS_V2 if rot else S.ARM_EVENTS
+        if len(names) != n_arm_events:
+            raise ValueError("arm events and grammar disagree")
+        self.register_buffer("anchor_kind", anchor_kinds(names), persistent=False)
         self.side = nn.Embedding(2, width)
         out = 1 + n_arm_events + 3 + 1 + (S.ROT_DIM if rot else 0)
         self.n_arm_events = n_arm_events
@@ -121,8 +148,10 @@ class PairedHead(nn.Module):
         logits = torch.einsum("...w,...nw->...n", self.ptr_q(query), self.ptr_k(entities))
         return logits / math.sqrt(entities.shape[-1])
 
-    def forward(self, labels, entities, types, q_feats, teacher_object=None) -> dict:
-        """labels [B, 3, W]; entities [B, N, W]; types [B, N]; q_feats [B, N, F] (raw)."""
+    def forward(self, labels, entities, types, q_feats, teacher_object=None,
+                teacher_arm_event=None, teacher_arm_object=None) -> dict:
+        """labels [B, 3, W]; entities [B, N, W]; types [B, N]; q_feats [B, N, F] (raw).
+        Teachers (training only): group object [B], per-arm event and object [B, 2]."""
         movable = types == MOVABLE
         cur = normalise(q_feats[..., :N_FEATURES])
         cols = _gripper_columns(types)  # [B, 2]
@@ -134,11 +163,11 @@ class PairedHead(nn.Module):
         out = {
             "participation": raw[..., 0],
             "arm_event": raw[..., 1:1 + e],
-            "pos": grip_cur[..., :3] + raw[..., 1 + e:4 + e],
             "aperture": torch.sigmoid(raw[..., 4 + e]),
             "arm_pointer": self._pointer(arms, entities[:, None], movable[:, None])
             .masked_fill(~movable[:, None], NEG),
         }
+        residual = raw[..., 1 + e:4 + e]
         if self.rot:
             rot_cur = _take2(q_feats[..., N_FEATURES:N_FEATURES + S.ROT_DIM], cols)
             out["rot"] = rot_cur + raw[..., 5 + e:5 + e + S.ROT_DIM]
@@ -148,6 +177,17 @@ class PairedHead(nn.Module):
         obj = teacher_object if teacher_object is not None else out["group_pointer"].argmax(-1)
         obj_cell, obj_cur = _take(entities, obj), _take(cur, obj)
         out["goal"] = _pose_rotated(obj_cur, self.goal(torch.cat([group, obj_cell], -1)))
+        anchor = grip_cur[..., :3]
+        if self.anchor == "object":
+            ev = (teacher_arm_event if teacher_arm_event is not None
+                  else out["arm_event"].argmax(-1)).long()
+            ptr = (teacher_arm_object if teacher_arm_object is not None
+                   else out["arm_pointer"].argmax(-1)).long().clamp_min(0)
+            kind = self.anchor_kind[ev][..., None]  # [B, 2, 1]
+            at_object = _take2(cur, ptr)[..., :3]
+            at_goal = out["goal"][:, None, :3].detach().expand_as(anchor)
+            anchor = torch.where(kind == 1, at_object, torch.where(kind == 2, at_goal, anchor))
+        out["pos"] = anchor + residual
         return out
 
 
@@ -202,14 +242,14 @@ class TimeRowBlock(nn.Module):
 
 class TimeRowPFN(nn.Module):
     def __init__(self, width: int = 128, heads: int = 4, layers: int = 4, grammar: str = "v1",
-                 lang_dim: int = 0, query_initial: bool = True):
+                 lang_dim: int = 0, query_initial: bool = True, anchor: str = "gripper"):
         super().__init__()
         rot = grammar == "v2"
         arm_events = len(S.ARM_EVENTS_V2 if rot else S.ARM_EVENTS)
         group_events = len(S.GROUP_EVENTS_V2 if rot else S.GROUP_EVENTS)
         n_features = N_FEATURES + (S.ROT_DIM if rot else 0)
         self.config = {"width": width, "heads": heads, "layers": layers, "grammar": grammar,
-                       "lang_dim": lang_dim, "query_initial": query_initial,
+                       "lang_dim": lang_dim, "query_initial": query_initial, "anchor": anchor,
                        "schema": S.SCHEMA_VERSION_V2 if rot else S.SCHEMA_VERSION}
         self.rot, self.width = rot, width
         self.cell = nn.Sequential(nn.Linear(n_features, width), nn.SiLU(), nn.Linear(width, width))
@@ -221,7 +261,7 @@ class TimeRowPFN(nn.Module):
         self.kind = nn.Parameter(torch.randn(2, width) * 0.02)  # support, query
         self.lang = nn.Linear(lang_dim, width) if lang_dim else None
         self.blocks = nn.ModuleList(TimeRowBlock(width, heads) for _ in range(layers))
-        self.head = PairedHead(width, arm_events, group_events, rot)
+        self.head = PairedHead(width, arm_events, group_events, rot, anchor=anchor)
 
     def _entities(self, feats, types):
         f = normalise(feats[..., :N_FEATURES])
@@ -265,9 +305,15 @@ class TimeRowPFN(nn.Module):
         for block in self.blocks:
             xs, xq = block(xs, oks, xq, okq, scols, qcols)
         cur = xq[:, -1]  # the query's current row
-        tgt = b.get("t_g_object") if teacher else None
         return self.head(cur[:, N:N + LABEL_CELLS], cur[:, :N], b["q_types"].long(),
-                         b["q_feats"][:, -1], tgt)
+                         b["q_feats"][:, -1], *_teachers(b, teacher))
+
+
+def _teachers(b: dict, teacher: bool) -> tuple:
+    """(group object, per-arm event, per-arm object) targets when teacher-forcing."""
+    if not teacher:
+        return None, None, None
+    return b.get("t_g_object"), b.get("t_y_event"), b.get("t_y_object")
 
 
 def paired_loss(out: dict, b: dict, rot: bool) -> tuple[torch.Tensor, dict]:

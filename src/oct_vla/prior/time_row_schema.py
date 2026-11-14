@@ -101,5 +101,11 @@ def _v2_events():
 
 
 ARM_EVENTS_V2 = ("hold",) + _v2_events()[1:]
+
+#: Optional (``TimeRowConfig.waypoints``): each arm's approach waypoint before its next
+#: event, ``data/future_keyframes.approach_waypoint`` above the acting arm's target with
+#: the other objects of the keyframe as obstacles; the idle arm's is its own target.
+WAYPOINT_LABELS = {"y_wp": (2, 3)}
+WAYPOINT_SUFFIX = "+wp"
 GROUP_EVENTS_V2 = ("none",) + _v2_events()[1:]
 ROW_LABELS_V2 = {**ROW_LABELS, "y_rot": (N_ARMS, ROT_DIM)}

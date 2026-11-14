@@ -121,3 +121,74 @@ def test_export_refuses_an_unplannable_recording(monkeypatch):
     with pytest.raises(ValueError, match="planners failed on 1 recorded frames"):
         keyframes.episode_keyframes(SimpleNamespace(seed=7, samples=[sample]),
                                     spec_for_rule("leftmost"))
+
+
+# --- the waypoint layout (4 x 25, fkwp views) ---------------------------------------
+
+from oct_vla.data.future_keyframes import (  # noqa: E402
+    EEF_TO_FINGERTIP,
+    FUTURE_DIM_WP,
+    FUTURE_ROLES_WP,
+    WAYPOINT_CLEARANCE,
+    WAYPOINT_LIFT,
+    approach_waypoint,
+    event_columns,
+)
+
+
+def test_waypoint_is_above_the_event_and_clears_a_neighbour():
+    event = np.array([0.0, 0.0, 1.0])
+    free = approach_waypoint(event, [])
+    np.testing.assert_allclose(free, [0.0, 0.0, 1.0 + WAYPOINT_LIFT])
+    tall = ((0.06, 0.0, 1.05), (0.05, 0.05, 0.30))  # top at 1.20, beside the event
+    way = approach_waypoint(event, [tall])
+    np.testing.assert_allclose(way[:2], event[:2])
+    assert way[2] == pytest.approx(1.20 + EEF_TO_FINGERTIP + WAYPOINT_CLEARANCE)
+    far = ((0.6, 0.0, 1.05), (0.05, 0.05, 0.30))
+    np.testing.assert_allclose(approach_waypoint(event, [far]), free)
+
+
+def test_waypoint_rows_extend_the_three_row_layout():
+    a, b = (-0.25, LOWER_Y, LOWER_Z), (-0.17, LOWER_Y, LOWER_Z)
+    plain, mask = ShelfKeyframeOracle(spec_for_rule("leftmost"))(_scene(a=a, b=b), _eef())
+    rows, wp_mask = ShelfKeyframeOracle(spec_for_rule("leftmost"), waypoints=True)(
+        _scene(a=a, b=b), _eef())
+    assert rows.shape == (4, FUTURE_DIM_WP) and wp_mask.all() and mask.all()
+    # The first three rows are the 24-wide rows with one more (zero) role column.
+    np.testing.assert_array_equal(rows[:3, :EVENT_COL], plain[:, :EVENT_COL])
+    np.testing.assert_array_equal(rows[:3, EVENT_COL], 0.0)
+    np.testing.assert_array_equal(rows[:3, event_columns(FUTURE_DIM_WP)],
+                                  plain[:, event_columns(24)])
+    np.testing.assert_array_equal(rows[:, ENTITY_TOKEN_DIM:ENTITY_TOKEN_DIM + 4], np.eye(4))
+    assert FUTURE_ROLES_WP[3] == "gripper_waypoint"
+    # Same event, same gripper type and orientation, straight above the grasp pose.
+    np.testing.assert_array_equal(rows[3, event_columns(FUTURE_DIM_WP)],
+                                  rows[1, event_columns(FUTURE_DIM_WP)])
+    np.testing.assert_allclose(rows[3, :2], rows[1, :2])
+    np.testing.assert_allclose(rows[3, 3:9], rows[1, 3:9])
+    assert rows[3, 2] >= rows[1, 2] + WAYPOINT_LIFT - 1e-6
+    # b stands beside a: the waypoint clears b's top, not just the lift.
+    assert rows[3, 2] >= LOWER_Z + SIZE[2] / 2 + EEF_TO_FINGERTIP + WAYPOINT_CLEARANCE - 1e-6
+
+
+def test_waypoint_empty_keyframe_has_the_waypoint_shape():
+    a = (-0.25, UPPER_Y, UPPER_Z)
+    rows, mask = ShelfKeyframeOracle(spec_for_rule("leftmost"), waypoints=True)(
+        _scene(a=a), _eef())
+    assert rows.shape == (4, FUTURE_DIM_WP) and not mask.any()
+
+
+def test_waypoint_row_is_masked_once_reached_until_the_event_changes():
+    a, b = (-0.25, LOWER_Y, LOWER_Z), (0.05, LOWER_Y, LOWER_Z)
+    oracle = ShelfKeyframeOracle(spec_for_rule("leftmost"), waypoints=True)
+    rows, mask = oracle(_scene(a=a, b=b), _eef())
+    assert mask.all()
+    waypoint = tuple(rows[3, :3])
+    rows, mask = oracle(_scene(a=a, b=b), _eef(waypoint))           # arrives above a
+    assert mask[:3].all() and not mask[3] and not rows[3].any()
+    rows, mask = oracle(_scene(a=a, b=b), _eef(_above(a)))          # descends: still masked
+    assert mask[:3].all() and not mask[3]
+    carried = (-0.25, LOWER_Y, LOWER_Z + 0.2)
+    rows, mask = oracle(_scene(a=carried, b=b), _eef(_above(carried)))  # place: new waypoint
+    assert FUTURE_EVENTS[int(np.argmax(rows[0, event_columns(FUTURE_DIM_WP)]))] == "place"
+    assert mask.all()

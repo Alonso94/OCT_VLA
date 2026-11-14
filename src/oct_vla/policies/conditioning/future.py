@@ -43,6 +43,7 @@ from oct_vla.data.future_keyframes import (  # noqa: F401  (the row contract)
     FUTURE_DIM,
     FUTURE_EVENTS,
     FUTURE_EXTRA,
+    FUTURE_LAYOUTS,
     FUTURE_ROLES,
 )
 
@@ -73,8 +74,13 @@ class FutureKVAttention(KVAttention):
         # would leave the role/event projection with no gradient at step 0.
         from .entity import EntityEmbedding
 
+        # The categorical columns are whatever follows the token: 7 in the 24-wide
+        # layout, 8 with the waypoint role.
+        extra = getattr(config, "object_future_dim", FUTURE_DIM) - TOKEN_DIM
+        if extra <= 0:
+            raise ValueError("keyframe rows must be wider than an entity token")
         self.embedding = EntityEmbedding(
-            self.entity_width, config.object_entity_normalizer, visual_dim=FUTURE_EXTRA
+            self.entity_width, config.object_entity_normalizer, visual_dim=extra
         )
         self.embedding.visual_projection.reset_parameters()
 

@@ -45,7 +45,17 @@ import numpy as np
 
 from oct_vla.core.objects import ObjectScene
 from oct_vla.data.entity_tokens import _token
-from oct_vla.data.future_keyframes import FUTURE_DIM, FUTURE_ROWS, _row
+from oct_vla.core.frames import Pose
+from oct_vla.data.future_keyframes import (
+    FUTURE_DIM,
+    FUTURE_DIM_WP,
+    FUTURE_ROLES,
+    FUTURE_ROLES_WP,
+    WAYPOINT_REACHED_XY,
+    WAYPOINT_REACHED_Z,
+    _row,
+    approach_waypoint,
+)
 from oct_vla.tasks.shelf_restock.manager import (
     ShelfRestockManager,
     objects_lifted,
@@ -78,10 +88,19 @@ class _Plan:
 
 
 class ShelfKeyframeOracle:
-    """Call once per step, in order, with that step's scene."""
+    """Call once per step, in order, with that step's scene.
 
-    def __init__(self, spec: ShelfRestockSpec) -> None:
+    ``waypoints=True``: the 25-wide layout, with a fourth row holding the mover's
+    approach waypoint above the event pose (``future_keyframes.approach_waypoint``),
+    masked from the step the mover reaches it until the event or target changes."""
+
+    def __init__(self, spec: ShelfRestockSpec, waypoints: bool = False) -> None:
         self.spec = spec
+        self.waypoints = waypoints
+        self.roles = FUTURE_ROLES_WP if waypoints else FUTURE_ROLES
+        self.dim = FUTURE_DIM_WP if waypoints else FUTURE_DIM
+        #: (event, target) whose waypoint the mover has reached.
+        self._reached: tuple[str, str] | None = None
         self.manager = ShelfRestockManager(spec)
         self.mover = arm_for("place")
         self.target: str | None = None
@@ -119,7 +138,8 @@ class ShelfKeyframeOracle:
         return float(np.linalg.norm(np.subtract(mover, target.pose.position))) > RELEASE_DISTANCE
 
     def __call__(self, scene: ObjectScene, eef) -> tuple[np.ndarray, np.ndarray]:
-        """``[FUTURE_ROWS, FUTURE_DIM]`` keyframe and ``[FUTURE_ROWS]`` mask for this step."""
+        """``[rows, dim]`` keyframe and ``[rows]`` mask for this step (3 x 24, or 4 x 25
+        with waypoints)."""
         upper = objects_on_upper_shelf(scene, self.spec)
         # Mirror the server's record_placement, so the neighbour rule sees the
         # same placement order online and offline.
@@ -130,7 +150,8 @@ class ShelfKeyframeOracle:
         if (self.target is None or scene.get(self.target) is None
                 or (self.target in upper and self._let_go(scene, eef))):
             self._select(scene)
-        empty = (np.zeros((FUTURE_ROWS, FUTURE_DIM), np.float32), np.zeros(FUTURE_ROWS, bool))
+        rows_n = len(self.roles)
+        empty = (np.zeros((rows_n, self.dim), np.float32), np.zeros(rows_n, bool))
         if self.target is None:
             self.history.append((None, None))
             return empty
@@ -150,23 +171,45 @@ class ShelfKeyframeOracle:
                 return empty
         plan = self.plan
         size = target.size_xyz
+        gripper = f"{self.mover}_gripper"
         if event == "grasp":
             obj = _token(target.pose, size, 0.0, "movable")
-            grip = _token(plan.grasp_pose, (0.0, 0.0, 0.0), plan.closing, f"{self.mover}_gripper")
+            pose, approach_aperture = plan.grasp_pose, OPEN
+            grip = _token(pose, (0.0, 0.0, 0.0), plan.closing, gripper)
         else:
             obj = _token(plan.object_pose, size, 0.0, "movable")
-            grip = _token(plan.place_pose, (0.0, 0.0, 0.0), OPEN, f"{self.mover}_gripper")
+            pose, approach_aperture = plan.place_pose, plan.closing
+            grip = _token(pose, (0.0, 0.0, 0.0), OPEN, gripper)
         goal = _token(plan.object_pose, size, 0.0, "movable")
-        rows = np.stack([_row(obj, "object_keyframe", event),
-                         _row(grip, "gripper_keyframe", event),
-                         _row(goal, "object_goal", event)])
+        rows = [_row(obj, "object_keyframe", event, self.roles),
+                _row(grip, "gripper_keyframe", event, self.roles),
+                _row(goal, "object_goal", event, self.roles)]
+        mask = np.ones(len(self.roles), bool)
+        if self.waypoints:
+            others = [(o.pose.position, o.size_xyz) for o in scene.objects
+                      if o.track_id != self.target]
+            above = approach_waypoint(pose.position, others)
+            mover = np.asarray(getattr(eef, self.mover).pose.position)
+            key = (event, self.target)
+            if (np.linalg.norm(mover[:2] - above[:2]) <= WAYPOINT_REACHED_XY
+                    and abs(mover[2] - above[2]) <= WAYPOINT_REACHED_Z):
+                self._reached = key
+            if self._reached == key:
+                rows.append(np.zeros(self.dim, np.float32))
+                mask[3] = False
+            else:
+                way = _token(Pose(tuple(above), pose.orientation, pose.frame),
+                             (0.0, 0.0, 0.0), approach_aperture, gripper)
+                rows.append(_row(way, "gripper_waypoint", event, self.roles))
         self.history.append((event, self.target))
-        return rows, np.ones(FUTURE_ROWS, bool)
+        return np.stack(rows), mask
 
 
-def episode_keyframes(episode, spec: ShelfRestockSpec) -> tuple[np.ndarray, np.ndarray]:
-    """The oracle run over a recorded episode, frame by frame: ``[T, 3, 24]``, ``[T, 3]``."""
-    oracle = ShelfKeyframeOracle(spec)
+def episode_keyframes(episode, spec: ShelfRestockSpec,
+                      waypoints: bool = False) -> tuple[np.ndarray, np.ndarray]:
+    """The oracle run over a recorded episode, frame by frame: ``[T, 3, 24]``, ``[T, 3]``
+    (``[T, 4, 25]``, ``[T, 4]`` with waypoints)."""
+    oracle = ShelfKeyframeOracle(spec, waypoints=waypoints)
     out = [oracle(sample.scene, sample.observation.eef) for sample in episode.samples]
     if oracle.unplannable_steps:
         raise ValueError(f"seed {episode.seed}: the expert's planners failed on "

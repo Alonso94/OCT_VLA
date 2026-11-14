@@ -297,3 +297,49 @@ def test_config_refuses_a_gate_without_the_branch():
 
     with pytest.raises(ValueError, match="needs object_future"):
         ControlGrootConfig(object_conditioning="kv", object_future_gate="confidence")
+
+
+def test_the_waypoint_layout_builds_a_wider_embedding_and_responds_to_the_fourth_row():
+    from oct_vla.data.future_keyframes import FUTURE_DIM_WP, FUTURE_ROWS_WP
+    from oct_vla.policies.conditioning.hosts import install_diffusers_kv
+    from lerobot.policies.groot.action_head.cross_attention_dit import DiT
+
+    config = _config(True)
+    config.object_future_rows, config.object_future_dim = FUTURE_ROWS_WP, FUTURE_DIM_WP
+    torch.manual_seed(0)
+    dit = DiT(num_attention_heads=2, attention_head_dim=4, output_dim=3, num_layers=2,
+              dropout=0.0, cross_attention_dim=6, interleave_self_attention=True,
+              positional_embeddings=None, final_dropout=False)
+    owner = nn.Module()
+    owner.model = dit
+    owner.object_conditioning = ObjectConditioning(config, dit.inner_dim)
+    install_diffusers_kv(dit, owner.object_conditioning, conditioning_owner=owner)
+    owner.eval()
+    branch = next(iter(owner.object_conditioning.future.values()))
+    assert branch.embedding.visual_projection.in_features == FUTURE_DIM_WP - TOKEN_DIM
+    _train_future(owner)
+    tokens, mask, _, _, hidden, context = _scene()
+    keyframe = torch.randn(2, FUTURE_ROWS_WP, FUTURE_DIM_WP)
+    future_mask = torch.ones(2, FUTURE_ROWS_WP, dtype=torch.bool)
+    base = _run(owner, (tokens, mask, keyframe, future_mask, hidden, context))
+    moved = keyframe.clone()
+    moved[:, 3, :3] += 0.5
+    assert not torch.allclose(base, _run(owner, (tokens, mask, moved, future_mask, hidden,
+                                                  context)))
+
+
+@pytest.mark.parametrize("rows, dim", [(4, 25), (3, 24)])
+def test_config_accepts_both_keyframe_layouts(rows, dim):
+    from oct_vla.policies.control_groot import ControlGrootConfig
+
+    ControlGrootConfig(object_conditioning="kv", object_future=True,
+                       object_future_rows=rows, object_future_dim=dim)
+
+
+@pytest.mark.parametrize("rows, dim", [(3, 25), (4, 24)])
+def test_config_refuses_rows_that_do_not_match_the_layout(rows, dim):
+    from oct_vla.policies.control_groot import ControlGrootConfig
+
+    with pytest.raises(ValueError, match="rows"):
+        ControlGrootConfig(object_conditioning="kv", object_future=True,
+                           object_future_rows=rows, object_future_dim=dim)

@@ -44,6 +44,8 @@ def main() -> int:
                     help="Ablation: the query is its current row only (TimeRowPFN)")
     ap.add_argument("--lang", type=Path, default=None,
                     help="Instruction embeddings (v1 grammar only; v2 trains without language)")
+    ap.add_argument("--anchor", choices=("gripper", "object"), default="gripper",
+                    help="Where each arm's position residual starts (time_row_model.PairedHead)")
     ap.add_argument("--width", type=int, default=128)
     ap.add_argument("--heads", type=int, default=4)
     ap.add_argument("--layers", type=int, default=4)
@@ -76,10 +78,10 @@ def main() -> int:
     if args.model == "timerow":
         model = TimeRowPFN(width=args.width, heads=args.heads, layers=args.layers,
                            grammar=args.grammar, lang_dim=lang_dim,
-                           query_initial=not args.no_query_initial)
+                           query_initial=not args.no_query_initial, anchor=args.anchor)
     else:
         model = KeyframePairedPFN(width=args.width, heads=args.heads, layers=args.layers,
-                                  lang_dim=lang_dim, use_edges=False)
+                                  lang_dim=lang_dim, use_edges=False, anchor=args.anchor)
     model = model.to(args.device).train()
     rot = args.grammar == "v2"
 

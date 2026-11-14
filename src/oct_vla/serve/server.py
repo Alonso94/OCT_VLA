@@ -53,7 +53,9 @@ from oct_vla.tasks.shelf_restock.spec import (
 #: "oracle:<rule>" serves the oracle of another transfer rule than the scene's own:
 #: the steering intervention (does the keyframe alone change what the robot does?).
 #: Only the keyframe changes; success, events and the task context stay the scene's.
-FUTURE_KEYFRAME_SOURCES = ("none", "oracle", *(f"oracle:{r}" for r in RULE_INSTRUCTIONS))
+#: "oracle_wp" is the oracle with its fourth, approach-waypoint row (4 x 25).
+FUTURE_KEYFRAME_SOURCES = ("none", "oracle", "oracle_wp",
+                           *(f"oracle:{r}" for r in RULE_INSTRUCTIONS))
 
 # Measured stationary EEF poses in the demonstrations move by a few tenths of
 # a micrometre due to physics. Sending those numerical remnants through IK is
@@ -441,6 +443,8 @@ class ShelfRestockEvalServer:
             keyframe_oracle=(
                 None if future_keyframe == "none"
                 else ShelfKeyframeOracle(self._spec) if future_keyframe == "oracle"
+                else ShelfKeyframeOracle(self._spec, waypoints=True)
+                if future_keyframe == "oracle_wp"
                 else ShelfKeyframeOracle(spec_for_rule(future_keyframe.split(":", 1)[1],
                                                        self._spec))),
         )

@@ -55,11 +55,11 @@ def _event_switches(keyframes, mask) -> list[int]:
     """Frames at which the next event's kind changes (grasp, place, or none)."""
     import numpy as np
 
-    from oct_vla.data.entity_tokens import ENTITY_TOKEN_DIM
-    from oct_vla.data.future_keyframes import FUTURE_ROLES
+    from oct_vla.data.future_keyframes import event_columns
 
-    start = ENTITY_TOKEN_DIM + len(FUTURE_ROLES)
-    kinds = [int(np.argmax(k[0, start:])) if m.all() else -1 for k, m in zip(keyframes, mask)]
+    cols = event_columns(np.asarray(keyframes).shape[-1])
+    # Row 0 says whether there is a keyframe (a waypoint row may be masked on its own).
+    kinds = [int(np.argmax(k[0, cols])) if m[0] else -1 for k, m in zip(keyframes, mask)]
     return [i for i in range(1, len(kinds)) if kinds[i] != kinds[i - 1]]
 
 
@@ -200,7 +200,13 @@ def main() -> int:
     import numpy as np
     import pandas as pd
 
-    from oct_vla.data.future_keyframes import FUTURE_DIM, FUTURE_ROWS, oracle_future_keyframes
+    from oct_vla.data.future_keyframes import (
+        FUTURE_DIM,
+        FUTURE_DIM_WP,
+        FUTURE_ROWS,
+        FUTURE_ROWS_WP,
+        oracle_future_keyframes,
+    )
     from oct_vla.tasks.shelf_restock.keyframes import episode_keyframes
     from oct_vla.tasks.shelf_restock.spec import spec_for_rule
     from oct_vla.data.store import read_episode
@@ -223,14 +229,18 @@ def main() -> int:
     parser.add_argument("--k", type=int, default=None, help="Support demos per query")
     parser.add_argument("--seed", type=int, default=0, help="Support sampling seed")
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--waypoints", action="store_true",
+                        help="Oracle only: the 4 x 25 layout with the approach waypoint (_fkwp)")
     args = parser.parse_args()
+    if args.waypoints and args.keyframes != "oracle":
+        raise SystemExit("--waypoints is an oracle layout")
     if args.keyframes == "oracle" and (args.kind != "keyframe" or args.prior is not None):
         raise SystemExit("the oracle writes keyframe rows and takes no prior")
     if args.keyframes == "pfn" and (args.prior is None or args.lang is None):
         raise SystemExit("--keyframes pfn needs --prior and --lang")
     source = args.source.resolve()
     if args.keyframes == "oracle":
-        default_name = source.name + "_fk"
+        default_name = source.name + ("_fkwp" if args.waypoints else "_fk")
     else:
         suffix = {"keyframe": "pfn", "latent": "pfnlat"}[args.kind]
         if args.kind == "keyframe" and "goal" in args.prior.name:
@@ -275,13 +285,15 @@ def main() -> int:
                                                       rows["frame_index"].to_numpy())
             else:
                 keyframes, mask = episode_keyframes(episode,
-                                                    spec_for_rule(episode.metadata["rule"]))
+                                                    spec_for_rule(episode.metadata["rule"]),
+                                                    waypoints=args.waypoints)
                 lags = _switch_lags(keyframes, mask, *oracle_future_keyframes(episode))
                 if lags is None or not all(0 <= lag <= MAX_LAG for lag in lags):
                     raise SystemExit(f"episode {episode_index}: oracle events disagree with the "
                                      f"phase labels (lags {lags}); refusing to export it")
                 note = (f"{len(lags)} events (lag {min(lags)}-{max(lags)}), "
-                        f"keyframe on {int(mask.all(1).sum())} frames")
+                        f"keyframe on {int(mask[:, 0].sum())} frames"
+                        + (f", waypoint on {int(mask[:, 3].sum())}" if args.waypoints else ""))
                 keyframes = keyframes[rows["frame_index"].to_numpy()]
                 mask = mask[rows["frame_index"].to_numpy()]
                 conf = None
@@ -319,12 +331,20 @@ def main() -> int:
     if len(real) == 0:
         raise SystemExit("no frame has a keyframe: the phase labels are wrong")
     info = json.loads((output / "meta" / "info.json").read_text())
-    rows_n, dim = (FUTURE_ROWS, FUTURE_DIM) if learned is None else learned.shape
+    if learned is not None:
+        rows_n, dim = learned.shape
+    else:
+        rows_n, dim = (FUTURE_ROWS_WP, FUTURE_DIM_WP) if args.waypoints else (FUTURE_ROWS, FUTURE_DIM)
+    # `real` holds the unmasked rows, [n, dim]; the stored sets are [rows_n, dim].
+    if learned is None and (real.shape[1] != dim or any(m.shape[1] != rows_n for m in masks)):
+        raise SystemExit(f"oracle rows are {real.shape[1]} wide in sets of "
+                         f"{masks[0].shape[1]}; the layout says {(rows_n, dim)}")
     info["features"][FUTURE_KEYFRAME] = {"dtype": "float32", "shape": [rows_n, dim],
                                          "names": None}
     info["features"][FUTURE_MASK] = {"dtype": "float32", "shape": [rows_n], "names": None}
     info["derived_from"] = source.name
-    info["future_keyframe"] = {"source": args.keyframes, "kind": args.kind,
+    info["future_keyframe"] = {"source": "oracle_wp" if args.waypoints else args.keyframes,
+                               "kind": args.kind,
                                "collection": str(args.collection.resolve()),
                                "rows": rows_n, "dim": dim}
     if learned is not None:

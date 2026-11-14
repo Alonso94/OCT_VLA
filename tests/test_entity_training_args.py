@@ -100,3 +100,23 @@ def test_a_latent_shaped_view_that_says_keyframe_is_refused(tmp_path):
     (dataset / "meta/info.json").write_text(json.dumps(info))
     with pytest.raises(ValueError, match="keyframe view"):
         _module.entity_training_args(dataset)
+
+
+def test_a_waypoint_keyframe_view_sets_rows_and_width(tmp_path):
+    dataset = _dataset(tmp_path)
+    info = json.loads((dataset / "meta/info.json").read_text())
+    info["features"]["observation.future_keyframe"] = {"shape": [4, 25]}
+    info["features"]["observation.future_keyframe_mask"] = {"shape": [4]}
+    (dataset / "meta/info.json").write_text(json.dumps(info))
+    args = _module.entity_training_args(dataset)
+    assert "--policy.object_future_rows=4" in args and "--policy.object_future_dim=25" in args
+
+
+def test_a_keyframe_view_with_mismatched_rows_and_width_is_refused(tmp_path):
+    dataset = _dataset(tmp_path)
+    info = json.loads((dataset / "meta/info.json").read_text())
+    info["features"]["observation.future_keyframe"] = {"shape": [3, 25]}
+    info["features"]["observation.future_keyframe_mask"] = {"shape": [3]}
+    (dataset / "meta/info.json").write_text(json.dumps(info))
+    with pytest.raises(ValueError, match="future_keyframe"):
+        _module.entity_training_args(dataset)

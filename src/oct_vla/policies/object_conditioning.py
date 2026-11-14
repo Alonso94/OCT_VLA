@@ -250,13 +250,18 @@ class ObjectConditioningConfig:
                                  f"{self.object_conditioning!r} has no KV branch")
             if self.object_future_rows <= 0:
                 raise ValueError("object_future_rows must be positive")
-            from oct_vla.policies.conditioning.future import FUTURE_DIM, FUTURE_KINDS
+            from oct_vla.policies.conditioning.future import FUTURE_KINDS, FUTURE_LAYOUTS
 
             if self.object_future_kind not in FUTURE_KINDS:
                 raise ValueError(f"object_future_kind must be one of {FUTURE_KINDS}")
-            if self.object_future_kind == "keyframe" and self.object_future_dim != FUTURE_DIM:
-                raise ValueError(f"object_future_dim={self.object_future_dim}, but keyframe "
-                                 f"rows are {FUTURE_DIM} wide")
+            if self.object_future_kind == "keyframe":
+                roles = FUTURE_LAYOUTS.get(self.object_future_dim)
+                if roles is None:
+                    raise ValueError(f"object_future_dim={self.object_future_dim}, but keyframe "
+                                     f"rows are one of {sorted(FUTURE_LAYOUTS)} wide")
+                if self.object_future_rows != len(roles):
+                    raise ValueError(f"keyframe rows {self.object_future_dim} wide come "
+                                     f"{len(roles)} to a set, not {self.object_future_rows}")
             if self.object_future_dim <= 0:
                 raise ValueError("object_future_dim must be positive")
             if self.object_future_gate not in ("none", "confidence"):

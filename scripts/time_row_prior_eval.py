@@ -13,7 +13,11 @@ Metrics, over valid query targets:
 - **arms:** both arms' participation right, both arms' event right;
 - **positions (cm):** the acting arm's and the idle arm's target position, the goal;
 - **v2:** approach-axis angle error of the acting arm (degrees);
-- **contrast:** both conflict partners' keyframe right.
+- **contrast:** both conflict partners' keyframe right;
+- **per target event:** keyframe accuracy and group-event recall per true next event;
+- **compaction (v2):** contrast on the conflict pairs whose programs differ *only* in
+  `compact` (`compact_contrast`), the only pairs whose support labels alone say
+  whether to push; and push/contact recall split by the program's `compact`.
 
 A0 predicts one acting arm and no idle-arm position, so those entries are NaN.
 
@@ -144,6 +148,52 @@ def score(pred: dict, targets: dict, metas: list) -> dict:
     if pairs:
         out["contrast"] = float(np.mean([kf_ok[i] and kf_ok[j] for i, j in pairs]))
         out["contrast_pairs"] = len(pairs)
+    out.update(per_event(pred, targets, valid, kf_ok, "rot" in pred or "y_rot" in targets))
+    if "y_rot" in targets:
+        out.update(compaction(pred, targets, metas, valid, kf_ok))
+    return out
+
+
+def per_event(pred, targets, valid, kf_ok, v2: bool) -> dict:
+    """Keyframe accuracy and group-event recall per true next event (n >= 1)."""
+    from oct_vla.prior import time_row_schema as S
+
+    names = S.GROUP_EVENTS_V2 if v2 else S.GROUP_EVENTS
+    g = np.asarray(targets["g_event"])
+    out = {}
+    for e, name in enumerate(names):
+        sel = valid & (g == e)
+        if sel.any():
+            out[f"event/{name}/n"] = int(sel.sum())
+            out[f"event/{name}/keyframe"] = float(kf_ok[sel].mean())
+            out[f"event/{name}/recall"] = float((pred["group_event"][sel] == e).mean())
+    return out
+
+
+def compaction(pred, targets, metas, valid, kf_ok) -> dict:
+    """v2 only: does the prior read *whether to compact* from the support labels?"""
+    from oct_vla.prior import time_row_schema as S
+    from oct_vla.prior.programs_v2 import ALL_PROGRAMS_V2
+
+    progs = [ALL_PROGRAMS_V2[m["program"]] for m in metas]
+    pairs = [(i, m["pair"]) for i, m in enumerate(metas)
+             if m["pair"] > i and progs[i].v1 == progs[m["pair"]].v1
+             and progs[i].compact != progs[m["pair"]].compact]
+    out = {"compact_pairs": len(pairs)}
+    if pairs:
+        out["compact_contrast"] = float(np.mean([kf_ok[i] and kf_ok[j] for i, j in pairs]))
+        ev_ok = pred["group_event"] == targets["g_event"]
+        out["compact_pair_event"] = float(np.mean([ev_ok[i] and ev_ok[j] for i, j in pairs]))
+    g = np.asarray(targets["g_event"])
+    pushy = np.isin(g, [S.GROUP_EVENTS_V2.index(e) for e in ("contact", "push")])
+    compact = np.array([p.compact != "none" for p in progs])
+    if (valid & pushy).any():
+        out["push_recall"] = float((pred["group_event"] == g)[valid & pushy].mean())
+    # False pushes: a push/contact predicted for a program that never compacts.
+    pred_push = np.isin(pred["group_event"],
+                        [S.GROUP_EVENTS_V2.index(e) for e in ("contact", "push")])
+    if (valid & ~compact).any():
+        out["false_push_rate"] = float(pred_push[valid & ~compact].mean())
     return out
 
 

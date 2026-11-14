@@ -612,7 +612,7 @@ def main() -> int:
                 support_pool=args.future_support_pool)
             print(f"future source: {provenance['prior']} ({provenance['kind']}), "
                   f"supports from {future_source.pool_path}", flush=True)
-        elif future_keyframe != "oracle":
+        elif future_keyframe not in ("oracle", "oracle_wp"):
             raise SystemExit(f"unknown future_keyframe source {future_keyframe!r}")
         if args.future_support_pool is not None and future_keyframe != "pfn":
             raise SystemExit("--future-support-pool needs a learned (pfn) future source")

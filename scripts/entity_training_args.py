@@ -55,7 +55,7 @@ def entity_training_args(dataset: Path) -> list[str]:
     # a kv run on this view without it would ignore the very column it exists for.
     future = info.get("features", {}).get("observation.future_keyframe")
     if future is not None:
-        from oct_vla.data.future_keyframes import FUTURE_DIM
+        from oct_vla.data.future_keyframes import FUTURE_LAYOUTS
 
         shape = list(future.get("shape", []))
         mask = list(info["features"].get("observation.future_keyframe_mask", {}).get("shape", []))
@@ -64,13 +64,19 @@ def entity_training_args(dataset: Path) -> list[str]:
         kind = info.get("future_keyframe", {}).get("kind", "keyframe")
         if kind not in ("keyframe", "latent"):
             raise ValueError(f"unknown future_keyframe kind {kind!r}")
-        width = FUTURE_DIM if kind == "keyframe" else (shape[1] if len(shape) == 2 else None)
-        if len(shape) != 2 or shape[1] != width or mask != shape[:1]:
+        if len(shape) != 2 or mask != shape[:1]:
             raise ValueError(f"observation.future_keyframe is {shape} with mask {mask}; "
-                             f"expected [rows, {width}] and [rows] for a {kind} view")
+                             f"expected [rows, dim] and [rows] for a {kind} view")
+        # A keyframe view is one of the row layouts (3 x 24, or 4 x 25 with the
+        # approach waypoint); its row count is the layout's role count.
+        if kind == "keyframe" and len(FUTURE_LAYOUTS.get(shape[1], ())) != shape[0]:
+            raise ValueError(f"observation.future_keyframe is {shape}; a keyframe view must "
+                             f"be one of {[[len(r), d] for d, r in FUTURE_LAYOUTS.items()]}")
         args += ["--policy.object_future=true", f"--policy.object_future_rows={shape[0]}"]
         if kind == "latent":
-            args += ["--policy.object_future_kind=latent", f"--policy.object_future_dim={width}"]
+            args += ["--policy.object_future_kind=latent", f"--policy.object_future_dim={shape[1]}"]
+        elif shape[1] != 24:
+            args.append(f"--policy.object_future_dim={shape[1]}")
     return args
 
 

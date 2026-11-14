@@ -111,7 +111,15 @@ case "$CORPUS" in
     declare -A TAG=([F]=v4lfk_eeabs)
     declare -A STAGE1_TAG=([F]=v4l_eeabs)
     LETTER=([pi05]=P5 [smolvla]=S5 [groot]=G5) ;;
-  *) echo "CORPUS must be paired_full, paired_full_r19, paired_full_r38, paired_full_vis, identity, v4_leftmost, v4_leftmost_fk or v4_leftmost_pfn{,goal,lat,ft,scr}" >&2; exit 2 ;;
+  v4_leftmost_fkwp)
+    # v4_leftmost_fk plus a fourth row: the mover's approach waypoint above the
+    # event (add_future_keyframe.py --waypoints; 4 x 25). Evaluation requests
+    # the server's "oracle_wp" source, which the view records.
+    declare -A DATASET=([F]=three_object_v4l_eeabs_fkwp)
+    declare -A TAG=([F]=v4lfkwp_eeabs)
+    declare -A STAGE1_TAG=([F]=v4l_eeabs)
+    LETTER=([pi05]=PW [smolvla]=SW [groot]=GW) ;;
+  *) echo "CORPUS must be paired_full, paired_full_r19, paired_full_r38, paired_full_vis, identity, v4_leftmost, v4_leftmost_fk{,wp} or v4_leftmost_pfn{,goal,lat,ft,scr}" >&2; exit 2 ;;
 esac
 for regime in "${!DATASET[@]}"; do
   # A per-seed view ({prior}) is checked per seed in stage 2.

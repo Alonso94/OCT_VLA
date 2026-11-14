@@ -38,7 +38,7 @@ from . import time_row_schema as S
 from .batches import ItemConfig, _differ, _instruction_index, _partner, _scene_for, _target
 from .generator import K_MAX, N_MAX, S_MAX, Episode, Infeasible, interpolate
 from .programs_v2 import ALL_INSTRUCTIONS_V2, ProgramV2
-from .schema import APERTURE, N_FEATURES, OPEN, POS
+from .schema import APERTURE, N_FEATURES, OPEN, POS, SIZE
 
 #: Keyframes per v2 episode: v1's plus two push keyframes per object.
 S_MAX_V2 = S_MAX + 2 * 4
@@ -49,6 +49,8 @@ class TimeRowConfig:
     item: ItemConfig = ItemConfig()
     #: Interpolated rows per keyframe segment (0 = keyframes only).
     rows_per_segment: int = 1
+    #: Add the approach-waypoint label `y_wp` (time_row_schema.WAYPOINT_LABELS).
+    waypoints: bool = False
 
     @property
     def v2(self) -> bool:
@@ -63,11 +65,13 @@ class TimeRowConfig:
 
     @property
     def labels(self) -> dict:
-        return S.ROW_LABELS_V2 if self.v2 else S.ROW_LABELS
+        base = S.ROW_LABELS_V2 if self.v2 else S.ROW_LABELS
+        return {**base, **S.WAYPOINT_LABELS} if self.waypoints else base
 
     @property
     def schema(self) -> str:
-        return S.SCHEMA_VERSION_V2 if self.v2 else S.SCHEMA_VERSION
+        base = S.SCHEMA_VERSION_V2 if self.v2 else S.SCHEMA_VERSION
+        return base + (S.WAYPOINT_SUFFIX if self.waypoints else "")
 
     @property
     def t_max(self) -> int:
@@ -75,7 +79,7 @@ class TimeRowConfig:
         return s_max + (s_max - 1) * self.rows_per_segment
 
 
-def row_labels(ep: Episode, next_index: int | None, cols=None) -> dict:
+def row_labels(ep: Episode, next_index: int | None, cols=None, waypoints: bool = False) -> dict:
     """The paired labels of a row whose next keyframe is `next_index` (None: terminal).
 
     `cols` maps an entity index of the episode to its column in the packed table (the
@@ -95,6 +99,8 @@ def row_labels(ep: Episode, next_index: int | None, cols=None) -> dict:
     v2 = ep.keyframes[0].feats.shape[1] > N_FEATURES
     if v2:
         out["y_rot"] = np.zeros((S.N_ARMS, S.ROT_DIM), np.float32)
+    if waypoints:
+        out["y_wp"] = np.zeros((S.N_ARMS, 3), np.float32)
     if next_index is None:
         return out
     kf = ep.keyframes[next_index]
@@ -115,7 +121,20 @@ def row_labels(ep: Episode, next_index: int | None, cols=None) -> dict:
     fp = ep.final_pose[kf.obj]
     out["g_goal"] = np.array([*fp[:3], np.sin(fp[3]), np.cos(fp[3])], np.float32)
     out["target_valid"] = np.float32(1.0)
+    if waypoints:
+        out["y_wp"] = out["y_pos"].copy()
+        out["y_wp"][kf.gripper] = _approach(kf, n, kf.obj, out["y_pos"][kf.gripper])
     return out
+
+
+def _approach(kf, n: int, obj: int, target) -> np.ndarray:
+    """The acting arm's approach waypoint: the shared definition, with every object but
+    the acted one, at this keyframe, as an obstacle. The synthetic gripper point sits at
+    the fingertips (``frame_to_tip=0``)."""
+    from oct_vla.data.future_keyframes import approach_waypoint
+
+    others = [(kf.feats[i, POS], kf.feats[i, SIZE]) for i in range(n) if i != obj]
+    return approach_waypoint(target, others, frame_to_tip=0.0).astype(np.float32)
 
 
 def episode_rows(ep: Episode, rows_per_segment: int, rng: np.random.Generator) -> list[dict]:
@@ -180,7 +199,7 @@ def pack_time_row_item(
             inp["s_feats"][d, r, : len(perm)] = row["feats"][perm]
             inp["s_row_valid"][d, r] = True
             inp["s_row_time"][d, r] = row["segment"] + row["alpha"]
-            _fill_labels(inp, d, r, row_labels(ep, row["next"], inv))
+            _fill_labels(inp, d, r, row_labels(ep, row["next"], inv, cfg.waypoints))
     qperm = perms[-1] if perms[-1] is not None else rng.permutation(len(q.types))
     qinv = np.argsort(qperm)
     kf = q.keyframes
@@ -194,7 +213,7 @@ def pack_time_row_item(
         "q_feats": q_feats, "q_types": q_types,
         "lang_kind": np.int64(kind), "lang_index": np.int64(_language(rng, kind, prog)),
     })
-    targets = row_labels(q, j + 1, qinv)
+    targets = row_labels(q, j + 1, qinv, cfg.waypoints)
     meta = {"program": int(prog.id), "j": int(j), "alpha": float(alpha),
             "n_objects": int(q.scene.n), "support_perms": [p.tolist() for p in used],
             "query_perm": qperm.tolist(), "conflict": False, "pair": -1}

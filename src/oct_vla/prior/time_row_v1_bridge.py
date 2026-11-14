@@ -21,7 +21,7 @@ from . import time_row_schema as S
 from .generator import K_MAX, N_MAX, S_MAX
 from .model import KeyframePFN
 from .schema import GRIPPER_TYPES, INITIAL, N_FEATURES
-from .time_row_model import LABEL_CELLS, PairedHead, _gripper_columns, _take2
+from .time_row_model import LABEL_CELLS, PairedHead, _gripper_columns, _take2, _teachers
 
 
 def to_keyframe_batch(inputs: dict, targets: dict) -> dict:
@@ -76,11 +76,12 @@ class KeyframePairedPFN(KeyframePFN):
     The label cells are the query's current-row left and right gripper cells and its
     event cell."""
 
-    def __init__(self, **kw):
+    def __init__(self, anchor: str = "gripper", **kw):
         super().__init__(**kw)
         self.config["paired"] = True
+        self.config["anchor"] = anchor
         self.paired = PairedHead(self.kind.shape[-1], len(S.ARM_EVENTS), len(S.GROUP_EVENTS),
-                                 rot=False)
+                                 rot=False, anchor=anchor)
 
     def forward_paired(self, b: dict, teacher: bool | None = None) -> dict:
         teacher = self.training if teacher is None else teacher
@@ -92,8 +93,8 @@ class KeyframePairedPFN(KeyframePFN):
         cols = _gripper_columns(b["q_types"].long())
         labels = torch.cat([_take2(ents, cols), evc[:, None]], 1)
         assert labels.shape[1] == LABEL_CELLS
-        tgt = b.get("t_g_object") if teacher else None
-        return self.paired(labels, ents, b["q_types"].long(), b["q_feats"][:, 1], tgt)
+        return self.paired(labels, ents, b["q_types"].long(), b["q_feats"][:, 1],
+                           *_teachers(b, teacher))
 
 
 def a0_paired_predictions(pred: dict) -> dict:
