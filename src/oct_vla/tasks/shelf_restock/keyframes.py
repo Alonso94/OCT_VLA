@@ -73,6 +73,17 @@ GRIPPER_MAX_WIDTH = 0.08
 OPEN = 1.0
 #: Mover-to-object distance beyond which a placed object has been let go.
 RELEASE_DISTANCE = 0.20
+#: Retreat (``retreat=True``): a placed target whose mover is farther than this has
+#: been released and the mover is rising (the hold offset is 0.138-0.156 m over the v4
+#: corpus). Observable from the scene and EEF; no aperture threshold, because the
+#: measured aperture of a held wide object (0.79) is within 0.04 of an open one (0.83).
+RETREAT_START = 0.17
+#: The retreat is done once the mover is within this of the retreat height, or has
+#: left horizontally by more than RETREAT_ABANDON (it went elsewhere without lifting;
+#: the next target is then given rather than an unreachable one held forever). The
+#: recorded expert lifts 0.093-0.102 m on 23 of 24 releases checked.
+RETREAT_REACHED_Z = 0.02
+RETREAT_ABANDON = 0.30
 
 
 class NoGraspError(ValueError):
@@ -94,9 +105,15 @@ class ShelfKeyframeOracle:
     approach waypoint above the event pose (``future_keyframes.approach_waypoint``),
     masked from the step the mover reaches it until the event or target changes."""
 
-    def __init__(self, spec: ShelfRestockSpec, waypoints: bool = False) -> None:
+    def __init__(self, spec: ShelfRestockSpec, waypoints: bool = False,
+                 retreat: bool = False) -> None:
+        if retreat and not waypoints:
+            raise ValueError("the retreat phase uses the waypoint layout")
         self.spec = spec
         self.waypoints = waypoints
+        self.retreat = retreat
+        #: The frozen retreat EEF position while retreating, else None.
+        self._retreat_to: np.ndarray | None = None
         self.roles = FUTURE_ROLES_WP if waypoints else FUTURE_ROLES
         self.dim = FUTURE_DIM_WP if waypoints else FUTURE_DIM
         #: (event, target) whose waypoint the mover has reached.
@@ -147,7 +164,12 @@ class ShelfKeyframeOracle:
             if track_id not in self._placed:
                 self._placed.add(track_id)
                 self.manager.record_placement(track_id)
-        if (self.target is None or scene.get(self.target) is None
+        if self.retreat and self.target is not None and scene.get(self.target) is not None \
+                and self.target in upper and self.plan is not None:
+            rows = self._retreat_rows(scene, eef)
+            if rows is not None:
+                return rows
+        elif (self.target is None or scene.get(self.target) is None
                 or (self.target in upper and self._let_go(scene, eef))):
             self._select(scene)
         rows_n = len(self.roles)
@@ -205,11 +227,45 @@ class ShelfKeyframeOracle:
         return np.stack(rows), mask
 
 
+    def _retreat_rows(self, scene: ObjectScene, eef):
+        """Rows of the retreat phase, or None once it is over (the next target is then
+        selected and the caller carries on). Before the mover has left the hold offset
+        the placed target is still "place"; this returns None without selecting."""
+        target = scene.get(self.target)
+        mover = np.asarray(getattr(eef, self.mover).pose.position)
+        placed_at = np.asarray(target.pose.position)
+        if self._retreat_to is None:
+            if np.linalg.norm(mover - placed_at) <= RETREAT_START:
+                return None  # still holding or just releasing: the place rows
+            others = [(o.pose.position, o.size_xyz) for o in scene.objects]
+            self._retreat_to = approach_waypoint(self.plan.place_pose.position, others)
+        to = self._retreat_to
+        if (mover[2] >= to[2] - RETREAT_REACHED_Z
+                or np.linalg.norm(mover[:2] - to[:2]) > RETREAT_ABANDON):
+            self._retreat_to = None
+            self._select(scene)
+            return None
+        pose = self.plan.place_pose
+        gripper = f"{self.mover}_gripper"
+        up = _token(Pose(tuple(to), pose.orientation, pose.frame), (0.0, 0.0, 0.0), OPEN, gripper)
+        rows = np.stack([
+            _row(_token(target.pose, target.size_xyz, 0.0, "movable"), "object_keyframe",
+                 "release", self.roles),
+            _row(up, "gripper_keyframe", "release", self.roles),
+            _row(_token(self.plan.object_pose, target.size_xyz, 0.0, "movable"), "object_goal",
+                 "release", self.roles),
+            np.zeros(self.dim, np.float32),  # the retreat pose is the gripper row itself
+        ])
+        mask = np.array([True, True, True, False])
+        self.history.append(("release", self.target))
+        return rows, mask
+
+
 def episode_keyframes(episode, spec: ShelfRestockSpec,
-                      waypoints: bool = False) -> tuple[np.ndarray, np.ndarray]:
+                      waypoints: bool = False, retreat: bool = False) -> tuple[np.ndarray, np.ndarray]:
     """The oracle run over a recorded episode, frame by frame: ``[T, 3, 24]``, ``[T, 3]``
     (``[T, 4, 25]``, ``[T, 4]`` with waypoints)."""
-    oracle = ShelfKeyframeOracle(spec, waypoints=waypoints)
+    oracle = ShelfKeyframeOracle(spec, waypoints=waypoints, retreat=retreat)
     out = [oracle(sample.scene, sample.observation.eef) for sample in episode.samples]
     if oracle.unplannable_steps:
         raise ValueError(f"seed {episode.seed}: the expert's planners failed on "

@@ -54,7 +54,8 @@ from oct_vla.tasks.shelf_restock.spec import (
 #: the steering intervention (does the keyframe alone change what the robot does?).
 #: Only the keyframe changes; success, events and the task context stay the scene's.
 #: "oracle_wp" is the oracle with its fourth, approach-waypoint row (4 x 25).
-FUTURE_KEYFRAME_SOURCES = ("none", "oracle", "oracle_wp",
+#: "oracle_wpr" adds the post-release retreat phase.
+FUTURE_KEYFRAME_SOURCES = ("none", "oracle", "oracle_wp", "oracle_wpr",
                            *(f"oracle:{r}" for r in RULE_INSTRUCTIONS))
 
 # Measured stationary EEF poses in the demonstrations move by a few tenths of
@@ -445,6 +446,8 @@ class ShelfRestockEvalServer:
                 else ShelfKeyframeOracle(self._spec) if future_keyframe == "oracle"
                 else ShelfKeyframeOracle(self._spec, waypoints=True)
                 if future_keyframe == "oracle_wp"
+                else ShelfKeyframeOracle(self._spec, waypoints=True, retreat=True)
+                if future_keyframe == "oracle_wpr"
                 else ShelfKeyframeOracle(spec_for_rule(future_keyframe.split(":", 1)[1],
                                                        self._spec))),
         )

@@ -119,7 +119,15 @@ case "$CORPUS" in
     declare -A TAG=([F]=v4lfkwp_eeabs)
     declare -A STAGE1_TAG=([F]=v4l_eeabs)
     LETTER=([pi05]=PW [smolvla]=SW [groot]=GW) ;;
-  *) echo "CORPUS must be paired_full, paired_full_r19, paired_full_r38, paired_full_vis, identity, v4_leftmost, v4_leftmost_fk{,wp} or v4_leftmost_pfn{,goal,lat,ft,scr}" >&2; exit 2 ;;
+  v4_leftmost_fkwpr)
+    # v4_leftmost_fkwp plus a post-release retreat phase (--retreat): after a
+    # release the mover's target is straight up, clear of the placed objects,
+    # before the next object is given. Evaluation: the server's "oracle_wpr".
+    declare -A DATASET=([F]=three_object_v4l_eeabs_fkwpr)
+    declare -A TAG=([F]=v4lfkwpr_eeabs)
+    declare -A STAGE1_TAG=([F]=v4l_eeabs)
+    LETTER=([pi05]=PV [smolvla]=SV [groot]=GV) ;;
+  *) echo "CORPUS must be paired_full, paired_full_r19, paired_full_r38, paired_full_vis, identity, v4_leftmost, v4_leftmost_fk{,wp,wpr} or v4_leftmost_pfn{,goal,lat,ft,scr}" >&2; exit 2 ;;
 esac
 for regime in "${!DATASET[@]}"; do
   # A per-seed view ({prior}) is checked per seed in stage 2.

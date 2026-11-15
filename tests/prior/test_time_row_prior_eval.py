@@ -6,6 +6,7 @@ import importlib.util
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from oct_vla.prior import time_row_schema as S
 from oct_vla.prior.programs_v2 import ALL_PROGRAMS_V2
@@ -63,3 +64,16 @@ def test_a_prior_that_ignores_compaction_fails_the_twin_pair():
     assert out["false_push_rate"] == 0.0
     pred["group_event"][:] = S.GROUP_EVENTS_V2.index("push")
     assert E.score(pred, targets, metas)["false_push_rate"] == 1.0
+
+
+def test_position_error_is_split_by_the_acting_arms_pointer():
+    pred, targets, metas = _case()
+    targets["y_object"] = np.array([[1, -1]] * 4)
+    pred["arm_pointer"] = np.array([[1, 0], [1, 0], [0, 0], [0, 0]])
+    pred["pos"][2:, 0, 0] = 0.05  # the two wrong-pointer items are 5 cm off
+    pred["anchor_max"] = np.array([[1.0, 1.0], [0.5, 1.0], [1.0, 1.0], [1.0, 1.0]])
+    out = E.score(pred, targets, metas)
+    assert out["n_ptr_ok"] == 2 and out["n_ptr_wrong"] == 2
+    assert out["acting_pos_cm_ptr_ok"] == 0.0
+    assert out["acting_pos_cm_ptr_wrong"] == pytest.approx(5.0)
+    assert out["anchor_blended"] == 0.25

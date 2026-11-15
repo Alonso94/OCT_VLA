@@ -15,6 +15,9 @@ Metrics, over valid query targets:
 - **v2:** approach-axis angle error of the acting arm (degrees);
 - **contrast:** both conflict partners' keyframe right;
 - **per target event:** keyframe accuracy and group-event recall per true next event;
+- **pointer-conditioned position:** the acting arm's error where its own pointer is
+  right and where it is wrong (decoder vs pointer); for the soft anchor, how often the
+  anchor is a blend (largest weight < 0.9);
 - **compaction (v2):** contrast on the conflict pairs whose programs differ *only* in
   `compact` (`compact_contrast`), the only pairs whose support labels alone say
   whether to push; and push/contact recall split by the program's `compact`.
@@ -100,6 +103,8 @@ def _to_metric(out) -> dict:
     res["arm_event"] = res["arm_event"].argmax(-1)
     res["group_event"] = res["group_event"].argmax(-1)
     res["group_pointer"] = res["group_pointer"].argmax(-1)
+    if "arm_pointer" in res:
+        res["arm_pointer"] = res["arm_pointer"].argmax(-1)
     return res
 
 
@@ -144,6 +149,20 @@ def score(pred: dict, targets: dict, metas: list) -> dict:
         a = a / np.linalg.norm(a, axis=-1, keepdims=True).clip(1e-6)
         cos = np.clip((a * targets["y_rot"][rows, acting, :3]).sum(-1), -1, 1)
         out["acting_approach_deg"] = float(np.median(np.degrees(np.arccos(cos))[valid]))
+    if "arm_pointer" in pred:
+        # Is a position error the decoder's, or the pointer's? Split the acting arm's
+        # error by whether that arm's own pointer names the right object.
+        want = np.asarray(targets["y_object"])[rows, acting]
+        ok = pred["arm_pointer"][rows, acting] == want
+        has = valid & (want >= 0)
+        for name, sel in (("ptr_ok", has & ok), ("ptr_wrong", has & ~ok)):
+            out[f"n_{name}"] = int(sel.sum())
+            if sel.any():
+                out[f"acting_pos_cm_{name}"] = float(np.median(act_err[sel]) * 100)
+    if "anchor_max" in pred:
+        top = pred["anchor_max"][rows, acting][valid]
+        out["anchor_max_median"] = float(np.median(top))
+        out["anchor_blended"] = float(np.mean(top < 0.9))  # a target between candidates
     pairs = [(i, m["pair"]) for i, m in enumerate(metas) if m["pair"] > i]
     if pairs:
         out["contrast"] = float(np.mean([kf_ok[i] and kf_ok[j] for i, j in pairs]))

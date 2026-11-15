@@ -162,3 +162,42 @@ def test_a1_takes_the_anchor_and_old_configs_default_to_the_gripper():
     assert _model().config["anchor"] == "gripper"
     with pytest.raises(ValueError):
         _model(anchor="elsewhere")
+
+
+@pytest.mark.parametrize("grammar,cfg", [("v1", V1), ("v2", V2)])
+def test_soft_anchor_learns_without_teachers_and_reports_its_sharpness(grammar, cfg):
+    inputs, targets, _ = _batch(cfg)
+    model = _model(grammar, anchor="soft").train()
+    b = to_torch_time_row(inputs, targets, None, "cpu")
+    out = model(b)
+    total, _ = paired_loss(out, b, grammar == "v2")
+    total.backward()
+    assert all(p.grad is not None and p.grad.abs().sum() > 0 for p in model.parameters())
+    assert out["anchor_max"].shape == (6, 2)
+    assert ((out["anchor_max"] > 0) & (out["anchor_max"] <= 1)).all()
+
+
+def test_soft_anchor_is_a_convex_combination_of_real_candidates():
+    inputs, targets, _ = _batch(V1, size=4, seed=2)
+    model = _model(anchor="soft").eval()
+    b = to_torch_time_row(inputs, None, None, "cpu")
+    with torch.no_grad():
+        model.head.anc_goal.bias.fill_(-1e4)  # no goal: anchors are entity positions
+        for layer in (model.head.anc_q, model.head.anc_k):
+            layer.weight.zero_()
+            layer.bias.zero_()  # uniform over the valid entities
+        out = model(b, teacher=False)
+        base = _model(anchor="soft").eval()
+        base.load_state_dict(model.state_dict())
+    cur = M.normalise(b["q_feats"][:, -1][..., :9])[..., :3]
+    valid = b["q_types"] >= 0
+    mean = (cur * valid[..., None]).sum(1) / valid.sum(1, keepdim=True)
+    residual = out["pos"] - mean[:, None]
+    # Padding columns never enter: shifting a padded cell's feats changes nothing.
+    moved = dict(inputs)
+    moved["q_feats"] = inputs["q_feats"].copy()
+    pad = ~np.asarray(valid)
+    moved["q_feats"][:, -1][pad] += 5.0
+    with torch.no_grad():
+        again = base(to_torch_time_row(moved, None, None, "cpu"), teacher=False)
+    torch.testing.assert_close(again["pos"] - mean[:, None], residual)

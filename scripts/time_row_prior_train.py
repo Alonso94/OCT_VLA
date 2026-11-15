@@ -44,7 +44,7 @@ def main() -> int:
                     help="Ablation: the query is its current row only (TimeRowPFN)")
     ap.add_argument("--lang", type=Path, default=None,
                     help="Instruction embeddings (v1 grammar only; v2 trains without language)")
-    ap.add_argument("--anchor", choices=("gripper", "object"), default="gripper",
+    ap.add_argument("--anchor", choices=("gripper", "object", "soft"), default="gripper",
                     help="Where each arm's position residual starts (time_row_model.PairedHead)")
     ap.add_argument("--width", type=int, default=128)
     ap.add_argument("--heads", type=int, default=4)

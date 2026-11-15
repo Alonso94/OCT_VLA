@@ -63,6 +63,15 @@ def _event_switches(keyframes, mask) -> list[int]:
     return [i for i in range(1, len(kinds)) if kinds[i] != kinds[i - 1]]
 
 
+def _retreat_frames(keyframes, mask) -> int:
+    """Frames whose keyframe is the retreat ("release" in the shelf oracle)."""
+    from oct_vla.data.future_keyframes import FUTURE_EVENTS, event_columns
+
+    cols = event_columns(np.asarray(keyframes).shape[-1])
+    kinds = np.asarray(keyframes)[:, 0, cols].argmax(-1)
+    return int((mask[:, 0] & (kinds == FUTURE_EVENTS.index("release"))).sum())
+
+
 def _switch_lags(keyframes, mask, reference, reference_mask) -> list[int] | None:
     """Lag of each event switch behind the reference's; None if they differ in count."""
     ours, theirs = _event_switches(keyframes, mask), _event_switches(reference, reference_mask)
@@ -231,7 +240,11 @@ def main() -> int:
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--waypoints", action="store_true",
                         help="Oracle only: the 4 x 25 layout with the approach waypoint (_fkwp)")
+    parser.add_argument("--retreat", action="store_true",
+                        help="With --waypoints: a post-release retreat phase (_fkwpr)")
     args = parser.parse_args()
+    if args.retreat and not args.waypoints:
+        raise SystemExit("--retreat needs --waypoints")
     if args.waypoints and args.keyframes != "oracle":
         raise SystemExit("--waypoints is an oracle layout")
     if args.keyframes == "oracle" and (args.kind != "keyframe" or args.prior is not None):
@@ -240,7 +253,8 @@ def main() -> int:
         raise SystemExit("--keyframes pfn needs --prior and --lang")
     source = args.source.resolve()
     if args.keyframes == "oracle":
-        default_name = source.name + ("_fkwp" if args.waypoints else "_fk")
+        default_name = source.name + ("_fkwpr" if args.retreat else "_fkwp" if args.waypoints
+                                      else "_fk")
     else:
         suffix = {"keyframe": "pfn", "latent": "pfnlat"}[args.kind]
         if args.kind == "keyframe" and "goal" in args.prior.name:
@@ -284,16 +298,22 @@ def main() -> int:
                 keyframes, mask, conf, note = learned(int(episode_index), episode,
                                                       rows["frame_index"].to_numpy())
             else:
-                keyframes, mask = episode_keyframes(episode,
-                                                    spec_for_rule(episode.metadata["rule"]),
-                                                    waypoints=args.waypoints)
+                spec = spec_for_rule(episode.metadata["rule"])
+                keyframes, mask = episode_keyframes(episode, spec, waypoints=args.waypoints)
+                # The phase labels know grasp and place only, so the cross-check runs
+                # on the oracle without the retreat phase; the exported rows have it.
                 lags = _switch_lags(keyframes, mask, *oracle_future_keyframes(episode))
+                if args.retreat:
+                    keyframes, mask = episode_keyframes(episode, spec, waypoints=True,
+                                                        retreat=True)
                 if lags is None or not all(0 <= lag <= MAX_LAG for lag in lags):
                     raise SystemExit(f"episode {episode_index}: oracle events disagree with the "
                                      f"phase labels (lags {lags}); refusing to export it")
                 note = (f"{len(lags)} events (lag {min(lags)}-{max(lags)}), "
                         f"keyframe on {int(mask[:, 0].sum())} frames"
-                        + (f", waypoint on {int(mask[:, 3].sum())}" if args.waypoints else ""))
+                        + (f", waypoint on {int(mask[:, 3].sum())}" if args.waypoints else "")
+                        + (f", retreat on {_retreat_frames(keyframes, mask)}" if args.retreat
+                           else ""))
                 keyframes = keyframes[rows["frame_index"].to_numpy()]
                 mask = mask[rows["frame_index"].to_numpy()]
                 conf = None
@@ -343,7 +363,8 @@ def main() -> int:
                                          "names": None}
     info["features"][FUTURE_MASK] = {"dtype": "float32", "shape": [rows_n], "names": None}
     info["derived_from"] = source.name
-    info["future_keyframe"] = {"source": "oracle_wp" if args.waypoints else args.keyframes,
+    info["future_keyframe"] = {"source": ("oracle_wpr" if args.retreat else "oracle_wp"
+                                          if args.waypoints else args.keyframes),
                                "kind": args.kind,
                                "collection": str(args.collection.resolve()),
                                "rows": rows_n, "dim": dim}

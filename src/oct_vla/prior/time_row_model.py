@@ -108,7 +108,7 @@ def _gather_cells(cells: torch.Tensor, index: torch.Tensor) -> torch.Tensor:
 #: place, at the arm's own current position otherwise (hold, release).
 OBJECT_ANCHORED = ("grasp", "regrasp", "contact", "push")
 GOAL_ANCHORED = ("place",)
-ANCHORS = ("gripper", "object")
+ANCHORS = ("gripper", "object", "soft")
 
 
 def anchor_kinds(arm_events: tuple[str, ...]) -> torch.Tensor:
@@ -124,7 +124,12 @@ class PairedHead(nn.Module):
     current position, so the head must output the whole object-to-arm offset.
     ``anchor="object"``: a residual from the anchor its next event names
     (``anchor_kinds``). Training anchors on the true event and object (teacher forcing,
-    as the goal already does); inference on the head's own argmax."""
+    as the goal already does); inference on the head's own argmax.
+    ``anchor="soft"`` (ablation): a learned pointer-copy anchor, the softmax-weighted
+    mean of every query entity's current position and the predicted goal, with weights
+    from a pointer attention of its own. No event table and no teacher forcing: the
+    position loss alone trains where to anchor. ``anchor_max`` reports the largest
+    weight, so a blend of two objects (a target between them) is visible."""
 
     def __init__(self, width: int, n_arm_events: int, n_group_events: int, rot: bool,
                  anchor: str = "gripper"):
@@ -136,6 +141,9 @@ class PairedHead(nn.Module):
         if len(names) != n_arm_events:
             raise ValueError("arm events and grammar disagree")
         self.register_buffer("anchor_kind", anchor_kinds(names), persistent=False)
+        if anchor == "soft":
+            self.anc_q, self.anc_k = nn.Linear(width, width), nn.Linear(width, width)
+            self.anc_goal = nn.Linear(width, 1)
         self.side = nn.Embedding(2, width)
         out = 1 + n_arm_events + 3 + 1 + (S.ROT_DIM if rot else 0)
         self.n_arm_events = n_arm_events
@@ -187,6 +195,15 @@ class PairedHead(nn.Module):
             at_object = _take2(cur, ptr)[..., :3]
             at_goal = out["goal"][:, None, :3].detach().expand_as(anchor)
             anchor = torch.where(kind == 1, at_object, torch.where(kind == 2, at_goal, anchor))
+        elif self.anchor == "soft":
+            valid = types >= 0  # [B, N]
+            logits = torch.einsum("baw,bnw->ban", self.anc_q(arms), self.anc_k(entities))
+            logits = (logits / math.sqrt(entities.shape[-1])).masked_fill(~valid[:, None], NEG)
+            logits = torch.cat([logits, self.anc_goal(arms)], -1)  # [B, 2, N + 1]
+            w = logits.float().softmax(-1).to(cur.dtype)
+            cand = torch.cat([cur[..., :3], out["goal"][:, None, :3].detach()], 1)  # [B, N+1, 3]
+            anchor = torch.einsum("ban,bnc->bac", w, cand)
+            out["anchor_max"] = w.max(-1).values
         out["pos"] = anchor + residual
         return out
 

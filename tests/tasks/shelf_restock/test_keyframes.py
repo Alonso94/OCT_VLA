@@ -192,3 +192,36 @@ def test_waypoint_row_is_masked_once_reached_until_the_event_changes():
     rows, mask = oracle(_scene(a=carried, b=b), _eef(_above(carried)))  # place: new waypoint
     assert FUTURE_EVENTS[int(np.argmax(rows[0, event_columns(FUTURE_DIM_WP)]))] == "place"
     assert mask.all()
+
+
+def test_retreat_phase_holds_the_next_object_until_the_mover_has_lifted():
+    from oct_vla.tasks.shelf_restock.keyframes import RETREAT_REACHED_Z
+
+    a, b = (-0.25, LOWER_Y, LOWER_Z), (0.05, LOWER_Y, LOWER_Z)
+    a_up = (-0.2, UPPER_Y, UPPER_Z)
+    carried = (-0.25, LOWER_Y, LOWER_Z + 0.2)
+    oracle = ShelfKeyframeOracle(spec_for_rule("leftmost"), waypoints=True, retreat=True)
+    ev = event_columns(FUTURE_DIM_WP)
+
+    def kind(rows, mask):
+        return FUTURE_EVENTS[int(np.argmax(rows[0, ev]))] if mask[0] else None
+
+    assert kind(*oracle(_scene(a=a, b=b), _eef())) == "grasp"
+    assert kind(*oracle(_scene(a=carried, b=b), _eef(_above(carried)))) == "place"
+    assert kind(*oracle(_scene(a=a_up, b=b), _eef(_above(a_up)))) == "place"   # still held
+    rows, mask = oracle(_scene(a=a_up, b=b), _eef(_above(a_up, 0.18)))          # rising
+    assert kind(rows, mask) == "release" and not mask[3]
+    lifted_to = rows[1, 2]
+    assert lifted_to >= _above(a_up)[2] + 0.09
+    # Moving sideways at a low height keeps the retreat (the failure it exists for).
+    side = (a_up[0] + 0.1, a_up[1], a_up[2] + 0.18)
+    assert kind(*oracle(_scene(a=a_up, b=b), _eef(side))) == "release"
+    # Once lifted, the next object.
+    up = (a_up[0], a_up[1], lifted_to - RETREAT_REACHED_Z / 2)
+    assert kind(*oracle(_scene(a=a_up, b=b), _eef(up))) == "grasp"
+    assert oracle.target == "b"
+
+
+def test_retreat_needs_the_waypoint_layout():
+    with pytest.raises(ValueError):
+        ShelfKeyframeOracle(spec_for_rule("leftmost"), retreat=True)
