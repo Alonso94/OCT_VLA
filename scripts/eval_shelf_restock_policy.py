@@ -448,6 +448,11 @@ def main() -> int:
         "difference between a fixed-size directory and one that grows every time "
         "the grid is refreshed. Default names the file after the profile and seed.",
     )
+    parser.add_argument("--source-rho", type=float, default=None,
+                        help="Inference-only override of a conditional-source checkpoint's "
+                             "mixture weight (action_source_rho): 1 starts every chunk with "
+                             "via-points from the proposal, 0 from Gaussian. Recorded in "
+                             "eval_tag.")
     parser.add_argument("--video-fps", type=float, default=15.0,
                         help="Matches the 15 Hz control rate, so the video runs in real time.")
     parser.add_argument("--video-crf", type=int, default=30,
@@ -578,8 +583,20 @@ def main() -> int:
         print(f"execution horizon: {base_n} -> {config.n_action_steps} "
               f"(temporal_ensemble_coeff={getattr(config, 'temporal_ensemble_coeff', None)})")
 
+    trained_rho = getattr(config, "action_source_rho", None)
+    if args.source_rho is not None:
+        if getattr(config, "action_source", "gaussian") == "gaussian":
+            raise SystemExit("--source-rho needs a conditional-source checkpoint; this one "
+                             "samples from a Gaussian")
+        if not 0.0 <= args.source_rho <= 1.0:
+            raise SystemExit("--source-rho must be within [0, 1]")
+        config.action_source_rho = args.source_rho
+        print(f"action source rho: {trained_rho} -> {config.action_source_rho}")
+
     policy = make_policy(cfg=config, ds_meta=metadata, rename_map=rename_map)
     policy.eval()
+    if args.source_rho is not None and policy.config.action_source_rho != args.source_rho:
+        raise SystemExit("the policy did not take the --source-rho override")
     # The same rename map training used. Unlike training, inference would not
     # complain about getting this wrong: the cameras share shape and dtype, so a
     # wrong mapping just feeds the policy a wrist view as its scene view and
@@ -732,9 +749,15 @@ def main() -> int:
                 if args.temporal_ensemble_coeff is not None else "",
                 "" if entity_noise.is_clean else entity_noise.tag,
                 "vshift" if args.visual_shift else "",
+                f"rho{args.source_rho:g}" if (
+                    args.source_rho is not None and args.source_rho != trained_rho
+                ) else "",
             ) if part
         ),
         "visual_shift": bool(args.visual_shift),
+        "action_source": {"source": getattr(config, "action_source", "gaussian"),
+                          "rho": getattr(config, "action_source_rho", None),
+                          "trained_rho": trained_rho},
         "future_intervention": {
             "support_pool": str(args.future_support_pool) if args.future_support_pool else None,
             "oracle_rule": args.oracle_rule},

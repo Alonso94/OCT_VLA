@@ -90,6 +90,8 @@ EXEC_FLAG=()
 [ -n "${EVAL_ORACLE_RULE:-}" ] && EXEC_FLAG+=(--oracle-rule "$EVAL_ORACLE_RULE")
 # Per-step traces for the placement-loss diagnosis.
 [ -n "${EVAL_TRACE_DIR:-}" ] && EXEC_FLAG+=(--trace-dir "$EVAL_TRACE_DIR")
+# Conditional-source arms: inference-only mixture weight (0 = Gaussian, 1 = proposal).
+[ -n "${EVAL_SOURCE_RHO:-}" ] && EXEC_FLAG+=(--source-rho "$EVAL_SOURCE_RHO")
 
 VIDEO_FLAG=()
 if [ -n "${EVAL_VIDEO_DIR:-}" ]; then
