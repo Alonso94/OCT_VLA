@@ -126,8 +126,18 @@ case "$CORPUS" in
     declare -A DATASET=([F]=three_object_v4l_eeabs_fkwpr)
     declare -A TAG=([F]=v4lfkwpr_eeabs)
     declare -A STAGE1_TAG=([F]=v4l_eeabs)
+    # Note: PV/SV/GV is also paired_full_vis's letter; that corpus lives in the
+    # pre-v4 output root, so the eval tags do not meet. Do not reuse it here.
     LETTER=([pi05]=PV [smolvla]=SV [groot]=GV) ;;
-  *) echo "CORPUS must be paired_full, paired_full_r19, paired_full_r38, paired_full_vis, identity, v4_leftmost, v4_leftmost_fk{,wp,wpr} or v4_leftmost_pfn{,goal,lat,ft,scr}" >&2; exit 2 ;;
+  v4_leftmost_arms)
+    # v4_leftmost_fkwpr plus the paired script oracle's per-arm via-points
+    # (add_arm_targets.py), for the conditional-source flow (arms kv_src, kv_src_fk).
+    # The future-keyframe branch is on for kv_src_fk and plain kv; off for kv_src.
+    declare -A DATASET=([F]=three_object_v4l_eeabs_fkwpr_arms)
+    declare -A TAG=([F]=v4larms_eeabs)
+    declare -A STAGE1_TAG=([F]=v4l_eeabs)
+    LETTER=([pi05]=PA [smolvla]=SA [groot]=GA) ;;
+  *) echo "CORPUS must be paired_full, paired_full_r19, paired_full_r38, paired_full_vis, identity, v4_leftmost, v4_leftmost_fk{,wp,wpr}, v4_leftmost_arms or v4_leftmost_pfn{,goal,lat,ft,scr}" >&2; exit 2 ;;
 esac
 for regime in "${!DATASET[@]}"; do
   # A per-seed view ({prior}) is checked per seed in stage 2.
@@ -277,6 +287,13 @@ $OCTVLA_POLICY_PYTHON -u scripts/merge_stage1_adapter.py --stage1 $stage1 \
             [ "$backbone" = groot ] || { echo "$arm is implemented on groot only" >&2; exit 2; }
             run_arm=kv
             arm_env=(TRAIN_VARIANT=object CONDITIONING=kv FUTURE_GATE=confidence) ;;
+          # Conditional-source flow (plan rev. 8): the flow starts from the via-point
+          # proposal; kv_src without the future-keyframe branch, kv_src_fk with it.
+          kv_src|kv_src_fk)
+            [ "$backbone" = groot ] || { echo "$arm is implemented on groot only" >&2; exit 2; }
+            run_arm=kv
+            arm_env=(TRAIN_VARIANT=object CONDITIONING=kv ACTION_SOURCE=via)
+            [ "$arm" = kv_src ] && arm_env+=(FUTURE_BRANCH=0) ;;
           # The information and composition controls (research plan, Phase A).
           kv_adaln_shuffled|scene_attn|scene_mean|kv_adaln_sigreg|kv_rel)
             [ "$backbone" = groot ] || { echo "$arm is implemented on groot only" >&2; exit 2; }

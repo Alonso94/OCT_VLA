@@ -77,7 +77,7 @@ def build_observation(
     obs, *, torch, np, control_space="cartesian", uint8_images=True,
     state_encoding="position", previous_joints=None, entity_max_entities=None,
     entity_noise=None, noise_rng=None, entity_visual=None, future_keyframe=False,
-    future=None,
+    future=None, arm_targets=False,
 ):
     """The policy's input batch, laid out exactly as the exporter wrote it.
 
@@ -161,6 +161,15 @@ def build_observation(
 
         batch[FUTURE_KEYFRAME] = torch.tensor([obs.future_keyframe], dtype=torch.float32)
         batch[FUTURE_MASK] = torch.tensor([obs.future_keyframe_mask], dtype=torch.bool)
+    if arm_targets:
+        # The per-arm via-points the server's paired script oracle computed, which a
+        # conditional-source checkpoint starts its action flow from. Refused if absent.
+        if obs.arm_targets is None:
+            raise ValueError("the checkpoint starts its flow from arm targets but the "
+                             "observation carries none")
+        batch["observation.arm_targets"] = torch.tensor([obs.arm_targets], dtype=torch.float32)
+        batch["observation.arm_targets_mask"] = torch.tensor([obs.arm_targets_mask],
+                                                             dtype=torch.float32)
     batch["task"] = [obs.context.instruction]
     return batch
 
@@ -178,15 +187,19 @@ def run_episode(
     uint8_images=True, state_encoding="position", video=None,
     gripper_encoding="measured_aperture",
     entity_max_entities=None, model_ids=None, entity_noise=None, entity_visual=None,
-    future_keyframe="none", future_source=None, trace_path=None,
+    future_keyframe="none", future_source=None, trace_path=None, arm_targets=False,
 ) -> dict:
     # A policy-side source asks the server for nothing; the oracle is served.
     served = "none" if future_source is not None else future_keyframe
     observation = client.reset(seed, profile, control_space=control_space,
                                gripper_encoding=gripper_encoding, model_ids=model_ids,
-                               max_steps=max_steps, future_keyframe=served)
+                               max_steps=max_steps, future_keyframe=served,
+                               arm_targets=arm_targets)
     support_seeds = future_source.reset(seed, observation) if future_source is not None else None
     policy.reset()
+    counts = getattr(getattr(getattr(policy, "_groot_model", None), "action_head", None),
+                     "source_counts", None)
+    source_before = dict(counts) if counts is not None else None
     # GR00T (and any flow/diffusion head) draws each chunk's initial noise from torch's
     # global generator. Unseeded, a rollout was a fresh draw: 73/240 four-object scenes
     # lifted fewer objects with *more* steps (research_questions.md). Seeding it per
@@ -216,6 +229,9 @@ def run_episode(
         # Steps the oracle could not plan and sent an empty keyframe (exactly
         # kv): how far this rollout's "oracle" condition really was the oracle.
         "future_keyframe_unplannable_steps": 0,
+        # Conditional-source checkpoints: chunks predicted, and how many started from
+        # the via-point proposal (the rest from GR00T's Gaussian), this episode.
+        "source_chunks": None,
         # Where each object's transfer stopped, from ground truth; filled from
         # the final step (tasks/shelf_restock/events.py).
         "events": {},
@@ -244,6 +260,7 @@ def run_episode(
             entity_noise=entity_noise, noise_rng=noise_rng, entity_visual=entity_visual,
             future_keyframe=future_keyframe != "none",
             future=future_source(observation) if future_source is not None else None,
+            arm_targets=arm_targets,
         )
         if trace is not None:
             trace.add(observation, batch)
@@ -275,6 +292,10 @@ def run_episode(
             })
         if outcome.done:
             break
+    head = getattr(getattr(getattr(policy, "_groot_model", None), "action_head", None),
+                   "source_counts", None)
+    if head is not None:
+        result["source_chunks"] = {k: head[k] - source_before[k] for k in head}
     if video is not None:
         result["video"] = str(video.close() or "")
         result["video_frames"] = video.frames
@@ -667,6 +688,7 @@ def main() -> int:
                     entity_max_entities=entity_max_entities, model_ids=model_ids,
                     entity_noise=entity_noise, entity_visual=entity_visual,
                     future_keyframe=future_keyframe, future_source=future_source,
+                    arm_targets=getattr(config, "action_source", "gaussian") != "gaussian",
                     trace_path=(args.trace_dir / f"{profile}_seed{seed}.npz"
                                 if args.trace_dir is not None else None),
                 )

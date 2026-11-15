@@ -37,6 +37,11 @@ from oct_vla.policies.conditioning.future import (
 ENTITY_VISUAL = "observation.entity_visual"
 from oct_vla.policies.stage_loading import VerifiedLoadMixin
 
+#: Where the action flow starts (conditioning/source_flow.py).
+ACTION_SOURCES = ("gaussian", "via")
+ARM_TARGETS = "observation.arm_targets"
+ARM_TARGETS_MASK = "observation.arm_targets_mask"
+
 #: The arms a conditioned policy can be. The first three are nested, each adding
 #: one path to ``kv``. The last three are controls, implemented on GR00T only:
 #: ``kv_adaln_shuffled`` is ``kv_adaln`` trained on another scene's entities (same
@@ -218,6 +223,19 @@ class ObjectConditioningConfig:
     #: in [0, 1]), so the policy leans on the prior where the prior is sure. No
     #: learned gate parameter: a zero gate on a zero branch would never train.
     object_future_gate: str = "none"
+    #: Conditional-source flow (conditioning/source_flow.py; plan rev. 8). "gaussian":
+    #: GR00T's own N(0, I) source. "via": with probability `action_source_rho` per
+    #: sample (training and inference alike), the flow starts from the normalised
+    #: kinematic proposal of the per-arm via-points (`observation.arm_targets`) plus
+    #: `action_source_sigma` times GR00T's draw. The speeds, dwell and the action
+    #: min/max are the bridge's (scripts/diagnose_action_source.py, the view's stats).
+    action_source: str = "gaussian"
+    action_source_rho: float = 0.5
+    action_source_sigma: float = 0.5
+    action_source_speed: tuple[float, float] = (0.342, 0.159)
+    action_source_dwell: int = 16
+    action_source_min: list[float] | None = None
+    action_source_max: list[float] | None = None
 
     # --- accepted only so pre-cleanup checkpoints load; see _migrate_legacy ---
     object_injection_mode: str | None = None
@@ -268,6 +286,18 @@ class ObjectConditioningConfig:
                 raise ValueError("object_future_gate must be 'none' or 'confidence'")
         elif getattr(self, "object_future_gate", "none") != "none":
             raise ValueError("object_future_gate needs object_future")
+        if self.action_source not in ACTION_SOURCES:
+            raise ValueError(f"action_source must be one of {ACTION_SOURCES}")
+        if self.action_source != "gaussian":
+            if not 0.0 < self.action_source_rho <= 1.0 or self.action_source_sigma <= 0:
+                raise ValueError("action_source needs 0 < rho <= 1 and sigma > 0")
+            for name in ("action_source_min", "action_source_max"):
+                values = getattr(self, name)
+                if values is None or len(values) != 16:
+                    raise ValueError(f"{name} must hold the 16 eeabs action minima/maxima "
+                                     "(the view's meta/stats.json; entity_training_args.py)")
+            if min(self.action_source_speed) <= 0 or self.action_source_dwell < 0:
+                raise ValueError("action_source speeds must be positive, dwell non-negative")
         if self.object_width is not None:
             if self.object_width <= 0:
                 raise ValueError("object_width must be positive")
@@ -507,9 +537,65 @@ class ObjectConditionedPolicyMixin(VerifiedLoadMixin):
                 keyframe, future_mask = keyframe[target], future_mask[target]
                 gate = None if gate is None else gate[target]
             control.set_future_inputs(keyframe, future_mask, gate)
+        if getattr(self.config, "action_source", "gaussian") != "gaussian":
+            self._set_action_source(batch, tokens, mask)
+
+    def _set_action_source(self, batch, tokens, mask) -> None:
+        """The batch's flow source (conditioning/source_flow.py), from the raw tokens
+        (the grippers' current poses) and the per-arm via-points. Refused, never
+        skipped, when the via-points are missing."""
+        from oct_vla.policies.conditioning.source_flow import make_source
+
+        head = self._source_head()
+        targets = batched(batch.get(ARM_TARGETS), unbatched_ndim=3)
+        target_mask = batched(batch.get(ARM_TARGETS_MASK), unbatched_ndim=2)
+        if targets is None or target_mask is None:
+            raise ValueError(f"action_source={self.config.action_source!r} needs {ARM_TARGETS} "
+                             f"and {ARM_TARGETS_MASK}")
+        cfg = self.config
+        # Geometry only: the raw token columns, whatever visual feature follows.
+        source = make_source(tokens[..., :TOKEN_DIM], mask, targets, target_mask > 0.5,
+                             lo=torch.tensor(cfg.action_source_min),
+                             hi=torch.tensor(cfg.action_source_max),
+                             rho=cfg.action_source_rho, sigma=cfg.action_source_sigma,
+                             speeds=tuple(cfg.action_source_speed), dwell=cfg.action_source_dwell,
+                             horizon=cfg.chunk_size)
+        head.action_source = source
+        self._last_source = source
+        if self.training and not getattr(self, "_source_stats_checked", False):
+            self._check_source_space(batch, source, target_mask > 0.5)
+
+    def _check_source_space(self, batch, source, target_mask) -> None:
+        """Once per run: an idle arm's proposal is its current pose, and an idle arm's
+        expert action barely moves, so in GR00T's normalised action space the two agree
+        -- unless the config's min/max are not the stats GR00T's processor used, in
+        which case the source would sit in a different space and nothing would say so."""
+        action = batch.get("action")
+        if action is None or action.ndim != 3 or action.shape[-1] < 16:
+            return
+        idle = ~target_mask.any(-1)  # [B, 2]
+        diffs = []
+        for arm, cols in ((0, slice(0, 3)), (1, slice(8, 11))):
+            rows = idle[:, arm]
+            if bool(rows.any()):
+                mu = source.mu[rows][:, :5, cols].to(action.device)
+                diffs.append((mu - action[rows][:, :5, cols].to(mu.dtype)).abs().flatten())
+        if not diffs:
+            return
+        median = float(torch.cat(diffs).median())
+        if median > 0.1:
+            raise ValueError(f"the action source and GR00T's normalised actions disagree on "
+                             f"idle arms (median |diff| {median:.3f} > 0.1): action_source_min/"
+                             "max are not the stats the processor normalises with")
+        self._source_stats_checked = True
+
+    def _source_head(self):
+        raise NotImplementedError(f"{type(self).__name__} has no conditional-source flow host")
 
     def _clear_object_inputs(self) -> None:
         self.object_conditioning.clear()
+        if getattr(self.config, "action_source", "gaussian") != "gaussian":
+            self._source_head().action_source = None
 
     def _prepare_pretrained_state_dict(self, state_dict: dict[str, Tensor]) -> dict[str, Tensor]:
         """Chain to the backbone's hook if it has one, then keep fresh object weights.

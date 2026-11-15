@@ -73,6 +73,16 @@ class ControlGrootPolicy(SlimCheckpointMixin, ObjectConditionedPolicyMixin, Groo
             self._install_adaln(config, head, pool=SCENE_POOL[arm])
         if arm == "kv_tokens":
             self._install_incontext(config, head)
+        if getattr(config, "action_source", "gaussian") != "gaussian":
+            from oct_vla.policies.conditioning.source_flow import install_source_flow
+
+            if config.chunk_size != head.config.action_horizon:
+                raise ValueError(f"the source proposal spans chunk_size={config.chunk_size} "
+                                 f"steps; GR00T's flow spans {head.config.action_horizon}")
+            install_source_flow(head)
+
+    def _source_head(self):
+        return self._groot_model.action_head
 
     def _control(self):
         return unwrap_object_conditioning(self._groot_model.action_head.object_conditioning)

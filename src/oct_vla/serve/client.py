@@ -61,6 +61,12 @@ class RemoteObservation:
     future_keyframe_source: str = ""
     #: Steps so far on which the oracle could not plan and sent an empty keyframe.
     future_keyframe_unplannable: int = 0
+    #: The paired script oracle's per-arm via-points [2, VIA, 8] and mask [2, VIA],
+    #: when the reset asked for them; None otherwise.
+    arm_targets: tuple | None = None
+    arm_targets_mask: tuple | None = None
+    arm_targets_source: str = ""
+    arm_targets_stage: str = ""
 
     def frame(self, name: str) -> RGBFrame:
         try:
@@ -123,6 +129,10 @@ def _observation(message: protocol.Message) -> RemoteObservation:
         future_keyframe_source=str(header.get("future_keyframe_source", "")),
         future_keyframe_unplannable=int((header.get("future_keyframe") or {})
                                         .get("unplannable_steps", 0)),
+        arm_targets=(None if "arm_targets" not in header else header["arm_targets"]["vias"]),
+        arm_targets_mask=(None if "arm_targets" not in header else header["arm_targets"]["mask"]),
+        arm_targets_source=str(header.get("arm_targets_source", "")),
+        arm_targets_stage=str((header.get("arm_targets") or {}).get("stage", "")),
     )
 
 
@@ -178,6 +188,7 @@ class ShelfRestockEvalClient:
         model_ids: Sequence[int] | None = None,
         max_steps: int | None = None,
         future_keyframe: str = "none",
+        arm_targets: bool = False,
     ) -> RemoteObservation:
         """Start a fresh scene. Raises if the simulator cannot build that seed.
 
@@ -212,7 +223,14 @@ class ShelfRestockEvalClient:
         if future_keyframe != "none":
             header["future_keyframe"] = future_keyframe
         self._future_keyframe = future_keyframe
+        if arm_targets:
+            header["arm_targets"] = True
+        self._arm_targets = arm_targets
         observation = _observation(self._round_trip(header))
+        if arm_targets and (observation.arm_targets_source != "oracle_arms"
+                            or observation.arm_targets is None):
+            raise protocol.ProtocolError("requested arm_targets but the server sent none "
+                                         f"(source {observation.arm_targets_source or 'unknown'})")
         if future_keyframe != "none":
             # A server that predates the field would ignore it, and a rollout
             # "with oracle keyframes" would run without any.
@@ -259,6 +277,8 @@ class ShelfRestockEvalClient:
         observation = _observation(message)
         if self._future_keyframe != "none" and observation.future_keyframe is None:
             raise protocol.ProtocolError("server stopped sending the future keyframe mid-episode")
+        if getattr(self, "_arm_targets", False) and observation.arm_targets is None:
+            raise protocol.ProtocolError("server stopped sending arm targets mid-episode")
         return StepResult(
             observation=observation,
             success=bool(message.header["success"]),

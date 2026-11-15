@@ -237,6 +237,25 @@ if [ "$TRAIN_VARIANT" = object ]; then
   [ -n "${OBJECT_WIDTH:-}" ] && POLICY_ARGS+=(--policy.object_width="$OBJECT_WIDTH")
   [ -n "${OBJECT_HEADS:-}" ] && POLICY_ARGS+=(--policy.object_attention_heads="$OBJECT_HEADS")
   [ -n "${TOKENS_GATE:-}" ] && POLICY_ARGS+=(--policy.object_tokens_gate_init="$TOKENS_GATE")
+  # FUTURE_BRANCH=0: drop the future-keyframe branch a keyframe view switches on, for
+  # an arm that reads the view's other columns only (kv_src: the source flow alone).
+  if [ "${FUTURE_BRANCH:-1}" = 0 ]; then
+    mapfile -t POLICY_ARGS < <(printf '%s\n' "${POLICY_ARGS[@]}" | grep -v -- "^--policy.object_future")
+  fi
+  # Conditional-source flow (conditioning/source_flow.py): only on a view with arm
+  # targets; the speeds and dwell are the bridge's fit (diagnose_action_source.py).
+  if [ -n "${ACTION_SOURCE:-}" ]; then
+    printf '%s\n' "${ENTITY_ARGS[@]}" | grep -q -- "--policy.action_source_min=" \
+      || { echo "ACTION_SOURCE needs a view with observation.arm_targets" >&2; exit 2; }
+    FIT="${ACTION_SOURCE_FIT:-$OCTVLA_OUTPUT_ROOT/diagnostics/action_source_arms.json}"
+    [ -f "$FIT" ] || { echo "ACTION_SOURCE needs the bridge fit $FIT" >&2; exit 2; }
+    SPEEDS=$(python3 -c "import json;r=json.load(open('$FIT'));print('[%r,%r]' % (r['speed_m_per_s'], r['right_speed_m_per_s']))")
+    DWELL=$(python3 -c "import json;print(json.load(open('$FIT'))['dwell_steps'])")
+    POLICY_ARGS+=(--policy.action_source="$ACTION_SOURCE" --policy.action_source_speed="$SPEEDS"
+                  --policy.action_source_dwell="$DWELL"
+                  --policy.action_source_rho="${ACTION_SOURCE_RHO:-0.5}"
+                  --policy.action_source_sigma="${ACTION_SOURCE_SIGMA:-0.5}")
+  fi
   # The future branch's gate (PFN-VLA): only on a view that switches the branch on.
   if [ -n "${FUTURE_GATE:-}" ]; then
     printf '%s\n' "${ENTITY_ARGS[@]}" | grep -q -- "--policy.object_future=true" \
@@ -335,6 +354,10 @@ cat > "$OCTVLA_OUTPUT_ROOT/run_metadata/${RUN_NAME}.json" <<JSON
   "object_width": "${OBJECT_WIDTH:-}",
   "object_sigreg_weight": "${SIGREG_WEIGHT:-}",
   "object_future_gate": "${FUTURE_GATE:-}",
+  "future_branch": "${FUTURE_BRANCH:-1}",
+  "action_source": "${ACTION_SOURCE:-gaussian}",
+  "action_source_rho": "${ACTION_SOURCE_RHO:-}",
+  "action_source_sigma": "${ACTION_SOURCE_SIGMA:-}",
   "dataset": "$DATASET",
   "job_id": "${SLURM_JOB_ID:-none}"
 }

@@ -77,6 +77,17 @@ def entity_training_args(dataset: Path) -> list[str]:
             args += ["--policy.object_future_kind=latent", f"--policy.object_future_dim={shape[1]}"]
         elif shape[1] != 24:
             args.append(f"--policy.object_future_dim={shape[1]}")
+    # A view with per-arm via-points (scripts/add_arm_targets.py) can feed the
+    # conditional-source flow; the action min/max it normalises the proposal with
+    # must be the ones GR00T's processor normalises the actions with: the view's
+    # own `action` stats. Inert unless the arm sets --policy.action_source.
+    if "observation.arm_targets" in info.get("features", {}):
+        stats = json.loads((dataset / "meta" / "stats.json").read_text())["action"]
+        if len(stats["min"]) != 16 or len(stats["max"]) != 16:
+            raise ValueError("arm targets need the 16-column eeabs action stats")
+        fmt = lambda v: "[" + ",".join(repr(float(x)) for x in v) + "]"
+        args += [f"--policy.action_source_min={fmt(stats['min'])}",
+                 f"--policy.action_source_max={fmt(stats['max'])}"]
     return args
 
 

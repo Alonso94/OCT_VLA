@@ -137,13 +137,32 @@ def main() -> int:
                 loss = model.forward(batch)[0]
             return chunk, loss
 
+        # A conditional-source arm starts its flow elsewhere by design: "starts at
+        # stage 1" is checked with the source switched off (rho 0, which is GR00T's
+        # Gaussian path bit for bit), and the source must then visibly move the chunk
+        # at rho 1 -- a source that changes nothing would train as plain kv.
+        sourced = getattr(inner.config, "action_source", "gaussian") != "gaussian"
+        if sourced:
+            rho = inner.config.action_source_rho
+            inner.config.action_source_rho = 0.0
         chunk_2, loss_2 = outputs(policy)
         chunk_1, loss_1 = outputs(reference)
+        source_report = None
+        if sourced:
+            inner.config.action_source_rho = 1.0
+            chunk_src, _ = outputs(policy)
+            inner.config.action_source_rho = rho
+            used = inner._last_source.use
+            source_report = {"rho": rho, "sigma": inner.config.action_source_sigma,
+                             "chunk_change_at_rho_1": relative(chunk_src, chunk_1),
+                             "samples_with_targets": int(inner._last_source.valid.sum()),
+                             "samples_used_at_rho_1": None if used is None else int(used.sum())}
         arm = getattr(inner.config, "object_conditioning", "rgb")
         report = {
             "stage1": str(stage1), "type": inner.config.type, "arm": arm,
             "chunk_relative_change": relative(chunk_2, chunk_1),
             "loss_stage1": float(loss_1), "loss_stage2": float(loss_2),
+            "action_source": source_report,
         }
         del reference
         torch.cuda.empty_cache() if torch.cuda.is_available() else None
@@ -185,6 +204,15 @@ def main() -> int:
                 failures.append(f"{name}: no trainable parameters (PEFT did not keep it)")
             elif name in required and g["nonzero"] == 0:
                 failures.append(f"{name}: no gradient reached the {arm} branch")
+        if source_report is not None:
+            if source_report["samples_with_targets"] == 0:
+                failures.append("action source: no sample in the batch has via-points")
+            elif source_report["chunk_change_at_rho_1"] < 1e-3:
+                failures.append("action source: at rho 1 the chunk did not move "
+                                f"({source_report['chunk_change_at_rho_1']:.2e}); the source is inert")
+            if not getattr(inner, "_source_stats_checked", False):
+                failures.append("action source: the normalisation-space check never ran "
+                                "(no idle arm in the batch?)")
         report["failures"] = failures
         target = Path(cfg.output_dir).parent / "run_metadata" / f"{cfg.job_name}_init_check.json"
         target.parent.mkdir(parents=True, exist_ok=True)
