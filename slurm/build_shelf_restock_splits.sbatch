@@ -30,8 +30,16 @@ if [ -n "${OCTVLA_TORCHCODEC_LIBS:-}" ]; then
   export LD_LIBRARY_PATH="$OCTVLA_TORCHCODEC_LIBS${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 fi
 
+# CANONICAL_ROOTS: space-separated RULE=PATH collection roots for a mixed-rule
+# corpus (needs GENERIC_INSTRUCTION=1); default, the one $OCTVLA_COLLECTION_ROOT.
+ROOT_ARGS=()
+if [ -n "${CANONICAL_ROOTS:-}" ]; then
+  for root in $CANONICAL_ROOTS; do ROOT_ARGS+=(--canonical-root "$root"); done
+else
+  ROOT_ARGS=(--canonical-root "$OCTVLA_COLLECTION_ROOT/$PROFILE")
+fi
 ARGS=(
-  --canonical-root "$OCTVLA_COLLECTION_ROOT/$PROFILE"
+  "${ROOT_ARGS[@]}"
   --output "$OUTPUT"
   --repo-id "local/oct-vla-shelf-restock-${DATASET_NAME#three_object_}"
   --profile "$PROFILE"
@@ -54,6 +62,8 @@ if [ -n "${IDENTITY_HOLDOUT:-}" ]; then ARGS+=(--identity-holdout "$IDENTITY_HOL
 if [ -n "${HOLDOUT_MODEL_IDS:-}" ]; then ARGS+=(--holdout-model-ids "$HOLDOUT_MODEL_IDS"); fi
 if [ -n "${EPISODE_KIND:-}" ]; then ARGS+=(--episode-kind "$EPISODE_KIND"); fi
 if [ -n "${MAX_RUNS:-}" ]; then ARGS+=(--max-runs "$MAX_RUNS"); fi
+# Every frame's task becomes the rule-free instruction (spec.GENERIC_INSTRUCTION).
+if [ "${GENERIC_INSTRUCTION:-0}" = "1" ]; then ARGS+=(--generic-instruction); fi
 
 echo "building $OUTPUT"
 printf '  %s\n' "${ARGS[@]}"

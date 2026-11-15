@@ -432,6 +432,7 @@ def _source_manifest_entry(index: int, source: Path, episode: Episode) -> dict:
     return {
         "lerobot_episode_index": index,
         "source_episode": source.name,
+        "source_path": str(source.resolve()),
         "episode_json_sha256": sha256(payload).hexdigest(),
         "seed": episode.seed,
         "samples": len(episode.samples),
@@ -455,6 +456,7 @@ def export_episodes(
     entity_supports: tuple[EntitySupport, ...] | None = None,
     entity_normalizer: EntityTokenNormalizer | None = None,
     fps: int | None = None,
+    task_text: str | None = None,
 ) -> ExportReport:
     """Convert canonical episode directories into a new local LeRobot dataset.
 
@@ -462,7 +464,13 @@ def export_episodes(
     recordings remain untouched and retain their simulator-clock timestamps.
     ``output`` must not exist unless ``append`` is explicitly requested. This
     makes a long batch export restartable one finalized episode at a time.
+
+    ``task_text`` replaces every frame's task string (the recorded instruction). A
+    corpus that mixes rules exports one generic instruction this way, so the rule is
+    not readable from language and LeRobot's per-task hold-out stays a single tail.
     """
+    if task_text is not None and not str(task_text).strip():
+        raise ValueError("task_text must be a nonempty string")
     if gripper_encoding not in GRIPPER_ENCODINGS:
         raise ValueError(
             f"gripper_encoding must be one of {GRIPPER_ENCODINGS}, got {gripper_encoding!r}"
@@ -549,7 +557,7 @@ def export_episodes(
                         _joint_state_vector(episode, index, state_encoding), dtype=np.float32
                     ),
                     "action": np.asarray(action, dtype=np.float32),
-                    "task": sample.context.instruction,
+                    "task": task_text if task_text is not None else sample.context.instruction,
                 }
             else:
                 frame = {
@@ -566,7 +574,7 @@ def export_episodes(
                         ),
                         dtype=np.float32,
                     ),
-                    "task": sample.context.instruction,
+                    "task": task_text if task_text is not None else sample.context.instruction,
                 }
             if control_space == UNIFIED_CONTROL_SPACE:
                 # Every alternative encoding, computed from the same sample the
@@ -636,6 +644,7 @@ def export_episodes(
     manifest = {
         "format": "oct-vla-episode-provenance-v1",
         "repo_id": repo_id,
+        "task_text": task_text,
         "episodes": [
             _source_manifest_entry(index, source, episode)
             for index, (source, episode) in enumerate(accepted)

@@ -478,3 +478,55 @@ def test_entity_feature_schema_is_opt_in_and_role_free():
 def test_entity_feature_schema_rejects_nonpositive_capacity(capacity):
     with pytest.raises(ValueError, match="positive"):
         _features(_eef_episode(POSE_A, POSE_B), entity_token_max_entities=capacity)
+
+
+def _rule_clip(root, seed, rule):
+    import json
+
+    clip = root / f"seed_{seed}" / f"episode_0{seed}_full"
+    clip.mkdir(parents=True, exist_ok=True)
+    (clip / "episode.json").write_text(json.dumps({"metadata": {"rule": rule}}))
+    return clip
+
+
+def test_a_mixed_rule_corpus_keeps_each_scene_on_one_side(tmp_path):
+    """The two rules share scene seeds; the split is by seed block, so a scene's
+    leftmost and rightmost runs both land in train or both in validation, never one
+    of each (that would leak the scene across the boundary)."""
+    m = _splits_module()
+    left, right = tmp_path / "leftmost", tmp_path / "rightmost"
+    for seed in (105, 205, 355):
+        _rule_clip(left, seed, "leftmost")
+    for seed in (105, 205):
+        _rule_clip(right, seed, "rightmost")
+    blocks = m.SPLIT_BLOCKS["three_object"]
+    grouped = {"train": [], "val": []}
+    for rule, root in m.parse_roots([f"leftmost={left}", f"rightmost={right}"]):
+        for name, clips in m.collect_clips(root, blocks, rule).items():
+            grouped[name] += clips
+    sides = {}
+    for name, clips in grouped.items():
+        for clip in clips:
+            sides.setdefault(m.seed_of(clip), set()).add(name)
+    assert sides == {105: {"train"}, 205: {"val"}, 355: {"train"}}
+    assert sorted(m.rule_of(c) for c in grouped["val"]) == ["leftmost", "rightmost"]
+
+
+def test_mixed_rule_roots_must_name_distinct_rules_and_match_the_clips(tmp_path):
+    m = _splits_module()
+    with pytest.raises(SystemExit, match="RULE=PATH"):
+        m.parse_roots([str(tmp_path / "a"), str(tmp_path / "b")])
+    with pytest.raises(SystemExit, match="distinct"):
+        m.parse_roots([f"leftmost={tmp_path}/a", f"leftmost={tmp_path}/b"])
+    assert m.parse_roots([str(tmp_path)]) == [(None, tmp_path)]
+    _rule_clip(tmp_path / "r", 105, "rightmost")
+    with pytest.raises(SystemExit, match="not 'leftmost'"):
+        m.collect_clips(tmp_path / "r", m.SPLIT_BLOCKS["three_object"], "leftmost")
+
+
+def test_the_generic_instruction_names_no_rule():
+    from oct_vla.tasks.shelf_restock.spec import GENERIC_INSTRUCTION, RULE_INSTRUCTIONS
+
+    words = GENERIC_INSTRUCTION.lower()
+    assert all(rule not in words for rule in RULE_INSTRUCTIONS)
+    assert "first" not in words and "order" not in words

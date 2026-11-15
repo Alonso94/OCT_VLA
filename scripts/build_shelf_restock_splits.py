@@ -58,13 +58,38 @@ def seed_of(clip_dir: Path) -> int:
     raise ValueError(f"No seed_<n> component in {clip_dir}")
 
 
+def parse_roots(values: list[str]) -> list[tuple[str | None, Path]]:
+    """``--canonical-root`` values: ``PATH`` or ``RULE=PATH``. Several roots must all
+    name their rule, and the rules must differ."""
+    roots = []
+    for value in values:
+        rule, sep, path = value.partition("=")
+        roots.append((rule, Path(path)) if sep else (None, Path(value)))
+    if len(roots) > 1:
+        rules = [rule for rule, _ in roots]
+        if None in rules or len(set(rules)) != len(rules):
+            raise SystemExit("several --canonical-root values must each be RULE=PATH with "
+                             f"distinct rules; got {values}")
+    return roots
+
+
+def rule_of(clip: Path) -> str | None:
+    return json.loads((clip / "episode.json").read_text()).get("metadata", {}).get("rule")
+
+
 def collect_clips(
-    canonical_root: Path, blocks: dict[str, tuple[range, ...]]
+    canonical_root: Path, blocks: dict[str, tuple[range, ...]], rule: str | None = None
 ) -> dict[str, list[Path]]:
-    """Group canonical clip directories by the split their seed is reserved for."""
+    """Group canonical clip directories by the split their seed is reserved for.
+
+    With ``rule``, every clip must record that rule: a collection mislabelled on the
+    command line would otherwise enter a mixed-rule corpus under the wrong name."""
     grouped: dict[str, list[Path]] = {name: [] for name in blocks}
     unreserved: list[int] = []
     for episode in canonical_root.rglob("episode.json"):
+        if rule is not None and rule_of(episode.parent) != rule:
+            raise SystemExit(f"{episode.parent} records rule {rule_of(episode.parent)!r}, "
+                             f"not {rule!r}")
         clip = episode.parent
         seed = seed_of(clip)
         for name, ranges in blocks.items():
@@ -246,7 +271,27 @@ def main() -> int:
     from oct_vla.data.lerobot_export import export_episodes
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--canonical-root", required=True, type=Path)
+    parser.add_argument(
+        "--canonical-root",
+        required=True,
+        action="append",
+        help="A collection root, or RULE=ROOT; repeat for a mixed-rule corpus. Each "
+        "rule's clips are split by the same seed blocks, so a scene collected under "
+        "both rules lands on the same side for both. Needs --task-text.",
+    )
+    parser.add_argument(
+        "--task-text",
+        default=None,
+        help="One instruction for every frame, replacing the recorded one. Required "
+        "with several rules: the rule must not be readable from language, and "
+        "LeRobot holds out a tail per task string.",
+    )
+    parser.add_argument(
+        "--generic-instruction",
+        action="store_true",
+        help="--task-text set to the rule-free GENERIC_INSTRUCTION "
+        "(tasks/shelf_restock/spec.py).",
+    )
     parser.add_argument("--output", required=True, type=Path, help="Dataset root to create")
     parser.add_argument("--repo-id", required=True)
     parser.add_argument("--profile", default="three_object", choices=sorted(SPLIT_BLOCKS))
@@ -312,8 +357,24 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    if args.generic_instruction:
+        from oct_vla.tasks.shelf_restock.spec import GENERIC_INSTRUCTION
+
+        if args.task_text is not None and args.task_text != GENERIC_INSTRUCTION:
+            raise SystemExit("--generic-instruction and --task-text disagree")
+        args.task_text = GENERIC_INSTRUCTION
     blocks = SPLIT_BLOCKS[args.profile]
-    grouped = collect_clips(args.canonical_root, blocks)
+    roots = parse_roots(args.canonical_root)
+    if len(roots) > 1 and args.task_text is None:
+        raise SystemExit("a mixed-rule corpus needs --task-text")
+    grouped = {name: [] for name in blocks}
+    for rule, root in roots:
+        for name, clips in collect_clips(root, blocks, rule).items():
+            grouped[name] += clips
+    # Ascending seed, then rule, then clip: a scene's runs under both rules sit
+    # together, on the side of the boundary its seed is reserved for.
+    for name in grouped:
+        grouped[name].sort(key=lambda p: (seed_of(p), rule_of(p) or "", p.name))
     kinds = {
         json.loads((path / "episode.json").read_text())
         .get("metadata", {})
@@ -342,6 +403,7 @@ def main() -> int:
     train, val = grouped.get("train", []), grouped.get("val", [])
     if not train:
         raise SystemExit(f"No train clips found under {args.canonical_root}")
+    rules = sorted({rule_of(c) or "" for c in train + val})
     identity_holdout = []
     holdout_model_ids = sorted(int(v) for v in args.holdout_model_ids.split(",") if v.strip())
     if holdout_model_ids and args.identity_holdout:
@@ -412,6 +474,7 @@ def main() -> int:
         gripper_encoding=args.gripper_encoding,
         entity_token_max_entities=args.max_entities if args.entity_tokens else None,
         entity_normalizer=normalizer,
+        task_text=args.task_text,
     )
     print(f"exported {len(report.exported)} episodes to {report.output}")
     for source, reason in report.skipped:
@@ -422,6 +485,14 @@ def main() -> int:
             f"eval_split boundary would no longer match the seed boundary"
         )
 
+    if args.task_text is not None:
+        # One task string, or LeRobot's per-task hold-out would split the tail by
+        # task and the rule would be readable from language.
+        info = json.loads((args.output / "meta" / "info.json").read_text())
+        if info.get("total_tasks") != 1:
+            raise SystemExit(f"--task-text given but the export holds "
+                             f"{info.get('total_tasks')} task strings")
+
     manifest = {
         "profile": args.profile,
         "episode_kind": args.episode_kind,
@@ -429,6 +500,9 @@ def main() -> int:
         if args.entity_tokens
         else None,
         "repo_id": args.repo_id,
+        "canonical_roots": {rule or "": str(root) for rule, root in roots},
+        "rules": rules,
+        "task_text": args.task_text,
         "total_episodes": total,
         "eval_split": eval_split,
         "train": {

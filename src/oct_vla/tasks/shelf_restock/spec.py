@@ -155,6 +155,15 @@ RULE_INSTRUCTIONS = {
     ),
 }
 
+#: The rule-free instruction of a mixed-rule corpus (effect-conditioned VLA): it names
+#: the task but not the order, which only the effect conditioning supplies. Training
+#: exports it for every frame and evaluation sends it, so the rule is never readable
+#: from language.
+GENERIC_INSTRUCTION = (
+    "Restock the objects from the lower shelf to the upper shelf, compacting each "
+    "toward the previous neighbor."
+)
+
 
 @dataclass(frozen=True)
 class ShelfRestockSpec:

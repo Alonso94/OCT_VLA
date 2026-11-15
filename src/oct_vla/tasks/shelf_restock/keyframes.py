@@ -39,7 +39,7 @@ gripper's commanded pose at the event, object at its goal.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -73,6 +73,8 @@ GRIPPER_MAX_WIDTH = 0.08
 OPEN = 1.0
 #: Mover-to-object distance beyond which a placed object has been let go.
 RELEASE_DISTANCE = 0.20
+#: A pending neighbour within this of its compacted pose has been compacted.
+COMPACTED_REACHED = 0.01
 #: Retreat (``retreat=True``): a placed target whose mover is farther than this has
 #: been released and the mover is rising (the hold offset is 0.138-0.156 m over the v4
 #: corpus). Observable from the scene and EEF; no aperture threshold, because the
@@ -96,6 +98,8 @@ class _Plan:
     closing: float
     object_pose: object
     place_pose: object
+    #: Where compaction will push the object (None when no compaction is needed).
+    compacted_pose: object = None
 
 
 class ShelfKeyframeOracle:
@@ -106,10 +110,19 @@ class ShelfKeyframeOracle:
     masked from the step the mover reaches it until the event or target changes."""
 
     def __init__(self, spec: ShelfRestockSpec, waypoints: bool = False,
-                 retreat: bool = False) -> None:
+                 retreat: bool = False, anticipate_compaction: bool = False) -> None:
         if retreat and not waypoints:
             raise ValueError("the retreat phase uses the waypoint layout")
         self.spec = spec
+        #: Plan the next placement beside the previous object's *compacted* pose while
+        #: that object still awaits its push. Without it, the goal planned during the
+        #: compaction window sits beside the uncompacted neighbour and jumps ~5 cm once
+        #: the push lands (median 5.2 cm vs the recorded placement over the v4 corpus,
+        #: against 0.5 cm outside the window); the effect oracle needs the goal the
+        #: object will actually be placed at.
+        self.anticipate_compaction = anticipate_compaction
+        #: Placed objects still awaiting compaction -> the pose the push will leave them.
+        self._pending: dict[str, object] = {}
         self.waypoints = waypoints
         self.retreat = retreat
         #: The frozen retreat EEF position while retreating, else None.
@@ -144,10 +157,18 @@ class ShelfKeyframeOracle:
             raise NoGraspError(f"no top-down grasp fits {self.target!r}")
         grasp = candidates[0]
         neighbour = scene.get(self.neighbour) if self.neighbour is not None else None
+        pending = self._pending.get(self.neighbour)
+        if neighbour is not None and pending is not None:
+            if np.linalg.norm(np.subtract(neighbour.pose.position, pending.position)) \
+                    > COMPACTED_REACHED:
+                neighbour = replace(neighbour, pose=pending)
+            else:
+                del self._pending[self.neighbour]
         placement = plan_placement(self.spec, target, grasp.wrist_yaw, neighbour,
                                    standoff=STANDOFF, side=arm_for("compact"))
         self.plan = _Plan(grasp.grasp_pose, min(grasp.closing_width / GRIPPER_MAX_WIDTH, OPEN),
-                          placement.object_pose, placement.place_pose)
+                          placement.object_pose, placement.place_pose,
+                          placement.compacted_object_pose)
 
     def _let_go(self, scene: ObjectScene, eef) -> bool:
         target = scene.get(self.target)
@@ -171,6 +192,9 @@ class ShelfKeyframeOracle:
                 return rows
         elif (self.target is None or scene.get(self.target) is None
                 or (self.target in upper and self._let_go(scene, eef))):
+            if (self.anticipate_compaction and self.target is not None
+                    and self.plan is not None and self.plan.compacted_pose is not None):
+                self._pending[self.target] = self.plan.compacted_pose
             self._select(scene)
         rows_n = len(self.roles)
         empty = (np.zeros((rows_n, self.dim), np.float32), np.zeros(rows_n, bool))
@@ -262,10 +286,12 @@ class ShelfKeyframeOracle:
 
 
 def episode_keyframes(episode, spec: ShelfRestockSpec,
-                      waypoints: bool = False, retreat: bool = False) -> tuple[np.ndarray, np.ndarray]:
+                      waypoints: bool = False, retreat: bool = False,
+                      anticipate_compaction: bool = False) -> tuple[np.ndarray, np.ndarray]:
     """The oracle run over a recorded episode, frame by frame: ``[T, 3, 24]``, ``[T, 3]``
     (``[T, 4, 25]``, ``[T, 4]`` with waypoints)."""
-    oracle = ShelfKeyframeOracle(spec, waypoints=waypoints, retreat=retreat)
+    oracle = ShelfKeyframeOracle(spec, waypoints=waypoints, retreat=retreat,
+                                 anticipate_compaction=anticipate_compaction)
     out = [oracle(sample.scene, sample.observation.eef) for sample in episode.samples]
     if oracle.unplannable_steps:
         raise ValueError(f"seed {episode.seed}: the expert's planners failed on "
