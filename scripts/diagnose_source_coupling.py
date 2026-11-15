@@ -162,6 +162,11 @@ def main() -> int:
         print(f"  {start + len(items)}/{len(chosen)}", flush=True)
     inner.config.action_source_rho = trained_rho
     arr = {k: np.concatenate(v) for k, v in collect.items()}
+    # predict_action_chunk returns the executed steps (n_action_steps), not the whole
+    # horizon: compare over those, which are the ones a rollout acts on.
+    steps = arr["c0"].shape[1]
+    for k in ("mu", "expert", "pad"):
+        arr[k] = arr[k][:, :steps]
     if arr["c0"].shape != arr["expert"].shape:
         raise SystemExit(f"chunk {arr['c0'].shape} vs expert {arr['expert'].shape}")
     # Padded expert steps (episode end) are replaced by the last real step, as LeRobot does.
@@ -170,6 +175,7 @@ def main() -> int:
         "checkpoint": str(args.checkpoint), "dataset": str(args.dataset_root),
         "split": args.split, "frames": len(chosen), "trained_rho": trained_rho,
         "sigma": config.action_source_sigma, "space": "normalised [-1, 1], eeabs columns",
+        "steps_compared": int(steps),
         "with_proposal": summarise(arr["c0"], arr["c1"], arr["mu"], arr["expert"], valid),
         "share_with_proposal": float(arr["valid"].mean()),
     }
