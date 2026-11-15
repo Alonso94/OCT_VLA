@@ -33,3 +33,20 @@ def test_scoring_first_picks_and_full_orders():
     assert r["rightmost"] == {"first": 1, "full_order": 1}
     assert r["leftmost"] == {"first": 1, "full_order": 0}  # partial order is not a full one
     assert r["middle"]["first"] == 0
+
+
+def test_served_scores_count_a_scene_without_a_lift_as_a_miss():
+    done_right = dict(_episode({"c": 10, "b": 90, "a": 200}), success=True)
+    order_wrong = dict(_episode({"a": 10, "b": 90, "c": 200}), success=True)
+    first_only = dict(_episode({"c": 12}), success=False)
+    never = dict(_episode({}), success=False)
+    r = S.served([done_right, order_wrong, first_only, never], "rightmost")
+    assert r["scenes"] == 4 and r["lift_rate"] == 0.75
+    assert r["S_pick"] == 0.5                      # never-lifted counts against it
+    assert abs(r["S_pick_given_lift"] - 2 / 3) < 1e-9
+    assert r["S_task"] == 0.5 and r["S_order"] == 0.25 and r["S_joint"] == 0.25
+
+
+def test_served_rule_is_read_from_the_intervention():
+    assert S.served_rule({"future_intervention": {"oracle_rule": "rightmost"}}) == "rightmost"
+    assert S.served_rule({}) is None

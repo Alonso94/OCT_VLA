@@ -137,7 +137,23 @@ case "$CORPUS" in
     declare -A TAG=([F]=v4larms_eeabs)
     declare -A STAGE1_TAG=([F]=v4l_eeabs)
     LETTER=([pi05]=PA [smolvla]=SA [groot]=GA) ;;
-  *) echo "CORPUS must be paired_full, paired_full_r19, paired_full_r38, paired_full_vis, identity, v4_leftmost, v4_leftmost_fk{,wp,wpr}, v4_leftmost_arms or v4_leftmost_pfn{,goal,lat,ft,scr}" >&2; exit 2 ;;
+  v4_lr)
+    # Effect-conditioned VLA (plan rev. 11): the leftmost + rightmost full runs as one
+    # corpus with one rule-free instruction (build_shelf_restock_splits.py
+    # --generic-instruction). No input names the rule: this is the mixed-rule stage 1,
+    # and plain kv here is rule-ambiguous by construction.
+    declare -A DATASET=([F]=three_object_v4lr_eeabs)
+    declare -A TAG=([F]=v4lr_eeabs)
+    LETTER=([pi05]=PR [smolvla]=SR [groot]=GR) ;;
+  v4_lr_effA)
+    # v4_lr plus the hindsight object effect, contract A (add_effects.py): the future
+    # branch reads Z = (object, placement). Evaluation serves oracle_effect:<rule>
+    # (ROLLOUT_ORACLE_RULE) or a PFN; stage 1 is v4_lr's.
+    declare -A DATASET=([F]=three_object_v4lr_eeabs_effA)
+    declare -A TAG=([F]=v4lreffA_eeabs)
+    declare -A STAGE1_TAG=([F]=v4lr_eeabs)
+    LETTER=([pi05]=PE [smolvla]=SE [groot]=GE) ;;
+  *) echo "CORPUS must be paired_full, paired_full_r19, paired_full_r38, paired_full_vis, identity, v4_leftmost, v4_leftmost_fk{,wp,wpr}, v4_leftmost_arms, v4_leftmost_pfn{,goal,lat,ft,scr}, v4_lr or v4_lr_effA" >&2; exit 2 ;;
 esac
 for regime in "${!DATASET[@]}"; do
   # A per-seed view ({prior}) is checked per seed in stage 2.
@@ -282,6 +298,11 @@ $OCTVLA_POLICY_PYTHON -u scripts/merge_stage1_adapter.py --stage1 $stage1 \
         case "$arm" in
           rgb_cont)               arm_env=(TRAIN_VARIANT=rgb) ;;
           kv|kv_adaln|kv_tokens)  arm_env=(TRAIN_VARIANT=object CONDITIONING="$arm") ;;
+          # kv on a future/effect view with the future branch off: the matched
+          # no-effect control (same data, seed and budget as kv with the effect).
+          kv_nofuture)
+            run_arm=kv
+            arm_env=(TRAIN_VARIANT=object CONDITIONING=kv FUTURE_BRANCH=0) ;;
           # PFN-VLA: kv with the future branch scaled by the prior's confidence.
           kv_confgate)
             [ "$backbone" = groot ] || { echo "$arm is implemented on groot only" >&2; exit 2; }
@@ -342,6 +363,19 @@ $OCTVLA_POLICY_PYTHON -u scripts/merge_stage1_adapter.py --stage1 $stage1 \
             # before the step limit was echoed ran 600 steps, not 800.
             four)
               j=$(rollout "$cell-four" "$ckpt" "$dataset" four_object "${TIER[seen]}" "$dep" EVAL_STEPS_PER_OBJECT=200) ;;
+            # The effect oracle of a named rule (oracle_effect:<rule>), traced for
+            # diagnose_placement_loss.py: seen:<rule> (three objects), two:<rule>,
+            # four:<rule> (200 steps per object).
+            seen:*|two:*|four:*)
+              kind="${r%%:*}"; rule="${r#*:}"
+              case "$kind" in
+                seen) profile=three_object; budget=(EVAL_MAX_STEPS=600) ;;
+                two)  profile=two_object;   budget=(EVAL_STEPS_PER_OBJECT=200) ;;
+                four) profile=four_object;  budget=(EVAL_STEPS_PER_OBJECT=200) ;;
+              esac
+              j=$(rollout "$cell-$kind-$rule" "$ckpt" "$dataset" "$profile" "${TIER[seen]}" "$dep" \
+                "${budget[@]}" EVAL_ORACLE_RULE="$rule" \
+                EVAL_TRACE_DIR="$OCTVLA_OUTPUT_ROOT/traces/$cell-$kind-$rule") ;;
             *) echo "Unknown rollout $r" >&2; exit 2 ;;
           esac
           echo "    eval   $r -> $j"; jobs=$((jobs + 1))
