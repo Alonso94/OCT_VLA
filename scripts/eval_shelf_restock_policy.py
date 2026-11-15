@@ -77,7 +77,7 @@ def build_observation(
     obs, *, torch, np, control_space="cartesian", uint8_images=True,
     state_encoding="position", previous_joints=None, entity_max_entities=None,
     entity_noise=None, noise_rng=None, entity_visual=None, future_keyframe=False,
-    future=None, arm_targets=False,
+    future=None, arm_targets=False, task_text=None,
 ):
     """The policy's input batch, laid out exactly as the exporter wrote it.
 
@@ -170,7 +170,9 @@ def build_observation(
         batch["observation.arm_targets"] = torch.tensor([obs.arm_targets], dtype=torch.float32)
         batch["observation.arm_targets_mask"] = torch.tensor([obs.arm_targets_mask],
                                                              dtype=torch.float32)
-    batch["task"] = [obs.context.instruction]
+    # The training view's instruction when it replaced the recorded one (a mixed-rule
+    # corpus exports one rule-free string), else the scene's own.
+    batch["task"] = [task_text if task_text is not None else obs.context.instruction]
     return batch
 
 
@@ -188,6 +190,7 @@ def run_episode(
     gripper_encoding="measured_aperture",
     entity_max_entities=None, model_ids=None, entity_noise=None, entity_visual=None,
     future_keyframe="none", future_source=None, trace_path=None, arm_targets=False,
+    task_text=None,
 ) -> dict:
     # A policy-side source asks the server for nothing; the oracle is served.
     served = "none" if future_source is not None else future_keyframe
@@ -260,7 +263,7 @@ def run_episode(
             entity_noise=entity_noise, noise_rng=noise_rng, entity_visual=entity_visual,
             future_keyframe=future_keyframe != "none",
             future=future_source(observation) if future_source is not None else None,
-            arm_targets=arm_targets,
+            arm_targets=arm_targets, task_text=task_text,
         )
         if trace is not None:
             trace.add(observation, batch)
@@ -448,6 +451,11 @@ def main() -> int:
         "difference between a fixed-size directory and one that grows every time "
         "the grid is refreshed. Default names the file after the profile and seed.",
     )
+    parser.add_argument("--task-text", default=None,
+                        help="The instruction sent to the policy. Default: the training "
+                             "view's (split_manifest.json task_text) when it replaced the "
+                             "recorded one, else the scene's own. 'generic' is "
+                             "spec.GENERIC_INSTRUCTION.")
     parser.add_argument("--source-rho", type=float, default=None,
                         help="Inference-only override of a conditional-source checkpoint's "
                              "mixture weight (action_source_rho): 1 starts every chunk with "
@@ -583,6 +591,19 @@ def main() -> int:
         print(f"execution horizon: {base_n} -> {config.n_action_steps} "
               f"(temporal_ensemble_coeff={getattr(config, 'temporal_ensemble_coeff', None)})")
 
+    view_task = None
+    split_path = args.dataset_root / "split_manifest.json"
+    if split_path.exists():
+        view_task = json.loads(split_path.read_text()).get("task_text")
+    if args.task_text == "generic":
+        from oct_vla.tasks.shelf_restock.spec import GENERIC_INSTRUCTION
+
+        args.task_text = GENERIC_INSTRUCTION
+    task_text = args.task_text if args.task_text is not None else view_task
+    if task_text is not None:
+        print(f"task text: {task_text!r} "
+              f"({'override' if args.task_text is not None else 'from the training view'})")
+
     trained_rho = getattr(config, "action_source_rho", None)
     if args.source_rho is not None:
         if getattr(config, "action_source", "gaussian") == "gaussian":
@@ -650,14 +671,14 @@ def main() -> int:
                 support_pool=args.future_support_pool)
             print(f"future source: {provenance['prior']} ({provenance['kind']}), "
                   f"supports from {future_source.pool_path}", flush=True)
-        elif future_keyframe not in ("oracle", "oracle_wp", "oracle_wpr"):
+        elif future_keyframe not in ("oracle", "oracle_wp", "oracle_wpr", "oracle_effect"):
             raise SystemExit(f"unknown future_keyframe source {future_keyframe!r}")
         if args.future_support_pool is not None and future_keyframe != "pfn":
             raise SystemExit("--future-support-pool needs a learned (pfn) future source")
         if args.oracle_rule is not None:
-            if future_keyframe != "oracle":
-                raise SystemExit("--oracle-rule needs an oracle future source")
-            future_keyframe = f"oracle:{args.oracle_rule}"
+            if future_keyframe not in ("oracle", "oracle_effect"):
+                raise SystemExit("--oracle-rule needs an oracle or oracle_effect source")
+            future_keyframe = f"{future_keyframe}:{args.oracle_rule}"
     elif args.future_support_pool is not None or args.oracle_rule is not None:
         raise SystemExit("--future-support-pool / --oracle-rule need a future-branch checkpoint")
     if not entity_noise.is_clean and not conditioning:
@@ -706,6 +727,7 @@ def main() -> int:
                     entity_noise=entity_noise, entity_visual=entity_visual,
                     future_keyframe=future_keyframe, future_source=future_source,
                     arm_targets=getattr(config, "action_source", "gaussian") != "gaussian",
+                    task_text=task_text,
                     trace_path=(args.trace_dir / f"{profile}_seed{seed}.npz"
                                 if args.trace_dir is not None else None),
                 )
@@ -752,9 +774,11 @@ def main() -> int:
                 f"rho{args.source_rho:g}" if (
                     args.source_rho is not None and args.source_rho != trained_rho
                 ) else "",
+                "task" if task_text != view_task else "",
             ) if part
         ),
         "visual_shift": bool(args.visual_shift),
+        "task_text": {"sent": task_text, "training_view": view_task},
         "action_source": {"source": getattr(config, "action_source", "gaussian"),
                           "rho": getattr(config, "action_source_rho", None),
                           "trained_rho": trained_rho},

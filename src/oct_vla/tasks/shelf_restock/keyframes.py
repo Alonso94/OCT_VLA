@@ -44,11 +44,12 @@ from dataclasses import dataclass, replace
 import numpy as np
 
 from oct_vla.core.objects import ObjectScene
-from oct_vla.data.entity_tokens import _token
+from oct_vla.data.entity_tokens import ENTITY_TOKEN_DIM, _token
 from oct_vla.core.frames import Pose
 from oct_vla.data.future_keyframes import (
     FUTURE_DIM,
     FUTURE_DIM_WP,
+    FUTURE_ROWS,
     FUTURE_ROLES,
     FUTURE_ROLES_WP,
     WAYPOINT_REACHED_XY,
@@ -297,3 +298,49 @@ def episode_keyframes(episode, spec: ShelfRestockSpec,
         raise ValueError(f"seed {episode.seed}: the expert's planners failed on "
                          f"{oracle.unplannable_steps} recorded frames ({oracle.last_failure})")
     return np.stack([k for k, _ in out]), np.stack([m for _, m in out])
+
+
+class ShelfEffectOracle:
+    """The online object-effect oracle (contract A of ``data/effects.py``).
+
+    The keyframe oracle with ``anticipate_compaction``, projected to the goal-only effect
+    rows the effect-conditioned VLA was trained on: row 0 the target object at its
+    *current* pose, row 2 its planned placement, both as yaw-only tokens built exactly
+    as the hindsight labels are (``effects.yaw_token``); gripper row masked, event
+    empty. It switches targets where the hindsight label does (``RELEASE_DISTANCE``),
+    and its goal is the placement beside the neighbour's compacted pose, so offline
+    labels and online rows describe the same effect (checked per episode by
+    ``scripts/add_effects.py``)."""
+
+    def __init__(self, spec: ShelfRestockSpec) -> None:
+        self.inner = ShelfKeyframeOracle(spec, anticipate_compaction=True)
+
+    @property
+    def unplannable_steps(self) -> int:
+        return self.inner.unplannable_steps
+
+    @property
+    def last_failure(self) -> str:
+        return self.inner.last_failure
+
+    @property
+    def history(self):
+        return self.inner.history
+
+    def __call__(self, scene: ObjectScene, eef) -> tuple[np.ndarray, np.ndarray]:
+        from oct_vla.data.effects import yaw_token
+
+        _, keyframe_mask = self.inner(scene, eef)
+        rows = np.zeros((FUTURE_ROWS, FUTURE_DIM), np.float32)
+        mask = np.zeros(FUTURE_ROWS, bool)
+        target = None if self.inner.target is None else scene.get(self.inner.target)
+        if not keyframe_mask.any() or target is None or self.inner.plan is None:
+            return rows, mask
+        goal = self.inner.plan.object_pose
+        rows[0, :ENTITY_TOKEN_DIM] = yaw_token(target.pose.position, target.pose.orientation,
+                                               target.size_xyz)
+        rows[0, ENTITY_TOKEN_DIM + 0] = 1.0
+        rows[2, :ENTITY_TOKEN_DIM] = yaw_token(goal.position, goal.orientation, target.size_xyz)
+        rows[2, ENTITY_TOKEN_DIM + 2] = 1.0
+        mask[[0, 2]] = True
+        return rows, mask

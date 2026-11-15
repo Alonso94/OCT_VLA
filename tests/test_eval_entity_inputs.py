@@ -203,3 +203,27 @@ def test_rollout_trace_records_objects_grippers_and_fed_rows(tmp_path):
     assert saved["objects"].shape == (2, 2, 3) and saved["objects"][1, 1, 0] == pytest.approx(0.2)
     assert saved["gripper"][0].tolist() == pytest.approx([0.2, 0.8])
     assert saved["future"].shape == (2, 3, 24) and np.isnan(saved["future"][1]).all()
+
+
+def test_the_task_text_replaces_the_scenes_instruction_when_given():
+    """A mixed-rule checkpoint was trained on one rule-free instruction; the scene's
+    rule-specific text must not reach it, or the rule is readable from language."""
+    torch = pytest.importorskip("torch")
+    np = pytest.importorskip("numpy")
+    spec = importlib.util.spec_from_file_location(
+        "eval_task_policy", Path(__file__).parents[1] / "scripts/eval_shelf_restock_policy.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    from oct_vla.tasks.shelf_restock.spec import GENERIC_INSTRUCTION
+
+    pose = Pose((0.1, 0.2, 0.9), (0.0, 0.0, 0.0, 1.0))
+    scene = ObjectScene(0.0, (ObjectState("a", pose, (0.05, 0.04, 0.1), 1.0, 1.0),))
+    obs = SimpleNamespace(scene=scene, eef=EEFState(ArmState(pose, 0.2), ArmState(pose, 0.8)),
+                          supports=shelf_support_entities(DEFAULT_SPEC),
+                          context=TaskContext("Restock the leftmost object", "a"),
+                          frame=lambda name: SimpleNamespace(data=bytes(12), height=2, width=2))
+    assert module.build_observation(obs, torch=torch, np=np)["task"] == [
+        "Restock the leftmost object"]
+    batch = module.build_observation(obs, torch=torch, np=np, task_text=GENERIC_INSTRUCTION)
+    assert batch["task"] == [GENERIC_INSTRUCTION]

@@ -185,7 +185,7 @@ def segments(lines: dict[str, dict], contract: str) -> list[tuple[str, int, int]
     return out
 
 
-def _yaw_token(position, quaternion, size) -> tuple[float, ...]:
+def yaw_token(position, quaternion, size) -> tuple[float, ...]:
     """The object token as a goal-only prior writes it: its yaw read from the token's
     rotation exactly as ``prior.schema.from_entity_tokens`` does, then re-posed
     upright with that yaw (``prior.shelf_adapter._yaw_pose``)."""
@@ -210,9 +210,9 @@ def effect_rows(tracks: Tracks, lines: dict[str, dict], contract: str
     for tid, end, goal_frame in segs:
         j = tracks.ids.index(tid)
         size = tuple(tracks.sizes[j])
-        goal = _yaw_token(tracks.pos[goal_frame, j], tracks.quat[goal_frame, j], size)
+        goal = yaw_token(tracks.pos[goal_frame, j], tracks.quat[goal_frame, j], size)
         for t in range(start, end):
-            rows[t, 0, :ENTITY_TOKEN_DIM] = _yaw_token(tracks.pos[t, j], tracks.quat[t, j],
+            rows[t, 0, :ENTITY_TOKEN_DIM] = yaw_token(tracks.pos[t, j], tracks.quat[t, j],
                                                        size)
             rows[t, 0, ENTITY_TOKEN_DIM + 0] = 1.0
             rows[t, 2, :ENTITY_TOKEN_DIM] = goal

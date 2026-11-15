@@ -41,7 +41,7 @@ from oct_vla.tasks.shelf_restock.manager import (
 )
 from oct_vla.tasks.shelf_restock.events import TransferEvents
 from oct_vla.tasks.shelf_restock.arm_targets import ShelfArmTargetOracle
-from oct_vla.tasks.shelf_restock.keyframes import ShelfKeyframeOracle
+from oct_vla.tasks.shelf_restock.keyframes import ShelfEffectOracle, ShelfKeyframeOracle
 from oct_vla.tasks.shelf_restock.spec import (
     DEFAULT_SPEC,
     RULE_INSTRUCTIONS,
@@ -56,8 +56,11 @@ from oct_vla.tasks.shelf_restock.spec import (
 #: Only the keyframe changes; success, events and the task context stay the scene's.
 #: "oracle_wp" is the oracle with its fourth, approach-waypoint row (4 x 25).
 #: "oracle_wpr" adds the post-release retreat phase.
-FUTURE_KEYFRAME_SOURCES = ("none", "oracle", "oracle_wp", "oracle_wpr",
-                           *(f"oracle:{r}" for r in RULE_INSTRUCTIONS))
+#: "oracle_effect" is the goal-only object-effect oracle (keyframes.ShelfEffectOracle,
+#: contract A of data/effects.py), and "oracle_effect:<rule>" serves another rule's.
+FUTURE_KEYFRAME_SOURCES = ("none", "oracle", "oracle_wp", "oracle_wpr", "oracle_effect",
+                           *(f"oracle:{r}" for r in RULE_INSTRUCTIONS),
+                           *(f"oracle_effect:{r}" for r in RULE_INSTRUCTIONS))
 
 # Measured stationary EEF poses in the demonstrations move by a few tenths of
 # a micrometre due to physics. Sending those numerical remnants through IK is
@@ -459,6 +462,10 @@ class ShelfRestockEvalServer:
                 if future_keyframe == "oracle_wp"
                 else ShelfKeyframeOracle(self._spec, waypoints=True, retreat=True)
                 if future_keyframe == "oracle_wpr"
+                else ShelfEffectOracle(self._spec) if future_keyframe == "oracle_effect"
+                else ShelfEffectOracle(spec_for_rule(future_keyframe.split(":", 1)[1],
+                                                     self._spec))
+                if future_keyframe.startswith("oracle_effect:")
                 else ShelfKeyframeOracle(spec_for_rule(future_keyframe.split(":", 1)[1],
                                                        self._spec))),
             arm_target_oracle=(ShelfArmTargetOracle(self._spec) if arm_targets else None),
