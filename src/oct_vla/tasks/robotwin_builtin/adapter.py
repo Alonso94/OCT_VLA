@@ -130,7 +130,37 @@ PLACE_CONTAINER_PLATE = BuiltinTaskSpec(
     ),
 )
 
-SPECS: dict[str, BuiltinTaskSpec] = {PLACE_CONTAINER_PLATE.task_name: PLACE_CONTAINER_PLATE}
+#: `handover_mic`: one arm grasps the microphone and hands it to the other at a fixed
+#: midpoint (`handover_middle_pose`). The grasping arm is the one on the microphone's
+#: side, so which arm does what is decided by the scene: the coordinated case the
+#: paired (left, right) targets exist for.
+HANDOVER_MIC = BuiltinTaskSpec(
+    task_name="handover_mic",
+    instruction="Hand the microphone over to the other arm.",
+    target_track_id="microphone",
+    objects=(
+        ObjectBinding("microphone", "microphone", modelname="018_microphone",
+                      model_id="microphone_id"),
+    ),
+)
+
+#: `place_cans_plasticbox`: two cans, one each side, into one plastic box; both arms
+#: act. The target is the first can; the second is a peer, not a distractor.
+PLACE_CANS_PLASTICBOX = BuiltinTaskSpec(
+    task_name="place_cans_plasticbox",
+    instruction="Place both cans into the plastic box.",
+    target_track_id="can_1",
+    objects=(
+        ObjectBinding("object1", "can_1", modelname="071_can", model_id="object1_id"),
+        ObjectBinding("object2", "can_2", modelname="071_can", model_id="object2_id"),
+        ObjectBinding("plasticbox", "plasticbox", modelname="062_plasticbox",
+                      model_id="plasticbox_id"),
+    ),
+)
+
+SPECS: dict[str, BuiltinTaskSpec] = {
+    spec.task_name: spec for spec in (PLACE_CONTAINER_PLATE, HANDOVER_MIC, PLACE_CANS_PLASTICBOX)
+}
 
 
 def spec_for(task_name: str) -> BuiltinTaskSpec:

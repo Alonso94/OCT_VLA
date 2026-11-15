@@ -297,3 +297,94 @@ other partners.
 
 No claims. Phase 1 establishes a verified data contract only. It says nothing about
 whether the time-row formulation learns better, and nothing about any robot behaviour.
+
+## 12. Proof-of-concept screens (2026-11-14/15; one seed each, go/no-go only)
+
+Every number below is from `$HPCVAULT/octvla-prior/results/time_row_{compaction_v2,anchor_v1,anchor_v2}.json`
+and `$OCTVLA_OUTPUT_ROOT/eval/{G5F,GWF}-kv-s1000-*.json`. One seed: none of it is a result.
+
+### 12.1 Object-relative head [verified, one seed]
+
+`PairedHead(anchor="object")`: each arm's position is a residual from an anchor named by its
+next event (pointed object for grasp/regrasp/contact/push, predicted goal for place, own
+position for hold/release; teacher-forced in training, argmax at inference). Acting-arm
+median error (cm), gripper anchor → object anchor, 20k steps:
+
+| | train | composition | shelf family |
+|---|---|---|---|
+| A1 (v1) | 3.10 → 1.10 | 4.15 → 3.24 | 2.27 → 0.84 |
+| B1 v1 r1 | 4.72 → 1.23 | 5.00 → 3.14 | 3.87 → 0.88 |
+| B1 v2 r1 | 5.05 → 1.54 | 4.70 → 4.24 | 3.83 → 0.98 |
+| P1 (reference) | 0.21 | 2.10 | 0.13 |
+
+Discrete metrics unchanged (±0.01). **Interpretation, corrected:** P1 already anchors its
+gripper target on the predicted object pose (`model.py`, `grip_pos = obj + g`), so this
+screen largely rediscovered a geometric head v1 had. It is *not* evidence that the
+time-row encoder is better than v1's. Composition improves least (B1 v2: 4.70 → 4.24).
+
+### 12.2 Compaction inference [verified offline, one seed]
+
+B1-v2-r1-s0; `compact_contrast` = both partners of conflict pairs whose programs differ
+only in `compact` right: train 0.82 (66 pairs), composition 0.83 (104), shelf family 0.85
+(284); with shuffled support 0.02 / 0.40 / 0.05. False push rate ≤ 0.01. The prior reads
+*whether to compact* from the supports. This is label inference, not executed pushing:
+the shelf's real targets skip the push.
+
+### 12.3 Approach-waypoint oracle, closed loop [verified, one seed: no-go as designed]
+
+A static waypoint (event pose + clearance) equalled event + 10 cm on 98 % of frames, so it
+was replaced by a phase-dependent one: masked once the mover reaches it (the recorded
+expert passes within ~1 cm on 23 of 24 approaches). GWF vs G5F (s1000, 20 scenes each):
+seen 8 vs 13 successes, held-out 1 vs 1, four objects 1 vs 0. The policy does reach the
+waypoint (row masked on 30-53 % of keyframe steps in rollouts), but mover-caused losses
+did not fall (four objects 10 vs 10; held-out 9 vs 5), and most are with an empty
+gripper, i.e. after release: the approach waypoint addresses the wrong phase.
+
+### 12.4 Running (submitted 2026-11-15)
+
+- **Retreat-aware oracle** (`oracle_wpr`, GVF-kv-s1000): after release, the gripper row is
+  straight above the place pose and the next object is withheld until the mover has
+  lifted. **Caveat before results:** the recorded expert lifts 10 cm in ~4 frames, so the
+  observable retreat phase covers 341 of 22 204 training frames (~2 per release). A null
+  result would say knock-overs are the policy drifting from the expert's retreat
+  (a distribution-shift problem for the data, not missing information in the interface).
+- **Soft pointer-copy anchor** (B1-v2-r1-soft-s0, 20k) against the hard anchor, with
+  acting-arm error split by pointer correctness and the share of blended anchors.
+- **Hard anchor at 40k** (B1-v2-r1-obj-40k-s0): does budget explain the gap to P1, and does
+  composition move with train?
+
+## 13. The low-data test that would support the PFN claim (design; not started)
+
+G1c already showed scratch matches pretraining at 2 demos per rule on the familiar shelf
+rules, so repeating it tests nothing. The claim needs a capability the real calibration
+data lacks but the synthetic prior covers, inferred from supports at test time:
+
+| Evaluation | Isolates |
+|---|---|
+| familiar rules, 1/2/4/8 demos per rule | data efficiency in-distribution (expected null) |
+| held-out counts and geometry | generalisation beyond the calibration distribution |
+| **held-out rule or mechanism, supports at inference** | transfer of synthetic knowledge through in-context inference |
+
+Candidate held-out capability on the shelf: calibrate on leftmost demos only, then give
+rightmost (or compact-vs-not) supports at test time. Scratch, never having seen a
+rightmost row, can only copy leftmost; a pretrained prior has seen rule variation
+synthetically. Controls: matched adaptation budget, and replay vs no replay (pretrained
+stage B mixes synthetic items; scratch does not). A negative result on familiar rules
+is a limitation, not a refutation.
+
+## 14. RoboTwin pilot (2026-11-15) [verified: bindings and oracle; no policy yet]
+
+- `tasks/robotwin_builtin/adapter.py` now binds `handover_mic` and `place_cans_plasticbox`
+  beside `place_container_plate`. A 10-seed probe of each on the rebuilt runtime collected
+  8/10 seeds of every task; every loss is RoboTwin's own oracle (no grasp pose 2x, no
+  success 1-2x, a planning failure 1x, caught by the `plan_success` guard).
+- Built-ins record one phase, so events must come from observation. Each arm's measured
+  aperture gives them cleanly (4 seeds per task, open 0.83, closed 0.23-0.63):
+  - `handover_mic`: the arm on the mic's side closes at frame 28; the other closes at
+    ~120 (regrasp), the giver opens at ~145 (release). The time-row roles exactly.
+  - `place_cans_plasticbox`: **both arms close at the same frame** (23-25), then release
+    in turn (73, ~118). Concurrent events never occur in the v1/v2 synthetic grammar
+    (rev. 6.1's mechanism B); the paired targets represent them, the generator does not.
+- Next: an event extractor from per-arm aperture (with the object nearest each closing
+  arm), a paired-target oracle on recorded episodes, and a closed-loop evaluator for
+  built-ins (the server serves only shelf restock today).
