@@ -154,3 +154,72 @@ def test_both_layouts_are_accepted_and_others_refused():
     kinematic_proposal(tokens, emask, kf4, m4, speed=0.3)
     with pytest.raises(ValueError):
         kinematic_proposal(tokens, emask, kf4[..., :23], m4, speed=0.3)
+
+
+def _vias(points, side=0, V=6):
+    """points: [(xyz, quat, grip)] for one arm -> [1, 2, V, 8] and mask."""
+    t = torch.zeros(1, 2, V, 8, dtype=torch.float64)
+    m = torch.zeros(1, 2, V, dtype=torch.bool)
+    for i, (xyz, q, g) in enumerate(points):
+        t[0, side, i] = torch.tensor([*xyz, *q, g], dtype=torch.float64)
+        m[0, side, i] = True
+    return t, m
+
+
+def test_via_points_are_visited_in_order_and_grippers_switch_on_arrival():
+    from oct_vla.policies.conditioning.action_source import via_point_proposal
+
+    tokens, emask = _scene()
+    t, m = _vias([((-0.3, -0.1, 1.3), DOWN, 1.0), ((0.0, 0.1, 1.3), DOWN, 1.0),
+                  ((0.0, 0.1, 1.05), DOWN, 0.0)])
+    chunk, valid = via_point_proposal(tokens, emask, t, m, speed=0.6)
+    left = chunk[0, :, :8]
+    assert valid.all()
+    np.testing.assert_allclose(left[-1, :3], (0.0, 0.1, 1.05), atol=1e-9)
+    # Goes up first (x unchanged), then across, then down; closes only at the end.
+    first_x_move = int(torch.nonzero(left[:, 0] > -0.3 + 1e-6)[0])
+    assert (left[:first_x_move, 2] > 1.2).all()  # rising, x fixed, before going across
+    corner = torch.tensor([-0.3, -0.1, 1.3], dtype=torch.float64)
+    assert torch.linalg.norm(left[:, :3] - corner, dim=-1).min() <= 0.6 / 15 + 1e-9
+    grip = left[:, 7]
+    assert grip[0] == 1.0 and grip[-1] == 0.0 and int((torch.diff(grip) != 0).sum()) == 1
+    assert torch.allclose(chunk[0, :, 8:], chunk[0, :1, 8:].expand(40, 8))  # right holds
+
+
+def test_a_via_point_at_the_current_pose_closes_in_place_at_once():
+    from oct_vla.policies.conditioning.action_source import via_point_proposal
+
+    tokens, emask = _scene()
+    t, m = _vias([((0.4, -0.2, 1.2), DOWN, 0.0), ((0.4, 0.0, 1.0), DOWN, 0.0)], side=1)
+    chunk, _ = via_point_proposal(tokens, emask, t, m, speed=0.3)
+    assert chunk[0, 0, 15] == 0.0  # closed from the first step
+    moved = np.linalg.norm(chunk[0, 0, 8:11].numpy() - (0.4, -0.2, 1.2))
+    assert moved == pytest.approx(0.3 / 15, abs=1e-9)  # then on toward the next point
+
+
+def test_via_masks_must_be_prefixes_and_none_means_hold():
+    from oct_vla.policies.conditioning.action_source import via_point_proposal
+
+    tokens, emask = _scene()
+    t, m = _vias([((0, 0, 1.2), DOWN, 1.0), ((0, 0.1, 1.2), DOWN, 1.0)])
+    m[0, 0, 0] = False
+    with pytest.raises(ValueError, match="prefix"):
+        via_point_proposal(tokens, emask, t, m, speed=0.3)
+    chunk, valid = via_point_proposal(tokens, emask, t, torch.zeros_like(m), speed=0.3)
+    assert not valid.any() and torch.allclose(chunk, chunk[:, :1].expand_as(chunk))
+
+
+def test_dwell_holds_the_arm_after_a_gripper_switch_and_speeds_are_per_arm():
+    from oct_vla.policies.conditioning.action_source import via_point_proposal
+
+    tokens, emask = _scene()
+    t, m = _vias([((-0.3, -0.1, 1.1), DOWN, 0.0), ((-0.3, -0.1, 1.3), DOWN, 0.0)])
+    chunk, _ = via_point_proposal(tokens, emask, t, m, speed=(0.3, 0.1), dwell=4)
+    z = chunk[0, :, 2]
+    arrive = int(torch.nonzero((z - 1.1).abs() < 1e-9)[0])
+    assert chunk[0, arrive, 7] == 0.0  # closed on arrival
+    assert torch.allclose(z[arrive:arrive + 5], torch.full((5,), 1.1, dtype=torch.float64))
+    assert z[arrive + 5] > 1.1  # then moves on
+    t2, m2 = _vias([((0.4, -0.2, 1.0), DOWN, 1.0)], side=1)
+    slow, _ = via_point_proposal(tokens, emask, t2, m2, speed=(0.3, 0.1))
+    assert (slow[0, 0, 10] - 1.2).abs() == pytest.approx(0.1 / 15, abs=1e-9)

@@ -227,3 +227,72 @@ def normalize_actions(raw: torch.Tensor, lo: torch.Tensor, hi: torch.Tensor) -> 
     out = torch.where(span == 0, torch.zeros_like(raw),
                       2 * (raw - lo) / torch.where(span == 0, torch.ones_like(span), span) - 1)
     return out.clamp(-1, 1)
+
+
+def via_point_proposal(tokens: torch.Tensor, entity_mask: torch.Tensor,
+                       targets: torch.Tensor, target_mask: torch.Tensor, *,
+                       speed: float | tuple[float, float], dwell: int = 0,
+                       horizon: int = HORIZON, dt: float = DT) -> tuple[torch.Tensor, torch.Tensor]:
+    """Raw eeabs chunks [B, horizon, 16] from per-arm via-points, and `valid` [B].
+
+    targets [B, 2, V, 8] (left, right; position, xyzw quaternion, gripper command on
+    arrival) with a prefix mask [B, 2, V] (tasks/shelf_restock/arm_targets.py). Each
+    arm moves through its own via-points in order at constant speed (`speed`, or one
+    per arm), its rotation slerped within each segment toward the via-point's. Where a
+    via-point changes the gripper command, the arm switches on arrival and then waits
+    `dwell` steps (the expert's close/release takes ~4 frames). A zero-length segment
+    (a via-point at the current pose) is reached at once, which is how "close in place"
+    is expressed. An arm with no via-points holds. `valid` is False when neither arm
+    has one."""
+    speeds = (speed, speed) if isinstance(speed, (int, float)) else tuple(speed)
+    if min(speeds) <= 0 or dwell < 0:
+        raise ValueError("speed must be positive and dwell non-negative")
+    B, A, V, C = targets.shape
+    if A != 2 or C != 8:
+        raise ValueError(f"via-points must be [B, 2, V, 8]; got {tuple(targets.shape)}")
+    tmask = target_mask.bool()
+    if bool((tmask[..., 1:] & ~tmask[..., :-1]).any()):
+        raise ValueError("via-point masks must be prefixes (no gap before a valid point)")
+    current = gripper_states(tokens, entity_mask)
+    chunk = torch.cat([current["left"], current["right"]], -1)[:, None].repeat(1, horizon, 1)
+    valid = tmask.any(-1).any(-1)
+    dev, dtype = targets.device, targets.dtype
+    k = torch.arange(1, horizon + 1, device=dev, dtype=dtype)
+    for a, side in enumerate(("left", "right")):
+        cols = ARM_COLUMNS[side]
+        n = tmask[:, a].sum(-1)
+        if not bool((n > 0).any()):
+            continue
+        cur = current[side]
+        last = (n - 1).clamp_min(0)
+        idx = torch.minimum(torch.arange(V, device=dev)[None], last[:, None])
+        pts = targets[:, a].gather(1, idx[..., None].expand(B, V, 8))
+        # Gripper command before each via-point (the current one, then each previous).
+        before = torch.cat([cur[:, None, 7], pts[:, :-1, 7]], 1)
+        switch = (pts[..., 7] != before) & tmask[:, a]
+        # Segments in time: travel to via k, then a dwell at it (zero motion).
+        travel = (pts[..., :3] - torch.cat([cur[:, None, :3], pts[:, :-1, :3]], 1)).norm(dim=-1)
+        rate = speeds[a] * dt  # metres per step
+        pause = switch.to(dtype) * dwell * rate  # in metres-equivalent of time
+        lengths = torch.stack([travel, pause], -1).reshape(B, 2 * V)
+        ends = torch.cat([cur[:, None, :7], pts[..., :7]], 1)  # [B, V+1, 7]
+        node_from = torch.stack([ends[:, :-1], ends[:, 1:]], 2).reshape(B, 2 * V, 7)
+        node_to = torch.stack([ends[:, 1:], ends[:, 1:]], 2).reshape(B, 2 * V, 7)
+        cum = torch.cat([torch.zeros(B, 1, dtype=dtype, device=dev), lengths.cumsum(-1)], -1)
+        s = torch.minimum(rate * k[None], cum[:, -1:])
+        j = torch.searchsorted(cum[:, 1:].contiguous(), s.contiguous()).clamp(max=2 * V - 1)
+        start, length = cum.gather(1, j), lengths.gather(1, j)
+        f = torch.where(length < 1e-9, torch.ones_like(s), ((s - start) / length.clamp_min(1e-9)))
+        f = f.clamp(0, 1)
+        p0 = node_from.gather(1, j[..., None].expand(B, horizon, 7))
+        p1 = node_to.gather(1, j[..., None].expand(B, horizon, 7))
+        pos = p0[..., :3] + f[..., None] * (p1[..., :3] - p0[..., :3])
+        quat = slerp(p0[..., 3:7], p1[..., 3:7], f)
+        # Gripper: the command of the last via-point arrived at (end of its travel).
+        arrive = cum[:, 1::2]  # [B, V]: end of each travel segment
+        n_reached = (arrive[:, None, :] <= s[..., None] + 1e-9).sum(-1)
+        cmd = pts[..., 7].gather(1, (n_reached - 1).clamp_min(0))
+        grip = torch.where(n_reached > 0, cmd, cur[:, None, 7].expand(B, horizon))
+        moved = torch.cat([pos, quat, grip[..., None]], -1)
+        chunk[:, :, cols] = torch.where((n > 0)[:, None, None], moved, chunk[:, :, cols])
+    return chunk, valid
