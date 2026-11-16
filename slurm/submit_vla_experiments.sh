@@ -355,8 +355,10 @@ $OCTVLA_POLICY_PYTHON -u scripts/merge_stage1_adapter.py --stage1 $stage1 \
         ckpt="$OCTVLA_OUTPUT_ROOT/$run2/checkpoints/last/pretrained_model"
         for r in $ROLLOUTS; do
           case "$r" in
+            # Traced, for score_compaction.py and diagnose_placement_loss.py.
             seen|heldout|novel)
-              j=$(rollout "$cell-$r" "$ckpt" "$dataset" three_object "${TIER[$r]}" "$dep" EVAL_MAX_STEPS=600) ;;
+              j=$(rollout "$cell-$r" "$ckpt" "$dataset" three_object "${TIER[$r]}" "$dep" EVAL_MAX_STEPS=600 \
+                    EVAL_TRACE_DIR="$OCTVLA_OUTPUT_ROOT/traces/$cell-$r") ;;
             count)
               j=$(rollout "$cell-count" "$ckpt" "$dataset" two_object,four_object "${TIER[seen]}" "$dep" EVAL_STEPS_PER_OBJECT=200) ;;
             # Four objects alone: re-runs a count job's four-object half, which
