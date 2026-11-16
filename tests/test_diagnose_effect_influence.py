@@ -60,3 +60,13 @@ def test_heads_to_picks_the_object_the_path_closes_on():
     toward_b = np.linspace(eef, b + (0, 0, 0.3), 25)
     assert D.heads_to(toward_b, eef, a, b) == 1
     assert D.heads_to(toward_b[::-1] * 0 + np.linspace(eef, a, 25), eef, a, b) == 0
+
+
+def test_perturbed_moves_only_the_goal_along_the_row():
+    tokens, _ = _tokens()
+    z, _ = _z(tokens, 1)
+    for sign in (1.0, -1.0):
+        out = D.perturbed(z, sign)
+        np.testing.assert_array_equal(out[0], z[0])
+        np.testing.assert_allclose(out[2, 0] - z[2, 0], sign * D.PERTURB)
+        np.testing.assert_array_equal(out[2, 1:], z[2, 1:])

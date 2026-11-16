@@ -21,6 +21,11 @@ Episodes recorded before ``initial_x`` existed are counted and skipped, never gu
 ``--served`` scores each file against the rule its effect source served instead
 (``served``: S_pick over all scenes, S_order, S_joint = success in that order).
 
+``--paired A.json B.json`` scores counterfactual control: the same checkpoint on the
+same scenes, served two different rules. ``S_paired`` counts a scene only if the first
+object lifted is the served rule's under *both* (a scene with no lift is a miss); also
+reported, how often the swap changes the first pick at all.
+
     score_pick_order.py $OCTVLA_OUTPUT_ROOT/eval/G5F-kv-s100?-seen*.json
 """
 
@@ -99,6 +104,36 @@ def served(episodes: list[dict], rule: str) -> dict:
                        "joint": joint}}
 
 
+def paired(a: dict, b: dict, rule_a: str | None = None, rule_b: str | None = None) -> dict:
+    """Two reports of one checkpoint on the same scenes, each served its own rule."""
+    rule_a = rule_a or served_rule(a)
+    rule_b = rule_b or served_rule(b)
+    if rule_a is None or rule_b is None or rule_a == rule_b:
+        raise ValueError(f"paired scoring needs two different served rules, got {rule_a}, {rule_b}")
+    if a.get("checkpoint") != b.get("checkpoint"):
+        raise ValueError("paired scoring compares one checkpoint under two effects")
+    ea = {e["seed"]: e for e in a["episodes"] if e.get("initial_x") and e.get("events")}
+    eb = {e["seed"]: e for e in b["episodes"] if e.get("initial_x") and e.get("events")}
+    if set(ea) != set(eb):
+        raise ValueError(f"the two reports cover different scenes: {sorted(set(ea) ^ set(eb))}")
+    both = changed = 0
+    for seed, x in ea.items():
+        y = eb[seed]
+        if x["initial_x"] != y["initial_x"]:
+            raise ValueError(f"scene {seed} differs between the two reports")
+        gx, gy = lift_order(x["events"]), lift_order(y["events"])
+        ok_x = bool(gx) and gx[0] == rule_order(x["initial_x"], rule_a)[0]
+        ok_y = bool(gy) and gy[0] == rule_order(y["initial_x"], rule_b)[0]
+        both += ok_x and ok_y
+        changed += bool(gx) and bool(gy) and gx[0] != gy[0]
+    n = len(ea)
+    return {"rules": [rule_a, rule_b], "scenes": n,
+            "S_paired": both / n if n else None,
+            "first_pick_changed": changed / n if n else None,
+            "a": served(a["episodes"], rule_a), "b": served(b["episodes"], rule_b),
+            "counts": {"paired": both, "changed": changed}}
+
+
 def served_rule(report: dict) -> str | None:
     """The rule an evaluation served: --oracle-rule, else None (the scene's own)."""
     return (report.get("future_intervention") or {}).get("oracle_rule")
@@ -111,7 +146,25 @@ def main() -> int:
     ap.add_argument("--served", nargs="?", const="auto", default=None,
                     help="Score against the served rule (S_pick, S_order, S_joint): the "
                          "file's --oracle-rule with 'auto', or the rule named here")
+    ap.add_argument("--paired", action="store_true",
+                    help="Two files: one checkpoint served two rules on the same scenes")
     args = ap.parse_args()
+    if args.paired:
+        if len(args.files) != 2:
+            raise SystemExit("--paired takes exactly two files")
+        a, b = (json.loads(p.read_text()) for p in args.files)
+        r = paired(a, b)
+        if args.json:
+            print(json.dumps(r, indent=1))
+            return 0
+        fmt = lambda v: "   -" if v is None else f"{v:.2f}"  # noqa: E731
+        print(f"{r['rules'][0]} vs {r['rules'][1]} on {r['scenes']} scenes: "
+              f"S_paired {fmt(r['S_paired'])}, first pick changed {fmt(r['first_pick_changed'])}")
+        for side in ("a", "b"):
+            x = r[side]
+            print(f"  {x['rule']:>9s}: lift {fmt(x['lift_rate'])} S_pick {fmt(x['S_pick'])} "
+                  f"S_task {fmt(x['S_task'])} S_order {fmt(x['S_order'])} S_joint {fmt(x['S_joint'])}")
+        return 0
     if args.served is not None:
         rows = {}
         for path in args.files:

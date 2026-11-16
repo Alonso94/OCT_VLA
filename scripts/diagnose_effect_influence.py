@@ -5,9 +5,17 @@ On recorded frames of the effect view, holding the image, proprioception and obj
 state fixed, it predicts the action chunk under different effects Z, all with the same
 GR00T draw:
 
-- ``true``: the frame's hindsight effect;
-- ``alt``: another valid effect, the same placement goal but a *different* object still
-  waiting on the lower shelf (what another rule would have named next);
+- ``true``: the frame's hindsight effect (the goal the object actually came to rest at);
+- ``oracle``: the online oracle's effect for the episode's own rule at that frame (the
+  same object, the goal it *plans*): what evaluation serves. Training saw achieved
+  goals, evaluation serves planned ones; this measures that gap's effect;
+- ``perturb``: the true effect with its goal moved ``PERTURB`` along the shelf row
+  (alternating sign): is the policy over-sensitive to centimetre-scale goal changes?
+- ``other_rule``: the other rule's oracle effect at that frame: a *feasible* alternative
+  object with its own planned goal (frames where it names the same object are excluded
+  from its follow rate);
+- ``alt``: the same goal, a different object still on the lower shelf (the nearest);
+  a pure object swap, possibly an implausible goal for that object;
 - ``shuffled``: the effect of a frame from a different episode;
 - ``none``: no effect (all rows masked).
 
@@ -19,8 +27,8 @@ under ``true`` and under ``alt``. A causal effect branch follows Z under both: i
 for the true object with the true Z and for the other one with the alternative.
 A branch that heads for the same object under both ignores Z (rule-ambiguous kv would).
 
-Also reported: the chunk change between variants (RMS, normalised action space), and
-the share of frames where the true-Z chunk heads to the true object at all.
+Also reported: the chunk change between variants and each variant's error against the
+recorded expert chunk (RMS over the executed steps, normalised [-1, 1] action space).
 
     diagnose_effect_influence.py --checkpoint $RUN/checkpoints/last/pretrained_model \\
         --dataset-root $OCTVLA_DATASET_ROOT/three_object_v4lr_eeabs_effA --split val \\
@@ -43,6 +51,8 @@ LOWER_Z = 0.85       # m: an object centre below this rests on the lower shelf
 HOLD_DIST = 0.20     # m: an object this close to the mover counts as held / engaged
 MOVABLE = 13         # entity token column of the "movable" type one-hot
 LEFT = slice(0, 3)   # the mover's (left arm's) position columns of the eeabs action
+PERTURB = 0.015      # m along the shelf row (x): the goal perturbation
+RULES = ("leftmost", "rightmost")
 
 
 def movables(tokens, mask):
@@ -89,6 +99,34 @@ def alt_rows(z_rows, tokens, entity):
     return out
 
 
+def oracle_rows(source_path: str, rule: str) -> dict[str, list]:
+    """Per frame, each rule's online effect (``ShelfEffectOracle``) over the recording:
+    rule -> [(rows [3, 24], mask [3], target), ...]."""
+    import gc
+
+    from oct_vla.data.store import read_episode
+    from oct_vla.tasks.shelf_restock.keyframes import ShelfEffectOracle
+    from oct_vla.tasks.shelf_restock.spec import spec_for_rule
+
+    episode = read_episode(source_path)
+    if episode.metadata["rule"] != rule:
+        raise SystemExit(f"{source_path} is rule {episode.metadata['rule']}, expected {rule}")
+    out = {}
+    for r in RULES:
+        oracle = ShelfEffectOracle(spec_for_rule(r))
+        trace = [oracle(s.scene, s.observation.eef) for s in episode.samples]
+        out[r] = [(rows, mask, t) for (rows, mask), (_, t) in zip(trace, oracle.history)]
+    del episode
+    gc.collect()
+    return out
+
+
+def perturbed(z_rows, sign: float):
+    out = z_rows.copy()
+    out[2, 0] += sign * PERTURB
+    return out
+
+
 def heads_to(path, eef, a, b):
     """Which of two object positions the path closes on more, horizontally: 0 or 1."""
     gain = [np.linalg.norm(eef[:2] - o[:2]) - np.linalg.norm(path[-1, :2] - o[:2])
@@ -129,7 +167,10 @@ def main() -> int:
     info = json.loads((args.dataset_root / "meta" / "info.json").read_text())
     if not info.get("future_keyframe", {}).get("goal_only"):
         raise SystemExit(f"{args.dataset_root} is not an effect view")
-    dataset = LeRobotDataset(repo_id, root=args.dataset_root)
+    dataset = LeRobotDataset(repo_id, root=args.dataset_root, delta_timestamps={
+        "action": [i / meta.fps for i in range(config.chunk_size)]})
+    manifest = json.loads((args.dataset_root / "octvla_episode_manifest.json").read_text())
+    by_index = {int(e["lerobot_episode_index"]): e for e in manifest["episodes"]}
     policy = make_policy(cfg=config, ds_meta=meta, rename_map=rename_map)
     policy.eval()
     preprocessor, _ = make_pre_post_processors(
@@ -143,11 +184,12 @@ def main() -> int:
     first, last = split["episodes"]
     hf = dataset.hf_dataset
     ep = np.asarray(hf["episode_index"])
+    frame = np.asarray(hf["frame_index"])
     candidates = np.flatnonzero((ep >= first) & (ep <= last))
     rng = np.random.default_rng(args.seed)
     picked = rng.choice(candidates, size=min(args.frames, len(candidates)), replace=False)
 
-    cases = []
+    cases, replays = [], {}
     for i in np.sort(picked):
         item = hf[int(i)]
         tokens = np.asarray(item["observation.entity_tokens"], float)
@@ -159,9 +201,27 @@ def main() -> int:
         if case is None:
             continue
         true_k, alt_k, idx, pos = case
-        cases.append({"i": int(i), "episode": int(ep[i]), "z": z, "zm": zm, "eef": eef,
+        e = int(ep[i])
+        rule = by_index[e]["metadata"]["rule"]
+        if e not in replays:
+            replays[e] = oracle_rows(by_index[e]["source_path"], rule)
+        replay = replays[e]
+        other = [r for r in RULES if r != rule][0]
+        o_rows, o_mask, _ = replay[rule][int(frame[i])]
+        x_rows, x_mask, x_target = replay[other][int(frame[i])]
+        if not (o_mask[0] and o_mask[2]) or np.linalg.norm(o_rows[0, :3] - z[0, :3]) > 1e-3:
+            continue  # the online oracle names another object here (<0.3 % of frames)
+        other_k = None
+        if x_target is not None and x_mask[0] and x_mask[2]:
+            k = int(np.argmin(np.linalg.norm(pos - x_rows[0, :3], axis=1)))
+            other_k = k if k != true_k else None
+        cases.append({"i": int(i), "episode": e, "z": z, "zm": zm, "eef": eef,
                       "true": pos[true_k], "alt": pos[alt_k],
-                      "alt_rows": alt_rows(z, tokens, idx[alt_k])})
+                      "alt_rows": alt_rows(z, tokens, idx[alt_k]),
+                      "oracle_rows": o_rows.astype(np.float32),
+                      "perturb_rows": perturbed(z, 1.0 if len(cases) % 2 else -1.0),
+                      "other_rows": x_rows.astype(np.float32),
+                      "other": None if other_k is None else pos[other_k]})
     if not cases:
         raise SystemExit("no approach frame with an alternative object")
     # A shuffled effect: the true rows of a case from another episode.
@@ -171,11 +231,14 @@ def main() -> int:
     print(f"{len(cases)} approach frames from {len({c['episode'] for c in cases})} "
           f"{args.split} episodes", flush=True)
 
+    key = {"true": "z", "alt": "alt_rows", "shuffled": "shuffled", "none": "z",
+           "oracle": "oracle_rows", "perturb": "perturb_rows", "other_rule": "other_rows"}
+
     def predict(items, variant):
         raw = torch.utils.data.default_collate([dataset[c["i"]] for c in items])
-        rows = np.stack([c["z"] if variant == "true" else c["alt_rows"] if variant == "alt"
-                         else c["shuffled"] if variant == "shuffled" else c["z"]
-                         for c in items])
+        expert = (2 * (raw["action"].float().numpy()[..., :16] - lo) / (hi - lo) - 1)
+        pad = raw.get("action_is_pad")
+        rows = np.stack([c[key[variant]] for c in items])
         mask = np.stack([c["zm"] for c in items])
         if variant == "none":
             mask = np.zeros_like(mask)
@@ -184,16 +247,25 @@ def main() -> int:
         batch = _preprocess_dataset_batch(raw, meta.camera_keys, rename_map, preprocessor)
         torch.manual_seed(args.seed)
         with torch.no_grad():
-            return policy.predict_action_chunk(batch).float().cpu().numpy()[..., :16]
+            chunk = policy.predict_action_chunk(batch).float().cpu().numpy()[..., :16]
+        steps = chunk.shape[1]
+        pad = (np.zeros(expert.shape[:2], bool) if pad is None
+               else pad.numpy().astype(bool))[:, :steps]
+        return chunk, expert[:, :steps], pad
 
-    variants = ("true", "alt", "shuffled", "none")
+    variants = ("true", "oracle", "perturb", "other_rule", "alt", "shuffled", "none")
     chunks = {v: [] for v in variants}
+    experts, pads = [], []
     for start in range(0, len(cases), args.batch):
         items = cases[start:start + args.batch]
         for v in variants:
-            chunks[v].append(predict(items, v))
+            chunk, expert, pad = predict(items, v)
+            chunks[v].append(chunk)
+        experts.append(expert)
+        pads.append(pad)
         print(f"  {start + len(items)}/{len(cases)}", flush=True)
     chunks = {v: np.concatenate(c) for v, c in chunks.items()}
+    expert, full = np.concatenate(experts), ~np.concatenate(pads).any(1)
 
     def raw_path(norm):
         return (norm + 1) / 2 * (hi[LEFT] - lo[LEFT]) + lo[LEFT]
@@ -205,13 +277,27 @@ def main() -> int:
         toward_true = [heads_to(raw_path(chunks[v][n][:, LEFT]), c["eef"], c["true"],
                                 c["alt"]) == 0 for n, c in enumerate(cases)]
         out[f"heads_to_true_{v}"] = float(np.mean(toward_true))
+    others = [n for n, c in enumerate(cases) if c["other"] is not None]
+    out["other_rule_frames"] = len(others)
+    out["follows_other_rule"] = float(np.mean([
+        heads_to(raw_path(chunks["other_rule"][n][:, LEFT]), cases[n]["eef"],
+                 cases[n]["true"], cases[n]["other"]) == 1 for n in others])) if others else None
+    out["follows_both_rules"] = float(np.mean([
+        heads_to(raw_path(chunks["true"][n][:, LEFT]), cases[n]["eef"], cases[n]["true"],
+                 cases[n]["other"]) == 0
+        and heads_to(raw_path(chunks["other_rule"][n][:, LEFT]), cases[n]["eef"],
+                     cases[n]["true"], cases[n]["other"]) == 1
+        for n in others])) if others else None
+    out["expert_frames"] = int(full.sum())
+    for v in variants:
+        out[f"to_expert_{v}"] = float(np.sqrt(np.mean((chunks[v][full] - expert[full]) ** 2)))
     out["follows_true"] = out["heads_to_true_true"]
     out["follows_alt"] = 1.0 - out["heads_to_true_alt"]
     out["follows_both"] = float(np.mean([
         heads_to(raw_path(chunks["true"][n][:, LEFT]), c["eef"], c["true"], c["alt"]) == 0
         and heads_to(raw_path(chunks["alt"][n][:, LEFT]), c["eef"], c["true"], c["alt"]) == 1
         for n, c in enumerate(cases)]))
-    for v in ("alt", "shuffled", "none"):
+    for v in variants[1:]:
         out[f"chunk_change_{v}"] = float(np.sqrt(np.mean((chunks[v] - chunks["true"]) ** 2)))
         out[f"mover_change_{v}"] = float(np.sqrt(np.mean(
             (chunks[v][..., LEFT] - chunks["true"][..., LEFT]) ** 2)))

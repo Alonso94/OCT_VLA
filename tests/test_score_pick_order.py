@@ -1,6 +1,7 @@
 """Pick-order scoring for the PFN-VLA interventions (scripts/score_pick_order.py)."""
 
 import importlib.util
+import pytest
 from pathlib import Path
 
 spec = importlib.util.spec_from_file_location(
@@ -50,3 +51,24 @@ def test_served_scores_count_a_scene_without_a_lift_as_a_miss():
 def test_served_rule_is_read_from_the_intervention():
     assert S.served_rule({"future_intervention": {"oracle_rule": "rightmost"}}) == "rightmost"
     assert S.served_rule({}) is None
+
+
+def test_paired_counts_a_scene_only_when_both_effects_are_followed():
+    def ep(seed, order, success=False):
+        xs = {"a": 0.0, "b": 0.1, "c": 0.2}
+        return {"seed": seed, "initial_x": xs, "success": success,
+                "events": {k: {"lifted_step": (order.index(k) if k in order else None)}
+                           for k in xs}}
+    left = {"checkpoint": "c", "future_intervention": {"oracle_rule": "leftmost"},
+            "episodes": [ep(1, "a"), ep(2, "a"), ep(3, "b"), ep(4, "")]}
+    right = {"checkpoint": "c", "future_intervention": {"oracle_rule": "rightmost"},
+             "episodes": [ep(1, "c"), ep(2, "a"), ep(3, "c"), ep(4, "c")]}
+    r = S.paired(left, right)
+    assert r["counts"] == {"paired": 1, "changed": 2}
+    assert r["S_paired"] == 0.25 and r["first_pick_changed"] == 0.5
+    with pytest.raises(ValueError, match="different served rules"):
+        S.paired(left, left)
+    with pytest.raises(ValueError, match="different scenes"):
+        S.paired(left, dict(right, episodes=right["episodes"][:3]))
+    with pytest.raises(ValueError, match="one checkpoint"):
+        S.paired(left, dict(right, checkpoint="other"))
