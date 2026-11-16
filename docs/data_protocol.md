@@ -153,6 +153,20 @@ this file. Never restate it on the command line.
 clip, seed, sample count, metadata and `episode.json` SHA-256. It is the
 split-audit record.
 
+### Mixed-rule corpus (effect-conditioned VLA)
+
+`build_shelf_restock_splits.py --canonical-root leftmost=… --canonical-root
+rightmost=… --generic-instruction` exports several rules' collections as one corpus
+(`three_object_v4lr_*`):
+
+- each clip's recorded rule must match its root's label;
+- the split is by seed block, so a scene collected under both rules (18 of the v4
+  scenes: 14 train, 4 validation) lands on the same side for both;
+- every frame's task is `spec.GENERIC_INSTRUCTION`, which names no rule. The export is
+  refused unless it holds exactly one task string. The rule stays in each episode's
+  metadata; evaluation sends the same string (the view's `split_manifest.json →
+  task_text`), never the scene's rule instruction.
+
 ### Identity holdout (shelf restock)
 
 The seed split holds out *scenes*. `--identity-holdout N` also holds out whole
@@ -319,6 +333,41 @@ task role. The policy must find the target from the instruction and the scene.
 
 A v3 schema (32 columns) exists in code but is not exported. Training refuses
 any dataset that is not v2.
+
+### Object-effect rows (`<view>_effA`, `_effB`)
+
+`scripts/add_effects.py` fills `observation.future_keyframe` with the **next object
+effect** Z = (object, desired pose) in the goal-only 3 × 24 layout a goal-only prior
+writes: row 0 the object at its current pose, row 2 its goal, both re-posed upright
+with the token's yaw; gripper row masked, event empty. The labels
+(`oct_vla.data.effects`) read object poses, EEF positions and the measured aperture
+only; no phase label, planner or rule. Per transfer the timeline is grasp, lift,
+place, release, let_go, own push, settled. Release is the start of the opening, not a
+threshold: the aperture opens over 10–30 frames and a large object is held at
+0.78–0.83, so a fixed threshold fires mid-carry.
+
+Two contracts are fixed before any training:
+
+| | Z switches to the next object | Goal |
+|---|---|---|
+| **A** (primary) | at let_go: placed, mover beyond 0.20 m (the keyframe oracle's own test) | the pose at let_go |
+| **B** (ablation) | after the object's own push has settled | the pose at the end of its push |
+
+An object's own push is compaction that starts before the next object is lifted; a
+later neighbour's push that nudges it does not count. Stillness never ends a segment:
+objects wait a median 62–69 frames between release and their push.
+
+Online, `oracle_effect[:rule]` (`keyframes.ShelfEffectOracle`) serves contract A. It
+plans the next placement beside the previous object's *compacted* pose while that
+push is pending (`anticipate_compaction`). Without that, the goal served during
+compaction sat a median 5.2 cm from where the object was later placed; with it,
+0.7–0.9 cm (0.5–0.6 cm outside compaction). `add_effects.py` refuses an episode
+unless the served rows and the hindsight labels agree: same object on ≥ 98 % of
+frames, switches within 5 frames, goal median ≤ 2 cm, row 0 identical.
+
+On the v4 leftmost (52) and rightmost (43) runs
+(`diagnostics/interaction_audit.json`), contract A matches the oracle's target on
+≥ 99.7 % of frames and its switch frame on every transfer.
 
 ## 7. Evaluation protocol
 
