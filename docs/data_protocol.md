@@ -363,7 +363,13 @@ push is pending (`anticipate_compaction`). Without that, the goal served during
 compaction sat a median 5.2 cm from where the object was later placed; with it,
 0.7–0.9 cm (0.5–0.6 cm outside compaction). `add_effects.py` refuses an episode
 unless the served rows and the hindsight labels agree: same object on ≥ 98 % of
-frames, switches within 5 frames, goal median ≤ 2 cm, row 0 identical.
+frames, switches within 5 frames, row 0 identical, and each transfer's goal within
+5 cm; the corpus is refused if the median over all transfers exceeds 2 cm. The goal
+bounds catch systematic errors, not placement noise: labels are where the object came
+to rest, the oracle serves where it plans it, and objects shift in the gripper. On the
+v4 runs the per-transfer gap is a median 0.6 cm, 28 of 285 above 2 cm, max 4.3 cm,
+correlated 0.50 with the in-gripper shift (`diagnostics/effect_goal_check_v4lr_A.json`).
+Object identity and switch timing, the effect's discrete content, stay strict.
 
 On the v4 leftmost (52) and rightmost (43) runs
 (`diagnostics/interaction_audit.json`), contract A matches the oracle's target on

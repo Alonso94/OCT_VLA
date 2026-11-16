@@ -14,7 +14,16 @@ and refused unless, for contract A:
 
 - the effect's object matches the oracle's target on >= MIN_AGREEMENT of frames,
 - every switch is within MAX_SWITCH_LAG frames of the oracle's,
-- the median goal distance is <= MAX_GOAL_CM.
+- every transfer's goal is within MAX_GOAL_CM of the oracle's (median over its frames),
+
+and the whole corpus is refused unless the median goal distance over all transfers is
+<= MAX_CORPUS_GOAL_CM. The goal bounds catch a *systematic* mismatch (the oracle
+planning beside an uncompacted neighbour was ~5 cm on every compaction segment). They
+do not ask the two to agree to the millimetre: the labels are where the object really
+came to rest, the oracle serves where it plans to put it, and objects shift in the
+gripper (on the v4 runs: median 0.6 cm, max 4.3 cm, correlated 0.5 with the in-gripper
+shift). Object identity and switch timing are the effect's discrete content and stay
+strict.
 
 Contract B holds the placed object through compaction, which the online oracle does
 not (yet) do: its agreement is recorded, not gated.
@@ -39,7 +48,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 MIN_AGREEMENT = 0.98
 MAX_SWITCH_LAG = 5
-MAX_GOAL_CM = 2.0
+MAX_GOAL_CM = 5.0          # per transfer: a bug, not placement noise
+MAX_CORPUS_GOAL_CM = 2.0   # median over all transfers: a systematic offset
 
 
 def oracle_trace(episode, spec):
@@ -72,6 +82,9 @@ def compare(target, rows, mask, o_target, o_rows, o_mask) -> dict:
     both = [t for t in range(len(target)) if target[t] is not None and target[t] == o_target[t]
             and mask[t, 2] and o_mask[t, 2]]
     goal = [100 * float(np.linalg.norm(rows[t, 2, :3] - o_rows[t, 2, :3])) for t in both]
+    transfers = {}
+    for t, g in zip(both, goal):
+        transfers.setdefault(target[t], []).append(g)
     # Row 0 is the object's current pose in both: identical tokens, or the formats differ.
     row0 = max((float(np.abs(rows[t, 0] - o_rows[t, 0]).max()) for t in both), default=0.0)
     if row0 > 1e-5:
@@ -79,7 +92,8 @@ def compare(target, rows, mask, o_target, o_rows, o_mask) -> dict:
                          "disagree")
     return {"agreement": agree, "lags": lags, "missing_switches": sorted(set(ours) - set(theirs)),
             "goal_cm_median": float(np.median(goal)) if goal else None,
-            "goal_cm_p90": float(np.percentile(goal, 90)) if goal else None}
+            "goal_cm_p90": float(np.percentile(goal, 90)) if goal else None,
+            "goal_cm_transfer": {k: float(np.median(v)) for k, v in transfers.items()}}
 
 
 def main() -> int:
@@ -140,8 +154,8 @@ def main() -> int:
             if args.contract == "A":
                 bad = (check["agreement"] < MIN_AGREEMENT or check["missing_switches"]
                        or any(abs(lag) > MAX_SWITCH_LAG for lag in check["lags"])
-                       or check["goal_cm_median"] is None
-                       or check["goal_cm_median"] > MAX_GOAL_CM)
+                       or not check["goal_cm_transfer"]
+                       or max(check["goal_cm_transfer"].values()) > MAX_GOAL_CM)
                 if bad:
                     raise SystemExit(f"episode {episode_index} ({rule} seed {check['seed']}): "
                                      f"hindsight and online effects disagree: {check}")
@@ -167,6 +181,11 @@ def main() -> int:
     agreement = [c["agreement"] for c in checks.values()]
     goal = [c["goal_cm_median"] for c in checks.values() if c["goal_cm_median"] is not None]
     lags = [lag for c in checks.values() for lag in c["lags"]]
+    per_transfer = [g for c in checks.values() for g in c["goal_cm_transfer"].values()]
+    corpus_goal = float(np.median(per_transfer))
+    if args.contract == "A" and corpus_goal > MAX_CORPUS_GOAL_CM:
+        raise SystemExit(f"median goal distance over {len(per_transfer)} transfers is "
+                         f"{corpus_goal:.2f} cm > {MAX_CORPUS_GOAL_CM}: a systematic offset")
     info = json.loads((output / "meta" / "info.json").read_text())
     info["features"][FUTURE_KEYFRAME] = {"dtype": "float32", "shape": [FUTURE_ROWS, FUTURE_DIM],
                                          "names": None}
@@ -180,6 +199,12 @@ def main() -> int:
                          "switch_lag_min": min(lags) if lags else None,
                          "switch_lag_max": max(lags) if lags else None,
                          "goal_cm_median_max": max(goal) if goal else None,
+                         "goal_cm_transfer_median": corpus_goal,
+                         "goal_cm_transfer_p90": float(np.percentile(per_transfer, 90)),
+                         "goal_cm_transfer_max": max(per_transfer),
+                         "goal_cm_transfer_over_2": int(sum(g > 2 for g in per_transfer)),
+                         "transfers": len(per_transfer),
+                         "max_goal_cm": MAX_GOAL_CM, "max_corpus_goal_cm": MAX_CORPUS_GOAL_CM,
                          "gated": args.contract == "A"},
     }
     (output / "meta" / "info.json").write_text(json.dumps(info, indent=4) + "\n")
@@ -197,7 +222,7 @@ def main() -> int:
         raise SystemExit(f"{output}: loaded {FUTURE_KEYFRAME} has the wrong size")
     print(f"\nwrote {output}: {len(checks)} episodes, {frames} frames; oracle agreement "
           f"min {min(agreement):.3f}, switch lags {min(lags)}..{max(lags)}, "
-          f"goal median max {max(goal):.2f} cm; {linked} video files linked")
+          f"goal per transfer median {corpus_goal:.2f} / max {max(per_transfer):.2f} cm; {linked} video files linked")
     return 0
 
 
