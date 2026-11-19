@@ -57,6 +57,10 @@ class ControlACTPolicy(ObjectConditionedPolicyMixin, ACTPolicy):
         for index, layer in enumerate(self.model.decoder.layers):
             host = layer.multihead_attn
             conditioning.add_layer(str(index), host.embed_dim, host.num_heads)
+            # The future branch (keyframes, or BimanualPFN pose tokens): its own K/V per
+            # decoder cross-attention, as on GR00T (conditioning/hosts.py).
+            if conditioning.has_future:
+                conditioning.add_future_layer(str(index), host.embed_dim, host.num_heads)
             self._object_hooks.append(
                 host.register_forward_hook(self._make_hook(str(index)), with_kwargs=True)
             )
@@ -96,6 +100,15 @@ class ControlACTPolicy(ObjectConditionedPolicyMixin, ACTPolicy):
                 # comparison this policy exists to run.
                 dropout=host.dropout,
             )
+            future = conditioning._future_inputs
+            if future is not None:
+                extra = conditioning.future[layer_name](
+                    packed_mha_query(host, query), *future,
+                    output_weight=host.out_proj.weight, dropout=host.dropout)
+                gate = conditioning._future_gate
+                if gate is not None:
+                    extra = extra * gate.to(extra.dtype)[:, None, None]
+                residual = residual + extra
             if not host.batch_first:
                 residual = residual.transpose(0, 1)
             return (output[0] + residual, output[1])
@@ -171,6 +184,7 @@ class ControlACTPolicy(ObjectConditionedPolicyMixin, ACTPolicy):
         super()._clear_object_inputs()
 
     def forward(self, batch):
+        batch = self._encode_residual(self._pose_window_batch(batch))
         self._set_object_inputs(batch)
         try:
             return super().forward(batch)
@@ -179,8 +193,9 @@ class ControlACTPolicy(ObjectConditionedPolicyMixin, ACTPolicy):
 
     @torch.no_grad()
     def predict_action_chunk(self, batch):
+        batch = self._pose_window_batch(batch)
         self._set_object_inputs(batch)
         try:
-            return super().predict_action_chunk(batch)
+            return self._decode_residual(super().predict_action_chunk(batch), batch)
         finally:
             self._clear_object_inputs()

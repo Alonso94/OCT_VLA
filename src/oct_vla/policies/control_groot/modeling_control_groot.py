@@ -48,6 +48,9 @@ class ControlGrootPolicy(SlimCheckpointMixin, ObjectConditionedPolicyMixin, Groo
     """
 
     config_class = ControlGrootConfig
+    #: GR00T min-max normalises actions to [-1, 1] inside its own processor (its LeRobot
+    #: mapping says IDENTITY); the residual codec must use the same normalisation.
+    residual_normalisation = "MIN_MAX"
     name = "control_groot"
     rebuilt_prefixes = GROOT_BACKBONE
 
@@ -156,13 +159,15 @@ class ControlGrootPolicy(SlimCheckpointMixin, ObjectConditionedPolicyMixin, Groo
 
     @torch.no_grad()
     def predict_action_chunk(self, batch: dict[str, Tensor], **kwargs: Any) -> Tensor:
+        batch = self._pose_window_batch(batch)
         self._set_object_inputs(batch)
         try:
-            return super().predict_action_chunk(batch, **kwargs)
+            return self._decode_residual(super().predict_action_chunk(batch, **kwargs), batch)
         finally:
             self._clear_object_inputs()
 
     def forward(self, batch: dict[str, Tensor], **kwargs: Any):
+        batch = self._encode_residual(self._pose_window_batch(batch))
         self._set_object_inputs(batch)
         regularised = self.training and self.config.object_conditioning in SIGREG_ARMS
         if regularised:

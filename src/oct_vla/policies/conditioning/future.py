@@ -58,8 +58,9 @@ FUTURE_MASK = "observation.future_keyframe_mask"
 #: The source's confidence in its prediction, [B, 1] in [0, 1]: what the
 #: confidence gate (object_future_gate="confidence") scales the branch by.
 FUTURE_CONFIDENCE = "observation.future_keyframe_confidence"
-#: What the future set holds: decoded keyframe rows, or the prior's latent cells.
-FUTURE_KINDS = ("keyframe", "latent")
+#: What the future set holds: decoded keyframe rows, the prior's latent cells, or pose
+#: tokens (conditioning/pose_tokens.py): the BimanualPFN window or the raw support table.
+FUTURE_KINDS = ("keyframe", "latent", "pose_window", "support_table")
 
 
 class FutureKVAttention(KVAttention):

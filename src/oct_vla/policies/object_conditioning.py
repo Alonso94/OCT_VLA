@@ -223,6 +223,15 @@ class ObjectConditioningConfig:
     #: in [0, 1]), so the policy leans on the prior where the prior is sure. No
     #: learned gate parameter: a zero gate on a zero branch would never train.
     object_future_gate: str = "none"
+    #: BimanualPFN (conditioning/pose_tokens.py): the future set stores this many
+    #: independently drawn supports per frame, `object_future_rows` tokens each; training
+    #: takes one per sample, evaluation entry 0.
+    object_future_bank: int = 1
+    #: Learn the expert chunk minus the PFN window (pose columns, normalised space) and add
+    #: the window back at inference. Needs object_future_kind="pose_window" and the view's
+    #: action statistics (`action_residual_stats`: mean, std, min, max; 16 columns each).
+    action_residual: bool = False
+    action_residual_stats: dict | None = None
     #: Conditional-source flow (conditioning/source_flow.py; plan rev. 8). "gaussian":
     #: GR00T's own N(0, I) source. "via": with probability `action_source_rho` per
     #: sample (training and inference alike), the flow starts from the normalised
@@ -284,8 +293,23 @@ class ObjectConditioningConfig:
                 raise ValueError("object_future_dim must be positive")
             if self.object_future_gate not in ("none", "confidence"):
                 raise ValueError("object_future_gate must be 'none' or 'confidence'")
+            from oct_vla.policies.conditioning.pose_tokens import POSE_KINDS, POSE_TOKEN_DIM
+
+            if self.object_future_kind in POSE_KINDS and self.object_future_dim != POSE_TOKEN_DIM:
+                raise ValueError(f"{self.object_future_kind} tokens are {POSE_TOKEN_DIM} wide")
+            if self.object_future_bank < 1:
+                raise ValueError("object_future_bank must be >= 1")
+            if self.object_future_bank > 1 and self.object_future_kind not in POSE_KINDS:
+                raise ValueError("a support bank applies to pose tokens only")
         elif getattr(self, "object_future_gate", "none") != "none":
             raise ValueError("object_future_gate needs object_future")
+        if getattr(self, "action_residual", False):
+            if not (self.object_future and self.object_future_kind == "pose_window"):
+                raise ValueError("action_residual needs object_future with kind pose_window")
+            stats = self.action_residual_stats or {}
+            if any(len(stats.get(k) or []) != 16 for k in ("mean", "std", "min", "max")):
+                raise ValueError("action_residual_stats must hold 16-column mean/std/min/max "
+                                 "(the view's meta/stats.json; entity_training_args.py)")
         if self.action_source not in ACTION_SOURCES:
             raise ValueError(f"action_source must be one of {ACTION_SOURCES}")
         if self.action_source != "gaussian":
@@ -400,8 +424,11 @@ class ObjectConditioning(nn.Module):
 
         if name in self.future:
             raise ValueError(f"duplicate future layer {name}")
-        latent = getattr(self._config, "object_future_kind", "keyframe") == "latent"
-        branch = FutureLatentAttention if latent else FutureKVAttention
+        kind = getattr(self._config, "object_future_kind", "keyframe")
+        from oct_vla.policies.conditioning.pose_tokens import POSE_KINDS, PoseTokenAttention
+
+        branch = (FutureLatentAttention if kind == "latent" else PoseTokenAttention
+                  if kind in POSE_KINDS else FutureKVAttention)
         self.future[name] = branch(self._config, width, heads=heads)
         return self.future[name]
 
@@ -477,6 +504,67 @@ class ObjectConditionedPolicyMixin(VerifiedLoadMixin):
             return super().select_action(batch, **kwargs)
         finally:
             self._clear_object_inputs()
+
+    # --- BimanualPFN pose tokens (conditioning/pose_tokens.py) ---------------------------
+
+    def _pose_tokens_active(self) -> bool:
+        from oct_vla.policies.conditioning.pose_tokens import POSE_KINDS
+
+        cfg = self.config
+        return bool(getattr(cfg, "object_future", False)) and \
+            getattr(cfg, "object_future_kind", "") in POSE_KINDS
+
+    def _pose_window_batch(self, batch: dict[str, Tensor]) -> dict[str, Tensor]:
+        """Collapse a K-support bank to one entry per sample (random in training, entry 0
+        otherwise), once per batch, so the conditioning and the residual codec read the
+        same support. A batch without a bank passes through unchanged."""
+        if not self._pose_tokens_active() or getattr(self.config, "object_future_bank", 1) == 1:
+            return batch
+        from oct_vla.policies.conditioning.pose_tokens import select_bank
+
+        tokens = batched(batch.get(FUTURE_KEYFRAME), unbatched_ndim=2)
+        mask = batched(batch.get(FUTURE_MASK), unbatched_ndim=1)
+        if tokens is None or mask is None:
+            raise ValueError(f"pose tokens need {FUTURE_KEYFRAME} and {FUTURE_MASK}")
+        tokens, mask = select_bank(tokens, mask, self.config.object_future_bank, self.training)
+        return {**batch, FUTURE_KEYFRAME: tokens, FUTURE_MASK: mask}
+
+    def _residual_codec(self):
+        from oct_vla.policies.conditioning.pose_tokens import ActionCodec
+
+        # A policy that normalises inside its own processor (GR00T: min-max to [-1, 1])
+        # declares it; the others follow their LeRobot normalisation mapping.
+        mode = getattr(self, "residual_normalisation", None)
+        if mode is None:
+            mapping = getattr(self.config, "normalization_mapping", {}) or {}
+            mode = mapping.get("ACTION")
+            mode = getattr(mode, "value", mode)
+        if str(mode).upper() not in ("MEAN_STD", "MIN_MAX"):
+            raise ValueError(f"residual actions need MEAN_STD or MIN_MAX action normalisation, "
+                             f"not {mode!r}")
+        return ActionCodec.from_stats(self.config.action_residual_stats, str(mode).upper())
+
+    def _pfn_window(self, batch: dict[str, Tensor]) -> Tensor:
+        from oct_vla.policies.conditioning.pose_tokens import tokens_to_window
+
+        tokens = batched(batch[FUTURE_KEYFRAME], unbatched_ndim=2)
+        mask = batched(batch[FUTURE_MASK], unbatched_ndim=1)
+        if not bool((mask > 0.5).all()):
+            raise ValueError("residual actions need a complete PFN window (no masked token)")
+        return tokens_to_window(tokens)
+
+    def _encode_residual(self, batch: dict[str, Tensor]) -> dict[str, Tensor]:
+        """Training targets: the normalised expert chunk minus the PFN window."""
+        if not getattr(self.config, "action_residual", False) or "action" not in batch:
+            return batch
+        action = batch["action"]
+        return {**batch, "action": self._residual_codec().encode(action, self._pfn_window(batch))}
+
+    def _decode_residual(self, chunk: Tensor, batch: dict[str, Tensor]) -> Tensor:
+        """A predicted residual chunk -> the normalised absolute chunk to execute."""
+        if not getattr(self.config, "action_residual", False):
+            return chunk
+        return self._residual_codec().decode(chunk, self._pfn_window(batch))
 
     def _set_object_inputs(self, batch: dict[str, Tensor]) -> None:
         tokens = batched(batch.get(ENTITY_TOKENS), unbatched_ndim=2)
