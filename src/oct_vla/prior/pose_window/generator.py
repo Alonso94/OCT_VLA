@@ -21,7 +21,9 @@ Manipulation rules:
 Composition rules:
 - eligibility ``all`` | ``colour:<c>`` | ``category:<k>``; ineligible objects are
   distractors and never move;
-- order ``left_to_right`` | ``right_to_left`` | ``small_to_large`` | ``large_to_small``;
+- order ``left_to_right`` | ``right_to_left`` | ``small_to_large`` | ``large_to_small`` |
+  ``nearest_marker`` | ``farthest_marker`` (by distance to a reference marker, a fixture
+  placed on the source shelf's front edge: a spatial reference the support must reveal);
 - repeat ``until_empty`` | ``fixed_2`` (exactly two, then stop: "repeat three times" and
   "until empty" differ only when the counts do);
 - compaction ``none`` | ``toward_neighbour`` (after each place, the other arm pushes the
@@ -46,7 +48,8 @@ from .trajectory import (CLOSED, OPEN, TOP_DOWN, Builder, compose, invert, min_j
 
 MANIPULATIONS = ("carry_left", "carry_right", "carry_nearest", "handover", "push")
 ELIGIBILITY_KINDS = ("all", "colour", "category")
-ORDERS = ("left_to_right", "right_to_left", "small_to_large", "large_to_small")
+ORDERS = ("left_to_right", "right_to_left", "small_to_large", "large_to_small",
+          "nearest_marker", "farthest_marker")
 REPEATS = ("until_empty", "fixed_2")
 COMPACTIONS = ("none", "toward_neighbour")
 #: Colours and categories the generator draws from (stable ids, schema vocabularies).
@@ -144,6 +147,7 @@ class Scene:
     upper: tuple[float, float]    # (y, top z)
     homes: np.ndarray         # [2, 7]
     speed: float
+    marker_x: float | None = None   # reference marker (marker orders only)
 
 
 def _size(category: str, rng) -> np.ndarray:
@@ -202,8 +206,14 @@ def sample_scene(program: Program, eligible: int, distractors: int,
                       np.concatenate([[0.30 + rng.uniform(-0.04, 0.04),
                                        -0.12 + rng.uniform(-0.03, 0.03),
                                        1.20 + rng.uniform(-0.04, 0.04)], TOP_DOWN])])
+    marker = None
+    if program.order in ("nearest_marker", "farthest_marker"):
+        marker = float(rng.uniform(*SOURCE_X))
+        d = np.sort(np.abs(xs - marker))
+        if n > 1 and np.min(np.diff(d)) < 0.03:
+            raise Infeasible("marker distances too close to order")
     return Scene(xs[perm], rng.uniform(-0.4, 0.4, n), sizes, colours, categories,
-                 np.arange(n) < eligible, lower, upper, homes, rng.uniform(*SPEED))
+                 np.arange(n) < eligible, lower, upper, homes, rng.uniform(*SPEED), marker)
 
 
 def rescope(scene: Scene, program: Program) -> Scene:
@@ -216,7 +226,7 @@ def rescope(scene: Scene, program: Program) -> Scene:
         attr = scene.colours if kind == "colour" else scene.categories
         elig = np.array([a == value for a in attr])
     return Scene(scene.xs, scene.yaws, scene.sizes, scene.colours, scene.categories, elig,
-                 scene.lower, scene.upper, scene.homes, scene.speed)
+                 scene.lower, scene.upper, scene.homes, scene.speed, scene.marker_x)
 
 
 def _spaced(n: int, rng) -> np.ndarray:
@@ -234,6 +244,9 @@ def selection(program: Program, scene: Scene) -> list[int]:
         key = scene.xs
     elif program.order == "right_to_left":
         key = -scene.xs
+    elif program.order in ("nearest_marker", "farthest_marker"):
+        d = np.abs(scene.xs - scene.marker_x)
+        key = d if program.order == "nearest_marker" else -d
     else:
         vol = scene.sizes.prod(1)
         key = vol if program.order == "small_to_large" else -vol
@@ -280,6 +293,9 @@ class _Run:
         decks = np.stack([np.array([0.0, scene.lower[0] + LOWER_DEPTH / 2 - 0.06,
                                     scene.lower[1] - 0.01, *Q.IDENTITY]),
                           np.array([0.0, scene.upper[0], scene.upper[1] - 0.01, *Q.IDENTITY])])
+        if scene.marker_x is not None:
+            decks = np.concatenate([decks, [[scene.marker_x, scene.lower[0] + 0.07,
+                                             scene.lower[1] + 0.005, *Q.IDENTITY]]])
         self.b = Builder(scene.homes, np.concatenate([objs, decks]))
         self.n = n
         self.placed: list[int] = []
@@ -466,10 +482,14 @@ def execute(program: Program, scene: Scene, rng: np.random.Generator,
     n = run.n
     ids = [f"obj_{j}" for j in range(n)] + ["lower_deck", "upper_deck"]
     sizes = np.concatenate([scene.sizes, [[0.84, LOWER_DEPTH, 0.02], [0.84, 0.12, 0.02]]])
+    if scene.marker_x is not None:
+        ids.append("marker")
+        sizes = np.concatenate([sizes, [[0.03, 0.03, 0.01]]])
+    nf = len(ids) - n
     return run.b.episode(
-        [MOVABLE] * n + [FIXTURE, FIXTURE],
-        [colour_id(c) for c in scene.colours] + [0, 0],
-        [category_id(c) for c in scene.categories] + [0, 0],
+        [MOVABLE] * n + [FIXTURE] * nf,
+        [colour_id(c) for c in scene.colours] + [0] * nf,
+        [category_id(c) for c in scene.categories] + [0] * nf,
         sizes, ids,
         {"source": "synthetic", "program": program.key, "family": program.family,
          "selected": [f"obj_{j}" for j in order], "eligible_ids":

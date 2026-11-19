@@ -117,6 +117,27 @@ def cmd_eval(args) -> int:
     return 0
 
 
+def cmd_scan(args) -> int:
+    from oct_vla.prior.pose_window import atlas as A
+    from oct_vla.prior.pose_window import train as Tr
+
+    if args.run is None:
+        predict, title = A.expert_predict, "Marker scan: analytic expert windows (scorer check)"
+    else:
+        model = Tr.load(args.run, args.device)
+        predict = lambda items: Tr.predict(model, items, max(len(i["support"].time) for i in items),  # noqa: E731
+                                           args.device)
+        title = f"Marker scan: {args.run.name}"
+    rows = A.marker_scan(predict)
+    args.out.mkdir(parents=True, exist_ok=True)
+    (args.out / "marker_scan.json").write_text(json.dumps(rows, indent=1, default=float) + "\n")
+    print("\n".join(map(str, A.render(rows, args.out / "marker_scan", title))))
+    acc = {n: [r["correct"] for r in rows if r["support"] == n and r["correct"] is not None]
+           for n in ("nearest", "farthest")}
+    print({n: sum(v) / len(v) for n, v in acc.items()})
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -159,6 +180,11 @@ def main() -> int:
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--device", default="cpu")
     p.set_defaults(func=cmd_eval)
+    p = sub.add_parser("scan", help="atlas marker scan for a checkpoint (or the expert)")
+    p.add_argument("--run", type=Path, help="checkpoint; omit for the analytic expert")
+    p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--device", default="cpu")
+    p.set_defaults(func=cmd_scan)
     args = ap.parse_args()
     return args.func(args)
 

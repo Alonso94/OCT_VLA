@@ -34,7 +34,7 @@ from .schema import (KINDS, PAD, POSE_DIM, Episode, Table, query_table, relabel,
 from .splits import CountMatrix
 
 S_ROWS = 128
-C_MAX = 2 + Gn.MAX_MOVABLES + 2
+C_MAX = 2 + Gn.MAX_MOVABLES + 3      # wrists, movables, two decks, a marker
 HISTORY = 16
 #: 16 rows = 1.07 s at 15 Hz. 8 (0.53 s) was the first configuration; on the recorded
 #: v4 runs the next object is identifiable from the expert's own window in 82 % of
@@ -187,7 +187,8 @@ def conflict_partner(program: Gn.Program, rng) -> tuple[Gn.Program, str | None]:
         return Gn.Program(program.manipulation, f"category:{other}", program.order,
                           program.repeat, program.compaction), other
     flip = {"left_to_right": "right_to_left", "right_to_left": "left_to_right",
-            "small_to_large": "large_to_small", "large_to_small": "small_to_large"}
+            "small_to_large": "large_to_small", "large_to_small": "small_to_large",
+            "nearest_marker": "farthest_marker", "farthest_marker": "nearest_marker"}
     return Gn.Program(program.manipulation, program.eligibility, flip[program.order],
                       program.repeat, program.compaction), None
 
