@@ -41,8 +41,8 @@ import numpy as np
 from . import quat as Q
 from .schema import (CATEGORIES, COLOURS, DT, FIXTURE, MOVABLE, Episode, category_id,
                      colour_id)
-from .trajectory import (CLOSED, OPEN, TOP_DOWN, Builder, compose, invert, min_jerk, ticks,
-                         wrist_for_grip)
+from .trajectory import (CLOSED, OPEN, TOP_DOWN, Builder, compose, invert, min_jerk,
+                         orientation, ticks, wrist_for_grip)
 
 MANIPULATIONS = ("carry_left", "carry_right", "carry_nearest", "handover", "push")
 ELIGIBILITY_KINDS = ("all", "colour", "category")
@@ -293,7 +293,7 @@ class _Run:
         b = self.b
         obj = b.objects[-1][j]
         q = _grasp_q(self.s.yaws[j] + (np.pi / 2 if self.s.sizes[j, 0] > self.s.sizes[j, 1] else 0))
-        grip = obj[:3] + [0, 0, self.s.sizes[j, 2] / 2 - 0.02]
+        grip = obj[:3].copy()          # recorded grasps hold the object at its centre
         b.segment(self.dur(1.0), {arm: wrist_for_grip(grip + [0, 0, LIFT], q)})
         b.segment(self.dur(0.5), {arm: wrist_for_grip(grip, q)})
         b.segment(0.3, aperture={arm: CLOSED})
@@ -379,7 +379,7 @@ class _Run:
         # The giver holds the object from the top; the receiver closes on its lower part
         # from its own side (tool z horizontal, pointing at the giver), clear of the
         # giver's fingers. Grasp frames: top-down vs side, compatible by construction.
-        recv_q = Q.from_axis_angle([0, 1, 0], side * np.pi / 2)
+        recv_q = orientation((side, 0.0, 0.0), (0.0, 1.0, 0.0))   # tool toward the giver
         low = obj[:3] - [0, 0, self.s.sizes[j, 2] / 4]
         recv_grasp = wrist_for_grip(low, recv_q)
         recv_pre = wrist_for_grip(low - [side * 0.10, 0, 0], recv_q)

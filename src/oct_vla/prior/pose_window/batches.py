@@ -96,6 +96,7 @@ class ItemConfig:
     relabel: bool = False             # one shared semantic relabeling per pair
     history: int = HISTORY
     horizon: int = HORIZON
+    s_rows: int = S_ROWS              # support row budget (observable sampler)
 
 
 def _distractors(program: Gn.Program) -> int:
@@ -112,7 +113,7 @@ def first_divergence(a: Episode, b: Episode) -> int:
 
 def _item(rng, cfg: ItemConfig, support: Episode, query: Episode, t: int, stratum: str,
           cue: int | None, meta: dict, mapping=None) -> dict:
-    s_tab = support_table(support, support_rows(support))
+    s_tab = support_table(support, support_rows(support, cfg.s_rows))
     q_tab = query_table(query, t, cfg.history, obs=observe(query, rng, cfg.faults))
     s_tab, _ = shuffle_columns(s_tab, rng)
     q_tab, _ = shuffle_columns(q_tab, rng)

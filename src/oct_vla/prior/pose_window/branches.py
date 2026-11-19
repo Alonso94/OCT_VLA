@@ -25,15 +25,16 @@ import numpy as np
 
 from . import quat as Q
 from .schema import DT, FIXTURE, MOVABLE, Episode, category_id, colour_id
-from .trajectory import CLOSED, OPEN, TOP_DOWN, Builder, min_jerk, ticks, wrist_for_grip
+from .trajectory import (CLOSED, OPEN, TOP_DOWN, Builder, min_jerk, orientation, ticks,
+                         wrist_for_grip)
 
 BRANCHES = ("nominal", "delayed", "sham")
 CAPTURE_RADIUS = 0.01   # m: receiver wrist within this of its grasp pose
 CAPTURE_DWELL = 0.2     # s closed at the grasp pose before the giver may open
 CLOSED_BELOW = 0.3      # aperture below which a gripper counts as closed
-#: Side grasp: tool z along +x (90 deg about y), for the giver.
-SIDE_PLUS_X = Q.from_axis_angle([0.0, 1.0, 0.0], np.pi / 2)
-SIDE_MINUS_X = Q.from_axis_angle([0.0, 1.0, 0.0], -np.pi / 2)
+#: Side grasps: the tool axis horizontal, along +x or -x.
+SIDE_PLUS_X = orientation((1.0, 0.0, 0.0), (0.0, 1.0, 0.0))
+SIDE_MINUS_X = orientation((-1.0, 0.0, 0.0), (0.0, 1.0, 0.0))
 OBJECT_SIZE = np.array([0.04, 0.04, 0.16])
 
 

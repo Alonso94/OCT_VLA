@@ -18,13 +18,29 @@ import numpy as np
 from . import quat as Q
 from .schema import DT, HZ, Episode
 
-#: EEF -> grip point along the tool z axis (m). The value the shelf adapter uses
-#: (``prior/shelf_adapter.EEF_TO_GRIP``); replaced by ``configs/bimanual_pfn/calibration.json``
-#: once the tool transform is calibrated (plan 0.4). Uncalibrated until then.
-TOOL_OFFSET = 0.128
-#: Tool z pointing straight down (180 deg about x): a top-down grasp.
-TOP_DOWN = np.array([1.0, 0.0, 0.0, 0.0])
+#: The wrist convention is RoboTwin's recorded EEF frame. Its **tool (approach) axis is
+#: local x**, and a grasped object's centre sits ``TOOL_OFFSET`` along it: measured on the
+#: v4 recordings at 18 grasp onsets, 0.1432 m (std 3 mm), with local x = (0, 0, -1) and
+#: local y = (-1, 0, 0) in world for a yaw-0 top-down grasp. (The shelf adapter's 0.128 m
+#: along world z was a different quantity.) ``scripts/bpfn_calibrate_tool.py`` re-measures it.
+TOOL_AXIS = np.array([1.0, 0.0, 0.0])
+TOOL_OFFSET = 0.143
 OPEN, CLOSED = 1.0, 0.0
+
+
+def orientation(tool_dir, z_hint) -> np.ndarray:
+    """The wrist quaternion whose tool axis (local x) points along ``tool_dir`` and whose
+    local z is ``z_hint`` made orthogonal to it."""
+    x = np.asarray(tool_dir, float)
+    x = x / np.linalg.norm(x)
+    z = np.asarray(z_hint, float) - (np.asarray(z_hint, float) @ x) * x
+    z = z / np.linalg.norm(z)
+    y = np.cross(z, x)
+    return Q.from_matrix(np.stack([x, y, z], axis=1))
+
+
+#: A yaw-0 top-down grasp in the recorded convention.
+TOP_DOWN = orientation((0.0, 0.0, -1.0), (0.0, 1.0, 0.0))
 
 
 def min_jerk(n: int) -> np.ndarray:
@@ -55,15 +71,15 @@ def invert(a: np.ndarray) -> np.ndarray:
 
 
 def grip_point(wrist: np.ndarray) -> np.ndarray:
-    return wrist[:3] + Q.rotate(wrist[3:], np.array([0.0, 0.0, TOOL_OFFSET]))
+    """Where a grasped object's centre sits, for wrist pose(s) ``[..., 7]``."""
+    wrist = np.asarray(wrist, float)
+    return wrist[..., :3] + Q.rotate(wrist[..., 3:], TOOL_AXIS * TOOL_OFFSET)
 
 
 def wrist_for_grip(point, orientation) -> np.ndarray:
     """The wrist pose whose grip point is ``point`` with tool orientation ``orientation``."""
-    orientation = Q.normalize(np.asarray(orientation, float))
-    return np.concatenate([np.asarray(point, float)
-                           - Q.rotate(orientation, np.array([0.0, 0.0, TOOL_OFFSET])),
-                           orientation])
+    q = Q.normalize(np.asarray(orientation, float))
+    return np.concatenate([np.asarray(point, float) - Q.rotate(q, TOOL_AXIS * TOOL_OFFSET), q])
 
 
 class Builder:

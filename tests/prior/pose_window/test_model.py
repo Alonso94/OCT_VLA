@@ -1,0 +1,111 @@
+"""PoseWindowPFN: caching, invariances, gradients, the loss and the decision scorer."""
+
+import collections
+import copy
+
+import numpy as np
+import pytest
+import torch
+
+from oct_vla.prior.pose_window import batches as Bt
+from oct_vla.prior.pose_window import generator as Gn
+from oct_vla.prior.pose_window import metrics as Me
+from oct_vla.prior.pose_window import model as M
+from oct_vla.prior.pose_window import schema as S
+from oct_vla.prior.pose_window import splits as Sp
+from oct_vla.prior.pose_window import train as Tr
+
+
+@pytest.fixture(scope="module")
+def items():
+    return Tr.conflict_items(3, seed=0, s_rows=32)
+
+
+def _model(**kw):
+    torch.manual_seed(0)
+    m = M.PoseWindowPFN(width=32, heads=2, layers=2, **kw)
+    # Non-trivial outputs: the zero-initialised head would make every test pass trivially.
+    torch.nn.init.normal_(m.head[1].weight, std=0.1)
+    return m.eval()
+
+
+def test_cached_support_equals_uncached(items):
+    m = _model()
+    b = M.to_torch(Bt.pack(items, s_rows=32))
+    with torch.no_grad():
+        a = m(b)["window"]
+        c = m.predict(m.encode_support(b), b)["window"]
+    torch.testing.assert_close(a, c)
+
+
+def test_predictions_are_invariant_to_column_order(items):
+    m = _model()
+    rng = np.random.default_rng(1)
+    shuffled = []
+    for it in items:
+        it2 = dict(it)
+        it2["support"], _ = S.shuffle_columns(it["support"], rng)
+        it2["query"], _ = S.shuffle_columns(it["query"], rng)
+        shuffled.append(it2)
+    with torch.no_grad():
+        a = m(M.to_torch(Bt.pack(items, s_rows=32)))["window"]
+        b = m(M.to_torch(Bt.pack(shuffled, s_rows=32)))["window"]
+    torch.testing.assert_close(a, b, atol=1e-5, rtol=1e-5)
+
+
+def test_support_matters_and_scene_only_ignores_it(items):
+    m, so = _model(), _model(use_support=False)
+    b = M.to_torch(Bt.pack(items, s_rows=32))
+    other = dict(b)
+    other.update({k: v.flip(0) for k, v in b.items() if k.startswith("s_")})   # swap supports
+    with torch.no_grad():
+        assert not torch.allclose(m(b)["window"], m(other)["window"])
+        torch.testing.assert_close(so(b)["window"], so(other)["window"])
+
+
+def test_every_parameter_learns(items):
+    m = M.PoseWindowPFN(width=32, heads=2, layers=2)
+    b = M.to_torch(Bt.pack(items, s_rows=32))
+    opt = torch.optim.SGD(m.parameters(), lr=0.1)
+    for _ in range(2):     # the zero head blocks upstream gradient on the first step only
+        loss, _ = M.window_loss(m(b)["window"], b["target"], b["target_valid"])
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+    dead = [n for n, p in m.named_parameters() if p.grad is None or not p.grad.abs().sum() > 0]
+    assert not dead, dead
+
+
+def test_outputs_are_unit_quaternions_anchored_at_the_current_wrist(items):
+    m = M.PoseWindowPFN(width=32, heads=2, layers=2).eval()   # zero head: hold
+    b = M.to_torch(Bt.pack(items, s_rows=32))
+    with torch.no_grad():
+        w = m(b)["window"]
+    torch.testing.assert_close(w[..., 3:].norm(dim=-1), torch.ones(w.shape[:-1]))
+    held = np.stack([Me.hold(it["query"], Bt.HORIZON) for it in items])
+    np.testing.assert_allclose(w.numpy(), held, atol=1e-5)
+
+
+def test_loss_is_sign_invariant_and_masks_invalid_horizons():
+    t = torch.zeros(1, 2, 2, 7)
+    t[..., 6] = 1
+    flipped = t.clone()
+    flipped[..., 3:] *= -1
+    l, _ = M.window_loss(flipped, t, torch.ones(1, 2, dtype=torch.bool))
+    assert float(l) == pytest.approx(0.0, abs=1e-7)
+    far = t.clone()
+    far[:, 1, :, 0] = 5.0
+    l, _ = M.window_loss(far, t, torch.tensor([[True, False]]))
+    assert float(l) == pytest.approx(0.0, abs=1e-7)
+
+
+def test_decision_rule_recovers_the_expert_and_rejects_hold(items):
+    pairs = collections.defaultdict(list)
+    for it in items:
+        pairs[it["meta"]["pair"]].append((Me.decision(it["target"], it["query"]),
+                                          it["meta"]["first_pick"]))
+    assert Me.paired_both_correct(pairs)["both_correct"] == 1.0
+    held = {k: [(Me.decision(Me.hold(it["query"], 8), it["query"]), it["meta"]["first_pick"])
+                for it in items if it["meta"]["pair"] == k] for k in pairs}
+    r = Me.paired_both_correct(held)
+    assert r["both_correct"] == 0.0 and r["unassignable"] == 1.0

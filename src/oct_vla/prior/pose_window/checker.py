@@ -19,7 +19,7 @@ import numpy as np
 
 from . import quat as Q
 from .schema import FIXTURE, MOVABLE, Episode
-from .trajectory import TOOL_OFFSET
+from .trajectory import grip_point
 
 STILL = 1e-7          # m per row: below this an object has not moved
 CONTACT_MARGIN = 0.03  # m beyond the object's half extents a pushing grip point may be
@@ -28,7 +28,7 @@ REST_TOL = 2e-3        # m
 
 
 def _grip(wrist: np.ndarray) -> np.ndarray:
-    return wrist[..., :3] + Q.rotate(wrist[..., 3:], np.array([0.0, 0.0, TOOL_OFFSET]))
+    return grip_point(wrist)
 
 
 def _local(obj_pose: np.ndarray, point: np.ndarray) -> np.ndarray:
