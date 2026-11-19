@@ -48,6 +48,13 @@ def test_colour_assignment_is_deterministic_balanced_and_swappable():
     assert any(colours.assign(s, 4, ("red", "blue")) != a for s in range(8, 20))
 
 
+def test_colour_counts_build_a_support_with_three_eligible_and_one_distractor():
+    a = colours.assign(4, 4, ("red", "blue"), counts=(3, 1))
+    assert sorted(a) == ["blue", "red", "red", "red"]
+    with pytest.raises(ValueError, match="do not split"):
+        colours.assign(4, 4, ("red", "blue"), counts=(2, 1))
+
+
 def test_colour_assignment_never_touches_the_layout_stream():
     import random
 
@@ -68,7 +75,9 @@ def test_colour_assignment_refuses_bad_palettes(bad):
 def test_colour_env_parsing(monkeypatch):
     monkeypatch.setenv("OCTVLA_COLOURS", " red, blue ")
     monkeypatch.setenv("OCTVLA_COLOUR_SWAP", "1")
-    assert colours.from_env() == (("red", "blue"), True)
+    assert colours.from_env() == (("red", "blue"), True, None)
+    monkeypatch.setenv("OCTVLA_COLOUR_COUNTS", "3,1")
+    assert colours.from_env()[2] == (3, 1)
     monkeypatch.delenv("OCTVLA_COLOURS")
     assert colours.from_env()[0] == ()
 

@@ -464,3 +464,51 @@ unified exports: a view can be re-projected locally in minutes.
 writes a `dataset_manifest.json` of SHA-256 hashes and can `download` a release.
 The two `…-three_object-{rgb,object}` v1.0.0 repositories predate the entity
 schema and the leftmost-target rule. Do not train on them.
+
+## 9. BimanualPFN corpus (pose windows, semantic colour)
+
+A fresh corpus under `$HPCVAULT/octvla-collection-bpfn`, never mixed with the v4 runs
+(no fallback to the leftmost/rightmost roots). Collected by `slurm/submit_bpfn.sh`.
+
+**Rules.** `restock_red` / `restock_blue` restock every object of one colour and leave
+the others (distractors) where they are. The expert takes eligible objects leftmost
+first; that is a tie-break, not the rule, so scoring accepts any eligible first pick.
+Instructions name the colour for collection only; every policy and the PFN see
+`GENERIC_INSTRUCTION`. Success (`serve/server.py`) = every eligible object on the upper
+shelf **and** every distractor within 2 cm of its start; `post_success_steps` keeps an
+episode running after first success so dwell and extra reaches can be scored.
+
+**Colour.** The same `113_coffee-box` meshes, tinted at build time
+(`robotwin_env._visual_material`): geometry and grasp feasibility are unchanged, so the
+colour is the only difference. Configured per collection job:
+- `OCTVLA_COLOURS=red,blue` (rule colour first), `OCTVLA_COLOUR_COUNTS=3,1` for a support
+  with three eligible and one distractor, unset for a balanced scene;
+- `OCTVLA_COLOUR_SWAP=1`: the same seed's layout with the two colours exchanged.
+
+Colours are drawn from `random.Random("oct_vla/colour/v1/<seed>")`, never the layout
+stream, so a seed's layout is identical with and without colour. The realised colour is
+persisted per object (`ObjectState.colour`) through store, codec and server.
+
+**Commands.** Full runs carry `episode.commands.npz` (`data/commands.py`): the applied
+joint and gripper references of both arms per physics tick, including the held arm's
+reference, with one frame tick per sample. Targets derived from them are labelled
+`commanded_fk`; targets from measured poses (all legacy recordings) `next_measured_pose`.
+Built-in RoboTwin tasks run RoboTwin's own planner and record `commands: none`, plus
+their measured capture rate (`hz` = 250 / 17).
+
+**Seed blocks** (disjoint from every v4 block and from evaluation scenes 800-819):
+
+| Block | Use |
+|---|---|
+| 2000-2199 | colour source pool (executor training), both rules, plus swapped twins |
+| 2200-2249 | colour development |
+| 2250-2299 | support banks: colour supports (3 eligible + 1 distractor), count supports (3 all-eligible) |
+| 2300-2399 | count query layouts (two- and four-object) |
+
+All siblings of one layout family (a seed under both rules and its swapped twin) stay in
+one split. Every attempted seed is used once; a discarded seed is not retried.
+
+**Canary.** `submit_bpfn.sh canary` collects 2 seeds per rule, one swapped twin and one
+3+1 support; `scripts/bpfn_canary_report.py` checks colour, rendering (contact sheet),
+codec round trip, distractor stillness and command alignment, and writes `CANARY_PASSED`,
+which the pilot stage requires.

@@ -29,8 +29,11 @@ RGB = {
 STREAM = "oct_vla/colour/v1"
 
 
-def assign(seed: int, n: int, palette: tuple[str, ...], swap: bool = False) -> list[str]:
-    """Colour names for objects 0..n-1 (spawn order)."""
+def assign(seed: int, n: int, palette: tuple[str, ...], swap: bool = False,
+           counts: tuple[int, ...] | None = None) -> list[str]:
+    """Colour names for objects 0..n-1 (spawn order). ``counts``: exactly this many of each
+    palette colour (e.g. (3, 1): a colour support with three eligible and one distractor);
+    default: as balanced as ``n`` allows."""
     if not palette:
         raise ValueError("empty palette")
     unknown = [c for c in palette if c not in COLOURS]
@@ -39,7 +42,12 @@ def assign(seed: int, n: int, palette: tuple[str, ...], swap: bool = False) -> l
     if n < len(palette):
         raise ValueError(f"{n} objects cannot show all {len(palette)} palette colours")
     rng = random.Random(f"{STREAM}/{seed}")
-    base = [palette[i % len(palette)] for i in range(n)]
+    if counts is not None:
+        if len(counts) != len(palette) or sum(counts) != n or min(counts) < 1:
+            raise ValueError(f"counts {counts} do not split {n} objects over {palette}")
+        base = [c for c, k in zip(palette, counts) for _ in range(k)]
+    else:
+        base = [palette[i % len(palette)] for i in range(n)]
     rng.shuffle(base)
     if swap:
         if len(palette) < 2:
@@ -49,9 +57,12 @@ def assign(seed: int, n: int, palette: tuple[str, ...], swap: bool = False) -> l
     return base
 
 
-def from_env() -> tuple[tuple[str, ...], bool]:
-    """(palette, swap) from OCTVLA_COLOURS / OCTVLA_COLOUR_SWAP; an empty palette = off."""
+def from_env() -> tuple[tuple[str, ...], bool, tuple[int, ...] | None]:
+    """(palette, swap, counts) from OCTVLA_COLOURS / OCTVLA_COLOUR_SWAP /
+    OCTVLA_COLOUR_COUNTS; an empty palette = off."""
     raw = os.environ.get("OCTVLA_COLOURS", "").strip()
     palette = tuple(c.strip() for c in raw.split(",") if c.strip())
     swap = os.environ.get("OCTVLA_COLOUR_SWAP", "0").strip() in ("1", "true", "yes")
-    return palette, swap
+    raw_counts = os.environ.get("OCTVLA_COLOUR_COUNTS", "").strip()
+    counts = tuple(int(k) for k in raw_counts.split(",")) if raw_counts else None
+    return palette, swap, counts

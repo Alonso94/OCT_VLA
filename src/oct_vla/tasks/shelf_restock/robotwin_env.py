@@ -152,8 +152,9 @@ class ShelfRestockTask(Base_Task):
         # because the material is set when the visual is built. Off unless configured.
         from oct_vla.tasks.shelf_restock import colours as _colours
 
-        palette, swap = _colours.from_env()
-        colour_names = (_colours.assign(self._episode_seed, self.object_count, palette, swap)
+        palette, swap, counts = _colours.from_env()
+        colour_names = (_colours.assign(self._episode_seed, self.object_count, palette, swap,
+                                        counts)
                         if palette else [None] * self.object_count)
 
         self.tracked_objects: dict[str, Any] = {}

@@ -135,8 +135,19 @@ def collect_episode(
             "episode_kind": "full_run",
             "task": spec.task_name,
             "save_freq": str(save_freq),
+            # The measured capture interval: one frame per `save_freq` physics ticks, so
+            # 250/17 = 14.7 Hz, not the shelf task's 15. Consumers use these, not a
+            # nominal rate.
+            "hz": repr(1.0 / (save_freq * port.dt)),
+            "dt": repr(port.dt),
+            # RoboTwin's own play_once drives the arms; its applied commands are not
+            # logged (shelf full runs carry episode.commands.npz, these do not).
+            "commands": "none",
             **(metadata or {}),
         },
     )
-    validate_episode(episode)
+    problems = validate_episode(episode)
+    if problems:
+        # The result used to be ignored, so a malformed episode was written anyway.
+        raise BuiltinCollectionError(f"seed {seed}: episode failed validation: {problems}")
     return episode
