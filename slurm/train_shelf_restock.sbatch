@@ -242,6 +242,8 @@ if [ "$TRAIN_VARIANT" = object ]; then
   if [ "${FUTURE_BRANCH:-1}" = 0 ]; then
     mapfile -t POLICY_ARGS < <(printf '%s\n' "${POLICY_ARGS[@]}" | grep -v -- "^--policy.object_future")
   fi
+  # BimanualPFN stage 3: residual actions about the PFN window (pose-window views only).
+  if [ "${ACTION_RESIDUAL:-0}" = 1 ]; then POLICY_ARGS+=(--policy.action_residual=true); fi
   # Conditional-source flow (conditioning/source_flow.py): only on a view with arm
   # targets; the speeds and dwell are the bridge's fit (diagnose_action_source.py).
   if [ -n "${ACTION_SOURCE:-}" ]; then

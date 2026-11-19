@@ -153,6 +153,20 @@ case "$CORPUS" in
     declare -A TAG=([F]=v4lreffA_eeabs)
     declare -A STAGE1_TAG=([F]=v4lr_eeabs)
     LETTER=([pi05]=PE [smolvla]=SE [groot]=GE) ;;
+  bpfn_r*)
+    # BimanualPFN stage 3 (GR00T replication): the colour corpus at a run budget
+    # (bpfn_r16 = 16 layout families), its PFN pose-window view (_pw) or its
+    # direct-demo support-table view (_st); stage 1 is always the eeabs base.
+    budget="${CORPUS#bpfn_r}"; budget="${budget%%_*}"
+    base="bpfn_colour_r${budget}_eeabs"
+    case "$CORPUS" in
+      *_pw) declare -A DATASET=([F]="${base}_pw4"); declare -A TAG=([F]="bpfnr${budget}pw_eeabs")
+            declare -A STAGE1_TAG=([F]="bpfnr${budget}_eeabs"); LETTER=([pi05]=PP [smolvla]=SP [groot]=GP) ;;
+      *_st) declare -A DATASET=([F]="${base}_st4"); declare -A TAG=([F]="bpfnr${budget}st_eeabs")
+            declare -A STAGE1_TAG=([F]="bpfnr${budget}_eeabs"); LETTER=([pi05]=PT [smolvla]=ST [groot]=GT) ;;
+      *)    declare -A DATASET=([F]="$base"); declare -A TAG=([F]="bpfnr${budget}_eeabs")
+            LETTER=([pi05]=PB [smolvla]=SB [groot]=GB) ;;
+    esac ;;
   *) echo "CORPUS must be paired_full, paired_full_r19, paired_full_r38, paired_full_vis, identity, v4_leftmost, v4_leftmost_fk{,wp,wpr}, v4_leftmost_arms, v4_leftmost_pfn{,goal,lat,ft,scr}, v4_lr or v4_lr_effA" >&2; exit 2 ;;
 esac
 for regime in "${!DATASET[@]}"; do
@@ -298,6 +312,10 @@ $OCTVLA_POLICY_PYTHON -u scripts/merge_stage1_adapter.py --stage1 $stage1 \
         case "$arm" in
           rgb_cont)               arm_env=(TRAIN_VARIANT=rgb) ;;
           kv|kv_adaln|kv_tokens)  arm_env=(TRAIN_VARIANT=object CONDITIONING="$arm") ;;
+          # BimanualPFN: kv on a pose-window view, learning the residual about the window.
+          kv_residual)
+            run_arm=kv
+            arm_env=(TRAIN_VARIANT=object CONDITIONING=kv ACTION_RESIDUAL=1) ;;
           # kv on a future/effect view with the future branch off: the matched
           # no-effect control (same data, seed and budget as kv with the effect).
           kv_nofuture)

@@ -73,11 +73,46 @@ def state_vector(eef) -> list[float]:
     ]
 
 
+CAMERA_MODES = ("blank", "freeze")
+
+
+def parse_camera_interventions(specs) -> list[tuple[str, str, int, int]]:
+    """``CAMERA:MODE:START-END`` -> (bridge camera, mode, first step, last step)."""
+    out = []
+    for spec in specs:
+        try:
+            camera, mode, span = spec.split(":")
+            start, end = (int(v) for v in span.split("-"))
+        except ValueError:
+            raise SystemExit(f"--camera-intervention {spec!r}: expected CAMERA:MODE:START-END")
+        if camera not in CAMERA_FEATURES or mode not in CAMERA_MODES or end < start:
+            raise SystemExit(f"--camera-intervention {spec!r}: camera one of "
+                             f"{sorted(CAMERA_FEATURES)}, mode one of {CAMERA_MODES}")
+        out.append((camera, mode, start, end))
+    return out
+
+
+def camera_overrides(interventions, step, obs, frozen, np) -> dict:
+    """The images to send instead of the live ones at ``step``: zeros (blank), or the
+    camera's frame at the interval's first step (freeze). ``frozen`` persists per episode."""
+    out = {}
+    for camera, mode, start, end in interventions:
+        if not start <= step <= end:
+            continue
+        frame = obs.frame(camera)
+        live = np.frombuffer(frame.data, dtype=np.uint8).reshape(frame.height, frame.width, 3)
+        if mode == "blank":
+            out[camera] = np.zeros_like(live)
+        else:
+            out[camera] = frozen.setdefault((camera, start), live.copy())
+    return out
+
+
 def build_observation(
     obs, *, torch, np, control_space="cartesian", uint8_images=True,
     state_encoding="position", previous_joints=None, entity_max_entities=None,
     entity_noise=None, noise_rng=None, entity_visual=None, future_keyframe=False,
-    future=None, arm_targets=False, task_text=None,
+    future=None, arm_targets=False, task_text=None, camera_override=None,
 ):
     """The policy's input batch, laid out exactly as the exporter wrote it.
 
@@ -88,6 +123,8 @@ def build_observation(
     for camera, feature in CAMERA_FEATURES.items():
         frame = obs.frame(camera)
         image = np.frombuffer(frame.data, dtype=np.uint8).reshape(frame.height, frame.width, 3)
+        if camera_override and camera in camera_override:
+            image = camera_override[camera]
         tensor = torch.from_numpy(image.copy()).permute(2, 0, 1).unsqueeze(0)
         # Image dtype follows the policy's own VISUAL normalisation, not a fixed
         # convention. pi0.5 declares IDENTITY and takes the uint8 frames the
@@ -190,7 +227,7 @@ def run_episode(
     gripper_encoding="measured_aperture",
     entity_max_entities=None, model_ids=None, entity_noise=None, entity_visual=None,
     future_keyframe="none", future_source=None, trace_path=None, arm_targets=False,
-    task_text=None,
+    task_text=None, camera_interventions=(),
 ) -> dict:
     # A policy-side source asks the server for nothing; the oracle is served.
     served = "none" if future_source is not None else future_keyframe
@@ -250,9 +287,11 @@ def run_episode(
     # object and gripper did, and the future rows actually fed. Read-only; it never
     # changes the rollout.
     trace = _Trace(observation) if trace_path is not None else None
+    frozen: dict = {}
     for step in range(max_steps):
         batch = build_observation(
             observation,
+            camera_override=camera_overrides(camera_interventions, step, observation, frozen, np),
             torch=torch,
             np=np,
             control_space=control_space,
@@ -422,6 +461,13 @@ def main() -> int:
     parser.add_argument("--trace-dir", type=Path, default=None,
                         help="Write a per-step trace (.npz) per episode here: objects, "
                              "grippers, the future rows fed (placement-loss diagnosis)")
+    parser.add_argument("--pose-support", type=Path, default=None,
+                        help="BimanualPFN pose-token checkpoints: the recorded support run "
+                             "this rollout is conditioned on")
+    parser.add_argument("--camera-intervention", action="append", default=[],
+                        help="CAMERA:MODE:START-END (steps), MODE blank | freeze; repeatable. "
+                             "The visual test (stage 3): withhold a camera's information over "
+                             "an interval while every other input stays live")
     parser.add_argument("--future-support-pool", type=Path, default=None,
                         help="Support-swap intervention (learned future source only): draw "
                              "the prior's demonstrations from this pool "
@@ -671,6 +717,16 @@ def main() -> int:
                 support_pool=args.future_support_pool)
             print(f"future source: {provenance['prior']} ({provenance['kind']}), "
                   f"supports from {future_source.pool_path}", flush=True)
+        elif future_keyframe in ("bimanual_pfn", "support_table"):
+            # BimanualPFN pose tokens (stage 3): one recorded support per rollout.
+            if args.pose_support is None:
+                raise SystemExit(f"a {kind} checkpoint needs --pose-support (a recorded run)")
+            from oct_vla.prior.pose_window.online import PoseTokenFutureSource
+
+            future_source = PoseTokenFutureSource(
+                provenance, args.pose_support,
+                device="cuda" if torch.cuda.is_available() else "cpu")
+            print(f"future source: {kind}, support {args.pose_support}", flush=True)
         elif future_keyframe not in ("oracle", "oracle_wp", "oracle_wpr", "oracle_effect"):
             raise SystemExit(f"unknown future_keyframe source {future_keyframe!r}")
         if args.future_support_pool is not None and future_keyframe != "pfn":
@@ -686,6 +742,7 @@ def main() -> int:
         # under a noisy label.
         raise SystemExit("--entity-noise-* / --entity-dropout need an object-conditioned checkpoint")
 
+    camera_interventions = parse_camera_interventions(args.camera_intervention)
     record = set(seeds)
     if args.video_dir and args.video_seeds:
         record = {int(v) for v in args.video_seeds.split(",") if v.strip()}
@@ -726,6 +783,7 @@ def main() -> int:
                     entity_max_entities=entity_max_entities, model_ids=model_ids,
                     entity_noise=entity_noise, entity_visual=entity_visual,
                     future_keyframe=future_keyframe, future_source=future_source,
+                    camera_interventions=camera_interventions,
                     arm_targets=getattr(config, "action_source", "gaussian") != "gaussian",
                     task_text=task_text,
                     trace_path=(args.trace_dir / f"{profile}_seed{seed}.npz"
@@ -784,7 +842,10 @@ def main() -> int:
                           "trained_rho": trained_rho},
         "future_intervention": {
             "support_pool": str(args.future_support_pool) if args.future_support_pool else None,
-            "oracle_rule": args.oracle_rule},
+            "oracle_rule": args.oracle_rule,
+            "pose_support": str(args.pose_support) if args.pose_support else None},
+        "camera_interventions": [list(c) for c in camera_interventions],
+        "action_residual": bool(getattr(config, "action_residual", False)),
         "entity_noise": dataclasses.asdict(entity_noise),
         "execution": {
             "n_action_steps": getattr(config, "n_action_steps", None),

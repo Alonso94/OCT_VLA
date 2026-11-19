@@ -9,6 +9,11 @@
 #   DRY_RUN=1 slurm/submit_bpfn.sh eval       # synthetic packs, bound to train receipts
 #   DRY_RUN=1 slurm/submit_bpfn.sh pilot      # wave 2, only after the canary passes
 #   DRY_RUN=1 BPFN_RUN=... SUPPORT_RED=... SUPPORT_BLUE=... slurm/submit_bpfn.sh online
+#   Stage 3 (after the stage-2 gate):
+#   DRY_RUN=1 BPFN_PFN_RUN=... slurm/submit_bpfn.sh views          # per budget 4 / 8 / 16
+#   DRY_RUN=1 SUPPORT_RED=... SUPPORT_BLUE=... slurm/submit_bpfn.sh act   # 3 budgets x 3 seeds
+#   DRY_RUN=1 slurm/submit_bpfn.sh groot                            # budget 16, 3 seeds
+#   DRY_RUN=1 BPFN_CHECKPOINT=... BPFN_VIEW=... slurm/submit_bpfn.sh camera_check
 #
 # Seeds of the new corpus (docs/data_protocol.md): colour source 2000-2199, colour
 # dev 2200-2249, support banks 2250-2299, count queries 2300-2399. Evaluation scenes
@@ -19,6 +24,9 @@ source "${OCTVLA_ENV:-$HOME/octvla/env-v4.sh}"
 export OCTVLA_REPO="${OCTVLA_REPO:-$HOME/OCT_VLA}"
 export BPFN_ROOT="${BPFN_ROOT:-$HPCVAULT/octvla-bpfn}"
 COLLECT_ROOT="${BPFN_COLLECT_ROOT:-$HPCVAULT/octvla-collection-bpfn}"
+#: Stage 3: executor views and runs, apart from the v4 roots (same filesystem: hard links).
+BPFN_DATA="${BPFN_DATA:-$BPFN_ROOT/datasets}"
+BPFN_EXEC="${BPFN_EXEC:-$BPFN_ROOT/executors}"
 ACCOUNT="${SLURM_ACCOUNT:-g101ea}"
 SB=(--account="$ACCOUNT" --partition=a40 --gres=gpu:a40:1 --exclude=a0423,a0425)
 LOGS="$BPFN_ROOT/slurm_logs"
@@ -114,6 +122,80 @@ case "$STAGE" in
           --export=ALL slurm/bpfn_online.sbatch
       done
     done
+    ;;
+  views)
+    # Stage 3 data, one job per budget: corpus -> eeabs -> pose-window and support banks.
+    : "${BPFN_PFN_RUN:?the selected PFN run (stage 2 gate)}"
+    for n in ${BPFN_BUDGETS:-4 8 16}; do
+      submit BPFN_BUDGET="$n" BPFN_COLLECT_ROOT="$COLLECT_ROOT" BPFN_PFN_RUN="$BPFN_PFN_RUN" \
+             OCTVLA_DATASET_ROOT="$BPFN_DATA" -- \
+        "${SB[@]}" --job-name="bpfn-views-r$n" --output="$LOGS/views-r$n-%j.out" \
+        --export=ALL slurm/bpfn_views.sbatch
+    done
+    ;;
+  act)
+    # Stage 3 ACT: per budget and seed, stage-1 RGB, then four conditioned arms from it
+    # (scene-only kv; direct-demo support table; PFN window full actions; PFN window
+    # residual), then the paired rollouts (support red / server red, support blue /
+    # server blue, resets 800-809, one palette). AFTER_VIEWS=<jobid> chains to the views.
+    : "${SUPPORT_RED:?a restock_red support run}"; : "${SUPPORT_BLUE:?a restock_blue support run}"
+    mkdir -p "$BPFN_EXEC/run_metadata" 2>/dev/null || true
+    for n in ${BPFN_BUDGETS:-4 8 16}; do
+      base="bpfn_colour_r${n}_eeabs"
+      for seed in ${BPFN_EXEC_SEEDS:-1000 1001 1002}; do
+        dep=""; [ -n "${AFTER_VIEWS:-}" ] && dep="--dependency=afterok:$AFTER_VIEWS"
+        common=(OCTVLA_DATASET_ROOT="$BPFN_DATA" OCTVLA_OUTPUT_ROOT="$BPFN_EXEC" TRAIN_SEED="$seed"
+                TRAIN_STEPS="${ACT_STEPS:-40000}" CHUNK_SIZE=50 N_ACTION_STEPS=25)
+        s1=$(submit "${common[@]}" ACT_DATASET="$base" ACT_POLICY_TYPE=act -- \
+          "${SB[@]}" $dep --job-name="bpfn-act1-r$n-s$seed" \
+          --output="$LOGS/act1-r$n-s$seed-%j.out" --export=ALL slurm/train_act_shelf_restock.sbatch)
+        stage1="$BPFN_EXEC/act_${base}_s${seed}/checkpoints/last/pretrained_model"
+        for arm in "scene_only $base 0" "direct_demo ${base}_st4 0" "pfn_full ${base}_pw4 0" \
+                   "pfn_residual ${base}_pw4 1"; do
+          read -r name view residual <<< "$arm"
+          suffix=""; [ "$residual" = 1 ] && suffix=residual
+          t=$(submit "${common[@]}" ACT_DATASET="$view" ACT_POLICY_TYPE=control_act CONDITIONING=kv \
+                     ACT_PRETRAINED="$stage1" ACTION_RESIDUAL="$residual" RUN_SUFFIX="$suffix" -- \
+            "${SB[@]}" --dependency=afterok:"$s1" --job-name="bpfn-act-$name-r$n-s$seed" \
+            --output="$LOGS/act-$name-r$n-s$seed-%j.out" --export=ALL slurm/train_act_shelf_restock.sbatch)
+          run="control_act_${view}_s${seed}"; [ -n "$suffix" ] && run="${run}_${suffix}"
+          ckpt="$BPFN_EXEC/$run/checkpoints/last/pretrained_model"
+          for rule in restock_red restock_blue; do
+            sup="$SUPPORT_RED"; [ "$rule" = restock_blue ] && sup="$SUPPORT_BLUE"
+            [ "$name" = scene_only ] && sup=""
+            submit EVAL_CHECKPOINT="$ckpt" EVAL_DATASET="$view" OCTVLA_DATASET_ROOT="$BPFN_DATA" \
+                   OCTVLA_OUTPUT_ROOT="$BPFN_EXEC" EVAL_SEEDS=800-809 EVAL_PROFILES=four_object \
+                   EVAL_RULE="$rule" OCTVLA_COLOURS=red,blue EVAL_POSE_SUPPORT="$sup" \
+                   EVAL_TAG="act-$name-r$n-s$seed-$rule" EVAL_MAX_STEPS=900 \
+                   EVAL_TRACE_DIR="$BPFN_EXEC/traces/act-$name-r$n-s$seed-$rule" -- \
+              "${SB[@]}" --dependency=afterok:"$t" --job-name="bpfn-eval-$name-r$n-s$seed-$rule" \
+              --time=06:00:00 --output="$LOGS/eval-act-$name-r$n-s$seed-$rule-%j.out" \
+              --export=ALL slurm/eval_shelf_restock.sbatch >/dev/null
+          done
+        done
+      done
+    done
+    ;;
+  groot)
+    # Stage 3 GR00T at one budget (BPFN_GROOT_BUDGET, default 16), 3 seeds: stage 1 on the
+    # eeabs base, then kv / kv_residual on the pose-window view and kv on the support view.
+    n="${BPFN_GROOT_BUDGET:-16}"
+    export OCTVLA_DATASET_ROOT="$BPFN_DATA" OCTVLA_OUTPUT_ROOT="$BPFN_EXEC" SLURM_ACCOUNT="$ACCOUNT"
+    PHASE=stage1 CORPUS="bpfn_r$n" BACKBONES=groot REGIMES=F SEEDS="${BPFN_EXEC_SEEDS:-1000 1001 1002}" \
+      ROLLOUTS=" " bash slurm/submit_vla_experiments.sh
+    PHASE=stage2 CORPUS="bpfn_r${n}_pw" BACKBONES=groot REGIME_groot=F \
+      SEEDS="${BPFN_EXEC_SEEDS:-1000 1001 1002}" ARMS="kv kv_residual" ROLLOUTS=" " \
+      bash slurm/submit_vla_experiments.sh
+    PHASE=stage2 CORPUS="bpfn_r${n}_st" BACKBONES=groot REGIME_groot=F \
+      SEEDS="${BPFN_EXEC_SEEDS:-1000 1001 1002}" ARMS="kv" ROLLOUTS=" " \
+      bash slurm/submit_vla_experiments.sh
+    ;;
+  camera_check)
+    : "${BPFN_CHECKPOINT:?a trained executor checkpoint}"; : "${BPFN_VIEW:?its dataset view}"
+    submit BPFN_CHECKPOINT="$BPFN_CHECKPOINT" BPFN_VIEW="$BPFN_VIEW" \
+           BPFN_OUT="$BPFN_ROOT/camera_check/$(basename "$(dirname "$(dirname "$(dirname "$BPFN_CHECKPOINT")")")")" -- \
+      "${SB[@]}" --job-name=bpfn-camera-check --output="$LOGS/camera-check-%j.out" \
+      --export=ALL slurm/bpfn_camera_check.sbatch
     ;;
   *) echo "unknown stage $STAGE" >&2; exit 2 ;;
 esac

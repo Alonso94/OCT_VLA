@@ -512,3 +512,17 @@ one split. Every attempted seed is used once; a discarded seed is not retried.
 3+1 support; `scripts/bpfn_canary_report.py` checks colour, rendering (contact sheet),
 codec round trip, distractor stillness and command alignment, and writes `CANARY_PASSED`,
 which the pilot stage requires.
+
+**Stage 3 views (executors).** Per run budget N (4 < 8 < 16 layout families, nested by
+ascending seed), `slurm/bpfn_views.sbatch` builds `bpfn_colour_rN_unified`, its eeabs
+view, and two bank views under `$HPCVAULT/octvla-bpfn/datasets`:
+- `_pw4`: per frame, four PFN windows (2H pose tokens each) from four supports drawn
+  from *other* runs of the same rule (`scripts/add_pose_window.py --kind pose_window`);
+- `_st4`: the same four supports as raw tables (both wrists over time, every object's
+  start and end), the direct-demonstration baseline (`--kind support_table`).
+
+Training takes one bank entry per sample, evaluation entry 0 with one recorded support per
+rollout (`eval_shelf_restock_policy.py --pose-support`). The residual arm learns the
+expert chunk minus the window in the action's normalised space (pose columns; grippers
+absolute). Rollouts score each support against its own rule (`EVAL_RULE`, server
+`--rule`) on resets 800-809 with one fixed palette (`OCTVLA_COLOURS=red,blue`).

@@ -62,7 +62,7 @@ def entity_training_args(dataset: Path) -> list[str]:
         # The view says what it holds (add_future_keyframe.py); a latent view
         # carries the prior's cells, whose width is the prior's, not FUTURE_DIM.
         kind = info.get("future_keyframe", {}).get("kind", "keyframe")
-        if kind not in ("keyframe", "latent"):
+        if kind not in ("keyframe", "latent", "pose_window", "support_table"):
             raise ValueError(f"unknown future_keyframe kind {kind!r}")
         if len(shape) != 2 or mask != shape[:1]:
             raise ValueError(f"observation.future_keyframe is {shape} with mask {mask}; "
@@ -72,6 +72,22 @@ def entity_training_args(dataset: Path) -> list[str]:
         if kind == "keyframe" and len(FUTURE_LAYOUTS.get(shape[1], ())) != shape[0]:
             raise ValueError(f"observation.future_keyframe is {shape}; a keyframe view must "
                              f"be one of {[[len(r), d] for d, r in FUTURE_LAYOUTS.items()]}")
+        if kind in ("pose_window", "support_table"):
+            # BimanualPFN pose tokens (add_pose_window.py): a bank of K entries of R rows.
+            fk = info["future_keyframe"]
+            bank, rows = int(fk["bank"]), int(fk["rows"])
+            if shape != [bank * rows, fk["dim"]]:
+                raise ValueError(f"observation.future_keyframe is {shape}; the view declares "
+                                 f"{bank} x {rows} rows of {fk['dim']}")
+            stats = json.loads((dataset / "meta" / "stats.json").read_text())["action"]
+            residual = {k: [float(v) for v in stats[k]] for k in ("mean", "std", "min", "max")}
+            if any(len(v) != 16 for v in residual.values()):
+                raise ValueError("pose tokens need the 16-column eeabs action stats")
+            return args + ["--policy.object_future=true", f"--policy.object_future_kind={kind}",
+                           f"--policy.object_future_rows={rows}",
+                           f"--policy.object_future_dim={fk['dim']}",
+                           f"--policy.object_future_bank={bank}",
+                           "--policy.action_residual_stats=" + json.dumps(residual, separators=(",", ":"))]
         args += ["--policy.object_future=true", f"--policy.object_future_rows={shape[0]}"]
         if kind == "latent":
             args += ["--policy.object_future_kind=latent", f"--policy.object_future_dim={shape[1]}"]

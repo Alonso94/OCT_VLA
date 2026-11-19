@@ -47,6 +47,13 @@ SPLIT_BLOCKS: dict[str, dict[str, tuple[range, ...]]] = {
     },
     "two_object": {"val": (range(400, 450),)},
     "four_object": {"val": (range(600, 650),)},
+    # The BimanualPFN colour corpus (docs/data_protocol.md section 9): four-object
+    # restock_red / restock_blue runs. --max-runs counts layout families (a seed under
+    # both rules and its swapped twin are one family), so 4 < 8 < 16 nest.
+    "bpfn_colour": {
+        "train": (range(2000, 2200),),
+        "val": (range(2200, 2250),),
+    },
 }
 
 

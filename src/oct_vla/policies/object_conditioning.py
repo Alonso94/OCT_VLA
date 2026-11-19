@@ -549,7 +549,7 @@ class ObjectConditionedPolicyMixin(VerifiedLoadMixin):
 
         tokens = batched(batch[FUTURE_KEYFRAME], unbatched_ndim=2)
         mask = batched(batch[FUTURE_MASK], unbatched_ndim=1)
-        if not bool((mask > 0.5).all()):
+        if not bool((mask.float() > 0.5).all()):
             raise ValueError("residual actions need a complete PFN window (no masked token)")
         return tokens_to_window(tokens)
 

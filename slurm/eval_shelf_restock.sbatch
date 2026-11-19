@@ -48,9 +48,13 @@ cd "$OCTVLA_ROBOTWIN_ROOT"
 # lights). Told to both processes: the server renders it, the client records it.
 SHIFT_FLAG=()
 [ "${EVAL_VISUAL_SHIFT:-0}" = 1 ] && SHIFT_FLAG=(--visual-shift)
+# EVAL_RULE: score against this rule (BimanualPFN colour rules); object colours come from
+# OCTVLA_COLOURS in the environment, which the server process inherits.
+RULE_FLAG=()
+[ -n "${EVAL_RULE:-}" ] && RULE_FLAG=(--rule "$EVAL_RULE")
 "$OCTVLA_ROBOTWIN_PYTHON" -u -B "$OCTVLA_REPO/scripts/robotwin_eval_server.py" \
   --robotwin-root "$OCTVLA_ROBOTWIN_ROOT" \
-  --host 127.0.0.1 --port "$EVAL_PORT" --ready-file "$READY" "${SHIFT_FLAG[@]}" &
+  --host 127.0.0.1 --port "$EVAL_PORT" --ready-file "$READY" "${SHIFT_FLAG[@]}" "${RULE_FLAG[@]}" &
 SERVER_PID=$!
 # Kill the simulator however this script exits, or it survives as an orphan
 # holding a GPU render context for the rest of the allocation.
@@ -92,6 +96,10 @@ EXEC_FLAG=()
 [ -n "${EVAL_TRACE_DIR:-}" ] && EXEC_FLAG+=(--trace-dir "$EVAL_TRACE_DIR")
 # Conditional-source arms: inference-only mixture weight (0 = Gaussian, 1 = proposal).
 [ -n "${EVAL_SOURCE_RHO:-}" ] && EXEC_FLAG+=(--source-rho "$EVAL_SOURCE_RHO")
+# BimanualPFN pose-token checkpoints: the recorded support this rollout reads, and the
+# visual test's camera interventions (space-separated CAMERA:MODE:START-END).
+[ -n "${EVAL_POSE_SUPPORT:-}" ] && EXEC_FLAG+=(--pose-support "$EVAL_POSE_SUPPORT")
+for iv in ${EVAL_CAMERA_INTERVENTIONS:-}; do EXEC_FLAG+=(--camera-intervention "$iv"); done
 
 VIDEO_FLAG=()
 if [ -n "${EVAL_VIDEO_DIR:-}" ]; then

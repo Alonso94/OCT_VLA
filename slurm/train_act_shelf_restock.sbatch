@@ -77,6 +77,9 @@ case "$ACT_POLICY_TYPE" in
     ENTITY_ARGS_TEXT=$("$OCTVLA_POLICY_PYTHON" "$OCTVLA_REPO/scripts/entity_training_args.py" "$DATASET")
     mapfile -t ENTITY_ARGS <<< "$ENTITY_ARGS_TEXT"
     POLICY_ARGS+=(--policy.discover_packages_path=oct_vla.policies "${ENTITY_ARGS[@]}")
+    # BimanualPFN stage 3: learn the expert chunk minus the PFN window (a pose-window
+    # view only; the config refuses it anywhere else).
+    if [ "${ACTION_RESIDUAL:-0}" = 1 ]; then POLICY_ARGS+=(--policy.action_residual=true); fi
     # The arm (oct_vla.policies.conditioning): kv, kv_adaln or kv_tokens.
     # Refused rather than ignored if unknown -- an ignored arm variable is how
     # the old `semantic` arm trained the entity model under another name.

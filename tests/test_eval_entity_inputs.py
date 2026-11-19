@@ -227,3 +227,33 @@ def test_the_task_text_replaces_the_scenes_instruction_when_given():
         "Restock the leftmost object"]
     batch = module.build_observation(obs, torch=torch, np=np, task_text=GENERIC_INSTRUCTION)
     assert batch["task"] == [GENERIC_INSTRUCTION]
+
+
+def test_camera_interventions_blank_or_freeze_only_their_camera_and_interval():
+    import importlib.util
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    spec = importlib.util.spec_from_file_location(
+        "evalmod", Path(__file__).resolve().parents[1] / "scripts" / "eval_shelf_restock_policy.py")
+    E = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(E)
+    iv = E.parse_camera_interventions(["left_wrist_camera:freeze:2-3", "head_camera:blank:5-5"])
+
+    def obs(v):
+        frame = SimpleNamespace(data=bytes([v]) * 12, height=2, width=2)
+        return SimpleNamespace(frame=lambda camera: frame)
+
+    frozen = {}
+    assert E.camera_overrides(iv, 1, obs(1), frozen, np) == {}
+    first = E.camera_overrides(iv, 2, obs(2), frozen, np)["left_wrist_camera"]
+    later = E.camera_overrides(iv, 3, obs(3), frozen, np)["left_wrist_camera"]
+    assert first.max() == 2 and later.max() == 2          # frozen at the interval's start
+    blank = E.camera_overrides(iv, 5, obs(5), frozen, np)
+    assert set(blank) == {"head_camera"} and blank["head_camera"].max() == 0
+    import pytest
+
+    with pytest.raises(SystemExit):
+        E.parse_camera_interventions(["left_wrist_camera:smudge:1-2"])
