@@ -48,6 +48,12 @@ def relative(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return np.concatenate([Q.rotate(qi, b[:3] - a[:3]), Q.multiply(qi, b[3:])])
 
 
+def invert(a: np.ndarray) -> np.ndarray:
+    """The inverse pose a^-1."""
+    qi = Q.inverse(a[3:])
+    return np.concatenate([-Q.rotate(qi, a[:3]), qi])
+
+
 def grip_point(wrist: np.ndarray) -> np.ndarray:
     return wrist[:3] + Q.rotate(wrist[3:], np.array([0.0, 0.0, TOOL_OFFSET]))
 

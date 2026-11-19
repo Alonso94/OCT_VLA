@@ -89,6 +89,7 @@ class Table:
     time: np.ndarray            # [T]
     pose: np.ndarray            # [T, C, 7]
     observed: np.ndarray        # [T, C] bool: a real measurement this row
+    age: np.ndarray             # [T, C] s since the cell's last real measurement (0 if fresh)
     kind: np.ndarray            # [C]
     colour: np.ndarray          # [C]
     category: np.ndarray        # [C]
@@ -97,7 +98,7 @@ class Table:
     goal_valid: np.ndarray      # [T, 2] bool
     tracks: tuple[str, ...]     # evaluator-only: column -> track id ("left"/"right" for wrists)
 
-    MODEL_FIELDS = ("time", "pose", "observed", "kind", "colour", "category", "size",
+    MODEL_FIELDS = ("time", "pose", "observed", "age", "kind", "colour", "category", "size",
                     "goal", "goal_valid")
 
     def model_inputs(self) -> dict[str, np.ndarray]:
@@ -117,8 +118,16 @@ def _columns(ep: Episode, rows: np.ndarray):
     return pose.astype(np.float32), kind, colour, category, size, ("left", "right") + ep.track_ids
 
 
-def support_table(ep: Episode, rows: np.ndarray | None = None,
-                  observed: np.ndarray | None = None) -> Table:
+def _observation(ep: Episode, rows: np.ndarray, pose: np.ndarray, obs):
+    """Apply an observation process ``obs = (pose [T, C, 7], observed [T, C], age [T, C])``
+    over the episode's columns (``observation.py``); None means clean."""
+    if obs is None:
+        return pose, np.ones(pose.shape[:2], bool), np.zeros(pose.shape[:2], np.float32)
+    o_pose, o_obs, o_age = obs
+    return o_pose[rows].astype(np.float32), o_obs[rows], o_age[rows].astype(np.float32)
+
+
+def support_table(ep: Episode, rows: np.ndarray | None = None, obs=None) -> Table:
     """A completed demonstration: chosen rows, each with both wrists' next-row poses as
     goals. ``rows`` defaults to every row; a goal is the wrist at the *next selected* row's
     absolute timestamp, so subsampling never shifts a target by a step."""
@@ -130,23 +139,22 @@ def support_table(ep: Episode, rows: np.ndarray | None = None,
     goal_valid = np.zeros((len(rows), 2), bool)
     goal[:-1] = ep.wrist[rows[1:]]
     goal_valid[:-1] = True
-    obs = np.ones(pose.shape[:2], bool) if observed is None else observed[rows]
-    return Table(ep.time[rows].astype(np.float32), pose, obs, kind, colour, category, size,
-                 goal, goal_valid, tracks)
+    pose, observed, age = _observation(ep, rows, pose, obs)
+    return Table(ep.time[rows].astype(np.float32), pose, observed, age, kind, colour, category,
+                 size, goal, goal_valid, tracks)
 
 
-def query_table(ep: Episode, t: int, history: int = 16,
-                observed: np.ndarray | None = None) -> Table:
+def query_table(ep: Episode, t: int, history: int = 16, obs=None) -> Table:
     """The observed prefix ending at row ``t`` (inclusive), at most ``history`` rows. No
     row after t enters, and the goal columns are masked placeholders."""
     if not 0 <= t < ep.T:
         raise IndexError(f"query time {t} outside the episode (T={ep.T})")
     rows = np.arange(max(0, t - history + 1), t + 1)
     pose, kind, colour, category, size, tracks = _columns(ep, rows)
-    obs = np.ones(pose.shape[:2], bool) if observed is None else observed[rows]
-    return Table(ep.time[rows].astype(np.float32), pose, obs, kind, colour, category, size,
-                 np.zeros((len(rows), 2, POSE_DIM), np.float32), np.zeros((len(rows), 2), bool),
-                 tracks)
+    pose, observed, age = _observation(ep, rows, pose, obs)
+    return Table(ep.time[rows].astype(np.float32), pose, observed, age, kind, colour, category,
+                 size, np.zeros((len(rows), 2, POSE_DIM), np.float32),
+                 np.zeros((len(rows), 2), bool), tracks)
 
 
 def target_window(ep: Episode, t: int, horizon: int = 8,
@@ -169,7 +177,7 @@ def shuffle_columns(table: Table, rng: np.random.Generator) -> tuple[Table, np.n
     """Permute entity columns; every column keeps its header, masks and track."""
     perm = rng.permutation(table.pose.shape[1])
     return replace(table, pose=table.pose[:, perm], observed=table.observed[:, perm],
-                   kind=table.kind[perm], colour=table.colour[perm],
+                   age=table.age[:, perm], kind=table.kind[perm], colour=table.colour[perm],
                    category=table.category[perm], size=table.size[perm],
                    tracks=tuple(table.tracks[i] for i in perm)), perm
 
