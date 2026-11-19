@@ -26,6 +26,7 @@ class RawObjectEvidence:
     confidence: float = 1.0
     support_surface: str | None = None
     category: str | None = None
+    colour: str | None = None
 
 
 @runtime_checkable
@@ -52,6 +53,7 @@ class GroundTruthObjectStateEstimator:
                 confidence=evidence.confidence,
                 support_surface=evidence.support_surface,
                 category=evidence.category,
+                colour=getattr(evidence, "colour", None),
             )
             for evidence in self.source.read()
         )

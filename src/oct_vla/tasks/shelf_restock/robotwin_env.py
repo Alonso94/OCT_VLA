@@ -15,6 +15,7 @@ the RoboTwin checkout -- see RoboTwinNativePort._load_task_class.
 
 import os
 import random
+from contextlib import contextmanager
 from typing import Any
 
 from envs._base_task import Base_Task
@@ -147,6 +148,13 @@ class ShelfRestockTask(Base_Task):
     def _load_objects(self) -> None:
         spec = self.spec
         rng = random.Random(self._episode_seed)
+        # Colours come from their own stream (colours.assign), decided before spawning
+        # because the material is set when the visual is built. Off unless configured.
+        from oct_vla.tasks.shelf_restock import colours as _colours
+
+        palette, swap = _colours.from_env()
+        colour_names = (_colours.assign(self._episode_seed, self.object_count, palette, swap)
+                        if palette else [None] * self.object_count)
 
         self.tracked_objects: dict[str, Any] = {}
         #: track_id -> the mesh variant actually spawned. Reported back to the
@@ -225,13 +233,15 @@ class ShelfRestockTask(Base_Task):
             rotated = rotate(orientation, offset)
             position = tuple(c - r for c, r in zip(center, rotated, strict=True))
 
-            actor = create_actor(
-                scene=self,
-                pose=_sapien_pose(position, multiply(orientation, UPRIGHT_ROTATION)),
-                modelname=model,
-                convex=True,
-                model_id=model_id,
-            )
+            colour = colour_names[index]
+            with _visual_material(None if colour is None else _colours.RGB[colour]):
+                actor = create_actor(
+                    scene=self,
+                    pose=_sapien_pose(position, multiply(orientation, UPRIGHT_ROTATION)),
+                    modelname=model,
+                    convex=True,
+                    model_id=model_id,
+                )
             if actor is None:
                 raise RuntimeError(f"RoboTwin could not build {model} model_id={model_id}")
             # create_actor names every instance after the asset, so all three
@@ -241,7 +251,7 @@ class ShelfRestockTask(Base_Task):
             actor.actor.set_name(f"restock_object_{index}")
             self.spawned_model_ids[f"obj_{index}"] = int(model_id)
             self.tracked_objects[f"obj_{index}"] = TrackedObject(
-                actor, size, UPRIGHT_ROTATION, offset, category=model
+                actor, size, UPRIGHT_ROTATION, offset, category=model, colour=colour
             )
 
     def _spaced_x_positions(self, spec, rng) -> list[float]:
@@ -290,9 +300,11 @@ class ShelfRestockTask(Base_Task):
         object's base, right at the deck surface -- close enough to the band
         edge to decide this either way for the wrong reason.
         """
+        wanted = self.spec.eligible_colour
         return all(
             not self.spec.lower_shelf.contains(self._object_center(entry))
             for entry in self.tracked_objects.values()
+            if wanted is None or getattr(entry, "colour", None) == wanted
         )
 
     @staticmethod
@@ -338,7 +350,7 @@ class TrackedObject:
     both when reporting a canonical ObjectState.
     """
 
-    __slots__ = ("actor", "size_xyz", "upright_rotation", "center_offset", "category")
+    __slots__ = ("actor", "size_xyz", "upright_rotation", "center_offset", "category", "colour")
 
     def __init__(
         self,
@@ -347,6 +359,7 @@ class TrackedObject:
         upright_rotation: tuple[float, float, float, float] = UPRIGHT_ROTATION,
         center_offset: tuple[float, float, float] = (0.0, 0.0, 0.0),
         category: str | None = None,
+        colour: str | None = None,
     ) -> None:
         self.actor = actor
         self.size_xyz = size_xyz
@@ -354,6 +367,38 @@ class TrackedObject:
         self.center_offset = center_offset
         #: The asset name, reported as the object's category.
         self.category = category
+        #: The colour the object was rendered with (None = the asset's own texture).
+        self.colour = colour
+
+
+@contextmanager
+def _visual_material(rgb):
+    """Build every file visual inside the block with one solid base colour.
+
+    RoboTwin's ``create_actor`` builds its visual with ``add_visual_from_file(..., no
+    material)``. SAPIEN may share a loaded mesh's materials between instances, so editing
+    a spawned actor's material could recolour every instance of the variant; a material
+    passed at build time is the instance's own. ``rgb=None`` leaves the builder untouched.
+    """
+    if rgb is None:
+        yield
+        return
+    import sapien
+    from sapien.wrapper.actor_builder import ActorBuilder
+
+    original = ActorBuilder.add_visual_from_file
+    material = sapien.render.RenderMaterial(base_color=[*rgb, 1.0], roughness=0.6,
+                                            metallic=0.0)
+
+    def with_material(self, filename, **kwargs):
+        kwargs["material"] = material
+        return original(self, filename, **kwargs)
+
+    ActorBuilder.add_visual_from_file = with_material
+    try:
+        yield
+    finally:
+        ActorBuilder.add_visual_from_file = original
 
 
 def _yaw_of(orientation: tuple[float, float, float, float]) -> float:

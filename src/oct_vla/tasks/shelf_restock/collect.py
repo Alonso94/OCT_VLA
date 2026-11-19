@@ -129,6 +129,7 @@ def collect_episode(
             upright_rotation=entry.upright_rotation,
             center_offset=entry.center_offset,
             category=getattr(entry, "category", None),
+            colour=getattr(entry, "colour", None),
         )
         for track_id, entry in task.tracked_objects.items()
     }

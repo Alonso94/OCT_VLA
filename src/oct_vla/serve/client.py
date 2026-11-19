@@ -189,8 +189,12 @@ class ShelfRestockEvalClient:
         max_steps: int | None = None,
         future_keyframe: str = "none",
         arm_targets: bool = False,
+        post_success_steps: int = 0,
     ) -> RemoteObservation:
         """Start a fresh scene. Raises if the simulator cannot build that seed.
+
+        `post_success_steps` keeps the episode running that many steps after first
+        success (dwell and extra-reach scoring); the server must echo it.
 
         `max_steps` is the step limit the server ends the episode at. It was once
         never sent, so the server's default of 600 silently capped every
@@ -226,7 +230,14 @@ class ShelfRestockEvalClient:
         if arm_targets:
             header["arm_targets"] = True
         self._arm_targets = arm_targets
-        observation = _observation(self._round_trip(header))
+        if post_success_steps:
+            header["post_success_steps"] = int(post_success_steps)
+        reply = self._round_trip(header)
+        if post_success_steps and int(reply.header.get("post_success_steps", 0)) != post_success_steps:
+            raise protocol.ProtocolError(
+                f"requested a {post_success_steps}-step post-success dwell but the server "
+                f"applies {reply.header.get('post_success_steps', 'none (too old?)')}")
+        observation = _observation(reply)
         if arm_targets and (observation.arm_targets_source != "oracle_arms"
                             or observation.arm_targets is None):
             raise protocol.ProtocolError("requested arm_targets but the server sent none "

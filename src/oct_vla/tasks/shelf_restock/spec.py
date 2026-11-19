@@ -153,7 +153,22 @@ RULE_INSTRUCTIONS = {
         "Restock the middle object first, then the others from left to right, from the "
         "lower shelf to the upper shelf, compacting each toward the previous neighbor."
     ),
+    # Semantic selection (BimanualPFN): only objects of one colour are restocked; the
+    # others are distractors and stay on the lower shelf. The expert takes eligible
+    # objects leftmost first (a deterministic tie-break, not part of the rule: scoring
+    # accepts any eligible first pick). Collection only: policies see GENERIC_INSTRUCTION.
+    "restock_red": (
+        "Restock every red object from the lower shelf to the upper shelf, compacting "
+        "each toward the previous neighbor; leave the other objects where they are."
+    ),
+    "restock_blue": (
+        "Restock every blue object from the lower shelf to the upper shelf, compacting "
+        "each toward the previous neighbor; leave the other objects where they are."
+    ),
 }
+
+#: The colour a semantic rule selects; rules not listed select every object.
+RULE_ELIGIBLE_COLOUR = {"restock_red": "red", "restock_blue": "blue"}
 
 #: The rule-free instruction of a mixed-rule corpus (effect-conditioned VLA): it names
 #: the task but not the order, which only the effect conditioning supplies. Training
@@ -184,6 +199,11 @@ class ShelfRestockSpec:
     #: instruction must name the same thing, or a language-conditioned policy is
     #: told one order and shown another.
     rule: str = "leftmost"
+
+    @property
+    def eligible_colour(self) -> str | None:
+        """The colour this spec's rule restocks; None = every object is eligible."""
+        return RULE_ELIGIBLE_COLOUR.get(self.rule)
 
     def __post_init__(self) -> None:
         object.__setattr__(

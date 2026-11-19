@@ -63,6 +63,8 @@ class TrackedActor:
     #: Reported as the object's category so a multi-category scene is
     #: describable; None reproduces the single-asset corpora exactly.
     category: str | None = None
+    #: The colour the actor was rendered with (``robotwin_env`` tint); None = untinted.
+    colour: str | None = None
 
 
 class RoboTwinObjectEvidenceSource:
@@ -90,6 +92,7 @@ class RoboTwinObjectEvidenceSource:
                     confidence=entry.confidence,
                     support_surface=entry.support_surface,
                     category=entry.category,
+                    colour=entry.colour,
                 )
             )
         return tuple(evidence)

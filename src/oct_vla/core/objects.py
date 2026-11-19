@@ -38,6 +38,10 @@ def _nonempty(value: str, name: str) -> str:
     return value
 
 
+#: Object colours a task may render and a rule may select on (stable names).
+COLOURS = ("red", "blue", "green", "yellow")
+
+
 @dataclass(frozen=True)
 class ObjectState:
     """One tracked object: episode-local identity, workcell pose, own-frame size."""
@@ -54,6 +58,10 @@ class ObjectState:
     #: every corpus recorded before the multi-category change, which is why
     #: every reader must default it rather than require it.
     category: str | None = None
+    #: The object's realised surface colour, one of ``COLOURS`` (the name the simulator
+    #: actually rendered, persisted at spawn). None = unknown: every corpus recorded
+    #: before semantic colour, and any object no tint was applied to.
+    colour: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "track_id", _nonempty(self.track_id, "track_id"))
@@ -75,6 +83,8 @@ class ObjectState:
             )
         if self.category is not None:
             object.__setattr__(self, "category", _nonempty(self.category, "category"))
+        if self.colour is not None and self.colour not in COLOURS:
+            raise ValueError(f"colour must be one of {COLOURS} or None, got {self.colour!r}")
 
 
 @dataclass(frozen=True)

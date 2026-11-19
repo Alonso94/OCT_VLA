@@ -60,12 +60,38 @@ def _select_middle(remaining: tuple[str, ...], scene: ObjectScene) -> str:
     return ordered[len(ordered) // 2]
 
 
-#: Selector per transfer rule (`ShelfRestockSpec.rule`).
+#: Selector per transfer rule (`ShelfRestockSpec.rule`). The semantic rules choose among
+#: *eligible* objects only (``eligible``); leftmost-first is their tie-break.
 SELECTORS: dict[str, Selector] = {
     "leftmost": _select_leftmost,
     "rightmost": _select_rightmost,
     "middle": _select_middle,
+    "restock_red": _select_leftmost,
+    "restock_blue": _select_leftmost,
 }
+
+#: How far a distractor may move (m) before the scene counts as disturbed.
+DISTRACTOR_TOLERANCE = 0.02
+
+
+def eligible(scene: ObjectScene, spec: ShelfRestockSpec) -> tuple[str, ...]:
+    """Objects the spec's rule restocks: all of them, or those of its colour."""
+    colour = spec.eligible_colour
+    return tuple(o.track_id for o in scene.objects if colour is None or o.colour == colour)
+
+
+def distractors_preserved(scene: ObjectScene, initial: ObjectScene,
+                          spec: ShelfRestockSpec) -> bool:
+    """Every non-eligible object within ``DISTRACTOR_TOLERANCE`` of its initial position."""
+    keep = set(o.track_id for o in initial.objects) - set(eligible(initial, spec))
+    for track_id in keep:
+        now, start = scene.get(track_id), initial.get(track_id)
+        if now is None:
+            return False
+        d = sum((a - b) ** 2 for a, b in zip(now.pose.position, start.pose.position)) ** 0.5
+        if d > DISTRACTOR_TOLERANCE:
+            return False
+    return True
 
 
 def objects_on_lower_shelf(scene: ObjectScene, spec: ShelfRestockSpec) -> tuple[str, ...]:
@@ -117,7 +143,8 @@ class ShelfRestockManager:
         the oracle, which only ever moves objects upward, but it is NOT a
         success test for a policy -- see `is_restocked`.
         """
-        return not objects_on_lower_shelf(scene, self.spec)
+        allowed = set(eligible(scene, self.spec))
+        return not [t for t in objects_on_lower_shelf(scene, self.spec) if t in allowed]
 
     def is_restocked(self, scene: ObjectScene) -> bool:
         """Every object in the scene is on the upper shelf.
@@ -129,12 +156,12 @@ class ShelfRestockManager:
         nothing. Requiring the objects to be *somewhere specific* cannot be
         satisfied by destroying the scene.
         """
-        return bool(scene.objects) and len(objects_on_upper_shelf(scene, self.spec)) == len(
-            scene.objects
-        )
+        targets = set(eligible(scene, self.spec))
+        return bool(targets) and targets <= set(objects_on_upper_shelf(scene, self.spec))
 
     def next_context(self, scene: ObjectScene) -> TaskContext | None:
-        remaining = objects_on_lower_shelf(scene, self.spec)
+        allowed = set(eligible(scene, self.spec))
+        remaining = tuple(t for t in objects_on_lower_shelf(scene, self.spec) if t in allowed)
         if not remaining:
             return None
         target = self._selector(remaining, scene)

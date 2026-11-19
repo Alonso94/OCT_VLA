@@ -35,6 +35,7 @@ from oct_vla.serve import protocol
 from oct_vla.serve.codec import context_to_json, eef_to_json, joints_to_json, scene_to_json
 from oct_vla.tasks.shelf_restock.collect import DEFAULT_HZ, WORLD_TO_WORKCELL
 from oct_vla.tasks.shelf_restock.manager import (
+    distractors_preserved,
     ShelfRestockManager,
     objects_lifted,
     objects_on_upper_shelf,
@@ -208,6 +209,12 @@ class _Episode:
     #: exactly as it did before.
     gripper_encoding: str = "measured_aperture"
     placed_seen: set[str] = field(default_factory=set)
+    #: The scene at reset: distractors (objects the rule does not select) must stay put.
+    initial_scene: object | None = None
+    #: Steps the episode continues after first success (dwell, extra reaches); 0 ends
+    #: it at first success, as before.
+    post_success_steps: int = 0
+    success_step: int | None = None
     #: PFN-VLA upper bound: the oracle next-interaction keyframe
     #: (tasks/shelf_restock/keyframes.py), stepped once per snapshot. None
     #: unless the client asked for it at reset.
@@ -407,7 +414,10 @@ class ShelfRestockEvalServer:
         model_ids: tuple[int, ...] | None = None,
         future_keyframe: str = "none",
         arm_targets: bool = False,
+        post_success_steps: int = 0,
     ) -> tuple[dict, tuple[protocol.Blob, ...]]:
+        if post_success_steps < 0:
+            raise EvalServerError(f"post_success_steps must be >= 0, got {post_success_steps}")
         if future_keyframe not in FUTURE_KEYFRAME_SOURCES:
             raise EvalServerError(f"Unknown future_keyframe {future_keyframe!r}; "
                                   f"have {FUTURE_KEYFRAME_SOURCES}")
@@ -442,6 +452,10 @@ class ShelfRestockEvalServer:
                 size_xyz=entry.size_xyz,
                 upright_rotation=entry.upright_rotation,
                 center_offset=entry.center_offset,
+                # Both were dropped here, so evaluation scenes carried category=None
+                # while the training views carried the asset name.
+                category=getattr(entry, "category", None),
+                colour=getattr(entry, "colour", None),
             )
             for track_id, entry in self._port.task.tracked_objects.items()
         }
@@ -469,9 +483,13 @@ class ShelfRestockEvalServer:
                 else ShelfKeyframeOracle(spec_for_rule(future_keyframe.split(":", 1)[1],
                                                        self._spec))),
             arm_target_oracle=(ShelfArmTargetOracle(self._spec) if arm_targets else None),
+            post_success_steps=int(post_success_steps),
         )
-        header, blobs, _ = self._snapshot()
+        header, blobs, scene = self._snapshot()
+        self._episode.initial_scene = scene
         header["model_ids"] = spawned
+        header["post_success_steps"] = int(post_success_steps)
+        header["rule"] = self._spec.rule
         # Echoed so a client can refuse a server that ignored the request.
         header["future_keyframe_source"] = future_keyframe
         header["arm_targets_source"] = "oracle_arms" if arm_targets else "none"
@@ -730,13 +748,27 @@ class ShelfRestockEvalServer:
             if track_id not in episode.placed_seen:
                 episode.placed_seen.add(track_id)
                 episode.manager.record_placement(track_id)
-        # Restocked, not merely cleared: see ShelfRestockManager.is_restocked.
-        done_task = episode.manager.is_restocked(scene)
+        # Restocked, not merely cleared (ShelfRestockManager.is_restocked): every object
+        # the rule selects is on the upper shelf, and every one it does not select is
+        # still where it started.
+        preserved = (episode.initial_scene is None
+                     or distractors_preserved(scene, episode.initial_scene, episode.spec))
+        restocked = episode.manager.is_restocked(scene) and preserved
+        if restocked and episode.success_step is None:
+            episode.success_step = episode.steps
+        reached = episode.success_step is not None
+        dwelt = reached and episode.steps >= episode.success_step + episode.post_success_steps
+        # With a dwell, success also requires the shelf to still be restocked at the end.
+        done_task = reached and (episode.post_success_steps == 0 or restocked)
         out_of_steps = episode.steps >= episode.max_steps
+        done = dwelt or out_of_steps
         header.update(
-            success=done_task,
-            done=done_task or out_of_steps,
-            reason="success" if done_task else ("step_limit" if out_of_steps else ""),
+            success=done_task if done else (reached and restocked),
+            done=done,
+            reason="success" if (done and done_task) else ("step_limit" if out_of_steps else ""),
+            success_at=episode.success_step,
+            still_restocked=restocked,
+            distractors_preserved=preserved,
             transfers_completed=len(objects_on_upper_shelf(scene, episode.spec)),
             steps=episode.steps,
             # How often the policy asked for somewhere the arm cannot go. Now a
@@ -793,6 +825,7 @@ class ShelfRestockEvalServer:
                         None if requested is None else tuple(int(v) for v in requested),
                         str(message.header.get("future_keyframe", "none")),
                         bool(message.header.get("arm_targets", False)),
+                        int(message.header.get("post_success_steps", 0)),
                     )
                 elif op == "step":
                     header, blobs = self.step(list(message.header["action"]))

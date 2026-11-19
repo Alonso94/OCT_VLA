@@ -71,6 +71,7 @@ def _object_to_json(obj: ObjectState) -> dict:
         "mask": b64encode(obj.mask).decode("ascii") if obj.mask is not None else None,
         "embedding": list(obj.embedding) if obj.embedding is not None else None,
         "category": obj.category,
+        "colour": obj.colour,
     }
 
 
@@ -87,6 +88,7 @@ def _object_from_json(data: dict) -> ObjectState:
         # `.get`, not `[...]`: every recording made before the multi-category
         # change lacks the key, and those corpora must stay readable.
         category=data.get("category"),
+        colour=data.get("colour"),
     )
 
 
