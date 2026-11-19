@@ -98,6 +98,12 @@ class StepResult:
     #: Per-object ground-truth transfer stages (tasks/shelf_restock/events.py),
     #: on the final step only. Diagnostic; never an input to the policy.
     events: dict = field(default_factory=dict)
+    #: The step the task was first complete (None: never), whether it still is, and
+    #: whether every object the rule does not select is still in place. None from a
+    #: server that predates semantic rules.
+    success_at: int | None = None
+    still_restocked: bool | None = None
+    distractors_preserved: bool | None = None
 
 
 def _observation(message: protocol.Message) -> RemoteObservation:
@@ -301,6 +307,9 @@ class ShelfRestockEvalClient:
             objects_lifted=int(message.header.get("objects_lifted", 0)),
             objects_total=int(message.header.get("objects_total", 0)),
             events=dict(message.header.get("events") or {}),
+            success_at=message.header.get("success_at"),
+            still_restocked=message.header.get("still_restocked"),
+            distractors_preserved=message.header.get("distractors_preserved"),
         )
 
     def close(self) -> None:

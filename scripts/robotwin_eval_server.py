@@ -29,6 +29,9 @@ def main() -> int:
     )
     parser.add_argument("--visual-shift", action="store_true",
                         help="Unseen background textures and random lights (task_config.py)")
+    parser.add_argument("--rule", default=None,
+                        help="Score against this rule's spec (e.g. restock_red); default: the "
+                             "default spec's rule. Object colours come from OCTVLA_COLOURS.")
     args = parser.parse_args()
 
     def make_port(task_class: str) -> RoboTwinNativePort:
@@ -39,7 +42,12 @@ def main() -> int:
             visual_shift=args.visual_shift,
         )
 
-    server = ShelfRestockEvalServer(make_port, hz=args.hz)
+    kwargs = {}
+    if args.rule is not None:
+        from oct_vla.tasks.shelf_restock.spec import spec_for_rule
+
+        kwargs["spec"] = spec_for_rule(args.rule)
+    server = ShelfRestockEvalServer(make_port, hz=args.hz, **kwargs)
     try:
         server.serve_forever(
             args.host, args.port, ready_file=str(args.ready_file) if args.ready_file else None

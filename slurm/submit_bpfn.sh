@@ -8,6 +8,7 @@
 #   DRY_RUN=1 slurm/submit_bpfn.sh train      # 5 arms x 3 seeds, bounded concurrency
 #   DRY_RUN=1 slurm/submit_bpfn.sh eval       # synthetic packs, bound to train receipts
 #   DRY_RUN=1 slurm/submit_bpfn.sh pilot      # wave 2, only after the canary passes
+#   DRY_RUN=1 BPFN_RUN=... SUPPORT_RED=... SUPPORT_BLUE=... slurm/submit_bpfn.sh online
 #
 # Seeds of the new corpus (docs/data_protocol.md): colour source 2000-2199, colour
 # dev 2200-2249, support banks 2250-2299, count queries 2300-2399. Evaluation scenes
@@ -87,6 +88,32 @@ case "$STAGE" in
     submit BUILTIN_TASK=handover_mic BUILTIN_COLLECTION_ROOT="$COLLECT_ROOT/builtin" -- \
       "${SB[@]}" --array=2000-2029 --job-name=bpfn-handover \
       --output="$LOGS/handover-%A_%a.out" --export=ALL slurm/collect_robotwin_builtin_array.sbatch
+    ;;
+  online)
+    # Stage 2b pilot on 10 evaluation resets (800-809), every condition on the same
+    # resets and the same palette: bridge checks (expert windows, oracle / observable
+    # gripper), then the frozen PFN with the correct and the swapped support. The paired
+    # endpoint is the two 'same' cells (red support / red server, blue support / blue
+    # server, identical resets); 'swapped' (support contradicts the server's rule) is the
+    # control that must fail if success depends on the demonstration.
+    : "${BPFN_RUN:?checkpoint run directory}"
+    : "${SUPPORT_RED:?a restock_red support episode dir}"; : "${SUPPORT_BLUE:?a restock_blue one}"
+    OUT="$BPFN_ROOT/online/$(basename "$BPFN_RUN")"
+    for rule in restock_red restock_blue; do
+      own="$SUPPORT_RED"; other="$SUPPORT_BLUE"
+      [ "$rule" = restock_blue ] && { own="$SUPPORT_BLUE"; other="$SUPPORT_RED"; }
+      for cond in "expert_window oracle -" "expert_window observable -" "pfn observable $own" \
+                  "pfn observable $other"; do
+        read -r ctrl grip sup <<< "$cond"
+        tag="$rule-$ctrl-$grip"; [ "$sup" != - ] && tag="$tag-$([ "$sup" = "$own" ] && echo same || echo swapped)"
+        submit BPFN_RULE="$rule" OCTVLA_COLOURS=red,blue BPFN_CONTROLLER="$ctrl" \
+               BPFN_GRIPPER="$grip" BPFN_SEEDS=800-809 BPFN_RUN="$BPFN_RUN" \
+               BPFN_SUPPORT="$([ "$sup" = - ] && echo || echo "$sup")" BPFN_TAG="$tag" \
+               BPFN_OUT="$OUT/$tag.json" -- \
+          "${SB[@]}" --job-name="bpfn-online-$tag" --output="$LOGS/online-$tag-%j.out" \
+          --export=ALL slurm/bpfn_online.sbatch
+      done
+    done
     ;;
   *) echo "unknown stage $STAGE" >&2; exit 2 ;;
 esac
