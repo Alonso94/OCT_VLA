@@ -36,7 +36,10 @@ from .splits import CountMatrix
 S_ROWS = 128
 C_MAX = 2 + Gn.MAX_MOVABLES + 2
 HISTORY = 16
-HORIZON = 8
+#: 16 rows = 1.07 s at 15 Hz. 8 (0.53 s) was the first configuration; on the recorded
+#: v4 runs the next object is identifiable from the expert's own window in 82 % of
+#: approach onsets at 8 rows and 100 % at 16 (real approaches are slower than 0.5 s).
+HORIZON = 16
 TRANSITION = 5
 APERTURE_STEP = 0.02     # aperture change per row that counts as a contact change
 MOVE_STEP = 1e-4         # m per row: an object moving
@@ -263,7 +266,8 @@ def _pad_table(tab: Table, rows: int, cols: int) -> dict[str, np.ndarray]:
     out["observed"][:T, :C] = m["observed"]
     out["age"][:T, :C] = m["age"]
     out["row_valid"][:T] = True
-    out["time"][:T] = m["time"] - m["time"][-1]   # relative to the table's last row
+    if T:
+        out["time"][:T] = m["time"] - m["time"][-1]   # relative to the table's last row
     for k in ("kind", "colour", "category"):
         out[k][:C] = m[k]
     out["size"][:C] = m["size"]

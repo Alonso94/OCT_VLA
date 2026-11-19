@@ -55,7 +55,7 @@ def build(name: str, out: Path, items: int, s_rows: int = Bt.S_ROWS) -> Path:
     manifest = {"name": name, "schema": SCHEMA_ID, "split": spec["split"], "items": len(out_items),
                 "draws": k, "counts": spec["counts"].kind, "programs": len(programs),
                 "pairs": sum(i["meta"]["pair"] is not None for i in out_items) // 2,
-                "s_rows": s_rows}
+                "s_rows": s_rows, "horizon": Bt.HORIZON, "history": Bt.HISTORY}
     path.with_suffix(".json").write_text(json.dumps(manifest, indent=1) + "\n")
     return path
 

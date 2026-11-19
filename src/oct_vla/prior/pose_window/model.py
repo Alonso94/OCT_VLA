@@ -124,7 +124,7 @@ class _Layer(nn.Module):
 
 
 class PoseWindowPFN(nn.Module):
-    def __init__(self, width: int = 128, heads: int = 4, layers: int = 4, horizon: int = 8,
+    def __init__(self, width: int = 128, heads: int = 4, layers: int = 4, horizon: int = 16,
                  use_support: bool = True):
         super().__init__()
         self.config = dict(width=width, heads=heads, layers=layers, horizon=horizon,

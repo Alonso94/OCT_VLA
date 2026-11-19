@@ -173,6 +173,14 @@ def target_window(ep: Episode, t: int, horizon: int = 8,
     return window, valid
 
 
+def empty_support(table: Table) -> Table:
+    """The same columns and headers with **no rows**: the "no support" condition. A
+    packed batch then marks every support row invalid, so nothing of the demonstration
+    reaches the model (keeping one masked row would still pass it a valid row)."""
+    return replace(table, time=table.time[:0], pose=table.pose[:0], observed=table.observed[:0],
+                   age=table.age[:0], goal=table.goal[:0], goal_valid=table.goal_valid[:0])
+
+
 def shuffle_columns(table: Table, rng: np.random.Generator) -> tuple[Table, np.ndarray]:
     """Permute entity columns; every column keeps its header, masks and track."""
     perm = rng.permutation(table.pose.shape[1])

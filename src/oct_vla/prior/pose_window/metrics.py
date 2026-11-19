@@ -4,13 +4,9 @@
   error (wrists whose target moves > 5 mm over the window) and idle drift (predicted motion
   of a wrist whose target stays within 5 mm).
 - ``decision``: which object a window heads to. A pose window has no object id, so a fixed
-  geometric rule decides: take the wrist whose predicted window moves furthest; if it moves
-  less than ``MIN_MOVE`` the item is *unassignable*; otherwise the object whose
-  **horizontal** direction from the wrist's grip point best matches the horizontal
-  displacement (cosine), among movables that are not yet in a hand. Horizontal, because
-  every candidate lies below a wrist at its start pose, and the shared vertical drop made
-  a 3D cosine pick the right pair only 52 % of the time on the expert's own windows (100 %
-  horizontally). Unassignable items stay in every denominator.
+  geometric rule decides (relative horizontal distance gain over the candidates still on
+  the source shelf; see ``decision``). A window in which no wrist moves ``MIN_MOVE`` is
+  *unassignable*, and unassignable items stay in every denominator.
 - baselines: ``hold`` (both wrists stay put) and ``replay`` (the support's wrist motion at
   the same elapsed time, as a displacement from the query's current wrists).
 """
@@ -50,28 +46,45 @@ def _grip(pose7: np.ndarray) -> np.ndarray:
     return grip_point(pose7)
 
 
-def decision(window: np.ndarray, query: Table) -> str | None:
-    """The track the window heads to, or None (unassignable)."""
+LOWER_Z = 0.86     # m: an object centre below this is still on the source shelf
+
+
+def candidates(query: Table) -> set[str]:
+    """Objects a next pick can name: movables still on the source shelf at the last row
+    (placed objects and objects in a hand are not candidates)."""
     last = query.pose[-1]
-    cols = {LEFT_WRIST: query.column("left"), RIGHT_WRIST: query.column("right")}
-    move = [np.linalg.norm(window[-1, a, :3] - last[cols[k], :3])
-            for a, k in enumerate((LEFT_WRIST, RIGHT_WRIST))]
-    arm = int(np.argmax(move))
-    if move[arm] < MIN_MOVE:
-        return None
-    start = _grip(last[cols[(LEFT_WRIST, RIGHT_WRIST)[arm]]])
-    disp = _grip(window[-1, arm]) - start
+    return {query.tracks[c] for c in range(len(query.kind))
+            if query.kind[c] == MOVABLE and last[c, 2] < LOWER_Z}
+
+
+def decision(window: np.ndarray, query: Table, cands: set[str] | None = None) -> str | None:
+    """The candidate the window heads to, or None (unassignable).
+
+    For each wrist that moves at least ``MIN_MOVE``, and each candidate, the *relative*
+    horizontal distance gain (d_start - d_end) / d_start of the wrist's grip point; the
+    best (wrist, candidate) wins. Relative gain, because after a placement the arm sits
+    20 cm in front of candidates that are 15 cm apart, where heading angles barely differ
+    (recorded v4 windows: 100 % with relative gain at H = 16, against 78 % for a heading
+    cosine). The window is the only input: no rule, no target id.
+    """
+    from .trajectory import grip_point as _gp
+
+    last = query.pose[-1]
+    cands = candidates(query) if cands is None else cands
     best, score = None, -np.inf
-    for c in range(len(query.kind)):
-        if query.kind[c] != MOVABLE:
+    for a, name in enumerate(("left", "right")):
+        c0 = query.column(name)
+        if np.linalg.norm(window[-1, a, :3] - last[c0, :3]) < MIN_MOVE:
             continue
-        to = last[c, :3] - start
-        if np.linalg.norm(to) < 0.03:     # already in (or at) a hand: not a candidate
-            continue
-        d2, t2 = disp[:2], to[:2]
-        cos = float(d2 @ t2 / (np.linalg.norm(d2) * np.linalg.norm(t2) + 1e-9))
-        if cos > score:
-            best, score = query.tracks[c], cos
+        start, end = _gp(last[c0]), _gp(window[-1, a])
+        for c in range(len(query.kind)):
+            if query.kind[c] != MOVABLE or query.tracks[c] not in cands:
+                continue
+            d0 = np.linalg.norm((last[c, :3] - start)[:2])
+            d1 = np.linalg.norm((last[c, :3] - end)[:2])
+            gain = (d0 - d1) / max(d0, 1e-6)
+            if gain > score:
+                best, score = query.tracks[c], gain
     return best
 
 

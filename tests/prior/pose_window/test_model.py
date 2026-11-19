@@ -113,8 +113,15 @@ def test_decision_rule_recovers_the_expert_and_rejects_hold(items):
 
 def test_an_empty_support_is_defined_not_nan(items):
     m = _model()
-    b = M.to_torch(Bt.pack(items, s_rows=32))
-    b["s_row_valid"] = torch.zeros_like(b["s_row_valid"])
+    empty = [dict(it, support=S.empty_support(it["support"])) for it in items]
+    b = M.to_torch(Bt.pack(empty, s_rows=32))
+    assert not b["s_row_valid"].any()         # no row of the demonstration is valid
     with torch.no_grad():
         w = m(b)["window"]
     assert torch.isfinite(w).all()
+    # ...and it is the same prediction whatever support was emptied.
+    other = [dict(it, support=S.empty_support(items[(k + 1) % len(items)]["support"]))
+             for k, it in enumerate(items)]
+    with torch.no_grad():
+        w2 = m(M.to_torch(Bt.pack(other, s_rows=32)))["window"]
+    torch.testing.assert_close(w, w2)

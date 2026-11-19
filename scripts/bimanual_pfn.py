@@ -88,11 +88,15 @@ def cmd_eval(args) -> int:
     import numpy as np
 
     from oct_vla.prior.pose_window import packs, train as Tr
+    from oct_vla.prior.pose_window.schema import empty_support
 
     if args.out.exists():
         raise SystemExit(f"Refusing to overwrite {args.out}")
     items = packs.load(args.pack)
     model = Tr.load(args.run, args.device)
+    if items[0]["target"].shape[0] != model.horizon:
+        raise SystemExit(f"{args.pack} has {items[0]['target'].shape[0]}-step targets but the "
+                         f"checkpoint predicts {model.horizon}; regenerate the pack")
     rng = np.random.default_rng(0)
     results = {"run": str(args.run), "pack": str(args.pack), "items": len(items)}
     for cond in ("correct", "shuffled", "none"):
@@ -102,8 +106,8 @@ def cmd_eval(args) -> int:
             perm = rng.permutation(len(items))
             use = [dict(it, support=items[perm[k]]["support"]) for k, it in enumerate(items)]
         else:
-            use = [dict(it, support=_empty_support(it["support"])) for it in items]
-        s_rows = max(len(i["support"].time) for i in items)
+            use = [dict(it, support=empty_support(it["support"])) for it in items]
+        s_rows = max(1, max(len(i["support"].time) for i in items))
         results[cond] = Tr.evaluate(Tr.predict(model, use, s_rows, args.device), use)
     results["baselines"] = Tr.baselines(items)
     args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -111,14 +115,6 @@ def cmd_eval(args) -> int:
     print(json.dumps({k: (v.get("both_correct"), v.get("trans_mm")) for k, v in results.items()
                       if isinstance(v, dict) and "both_correct" in v}))
     return 0
-
-
-def _empty_support(table):
-    """The same support with every row marked invalid: the 'none' condition."""
-    from dataclasses import replace
-
-    return replace(table, time=table.time[:1], pose=table.pose[:1], observed=table.observed[:1] & False,
-                   age=table.age[:1], goal=table.goal[:1], goal_valid=table.goal_valid[:1] & False)
 
 
 def main() -> int:
