@@ -24,6 +24,7 @@ from oct_vla.data.recording import (
     CapturedFrame,
     EpisodeRecorder,
     build_episode,
+    label_at,
     label_spans,
 )
 from oct_vla.perception.ground_truth import GroundTruthObjectStateEstimator
@@ -204,6 +205,23 @@ def collect_episode(
     if not records:
         raise CollectionError(f"seed {seed}: no lower-shelf target to demonstrate")
 
+    # The applied commands, per tick, for both arms (data/commands.py). Their tick count
+    # must equal the recorder's, or commands and frames are misaligned -- refuse the run.
+    from dataclasses import replace
+
+    from oct_vla.data.commands import from_motions
+
+    # One frame tick per *sample*: build_episode drops the final frame (no successor)
+    # and any frame outside a labelled span, so select exactly the frames it keeps.
+    record_spans = label_spans(records)
+    sample_ticks = [frame.tick for frame in recorder.frames[:-1]
+                    if label_at(record_spans, frame.tick) is not None]
+    commands = from_motions((m for record in records for _, m in record.motions),
+                            sample_ticks, port.dt)
+    if commands.ticks != recorder._tick_count:
+        raise CollectionError(f"seed {seed}: {commands.ticks} commanded ticks but the recorder "
+                              f"counted {recorder._tick_count}: commands and frames misaligned")
+
     # Computed once, over every record, because tick numbers in `recorder.frames`
     # are absolute across the whole run. Recomputing spans per clip from just
     # that clip's own record renumbers its ticks from 0, which does not match
@@ -248,6 +266,10 @@ def collect_episode(
         problems = validate_episode(episode)
         if problems:
             raise CollectionError(f"seed {seed}: full run failed validation: {problems}")
+        if len(episode.samples) != len(commands.frame_ticks):
+            raise CollectionError(f"seed {seed}: {len(episode.samples)} samples but "
+                                  f"{len(commands.frame_ticks)} captured frames")
+        episode = replace(episode, commands=commands)
         if episode_kind == "full_run":
             return (episode,)
         episodes.append(episode)

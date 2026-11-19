@@ -9,7 +9,8 @@ data-quality bugs once, for every recording path, instead of once per script.
 """
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 from math import isfinite
 from statistics import median
 from types import MappingProxyType
@@ -65,6 +66,9 @@ class Episode:
     samples: tuple[Sample, ...]
     success: bool
     metadata: Mapping[str, str]
+    #: The applied per-tick commands (``data.commands.CommandLog``) for full runs collected
+    #: with command logging; None otherwise. Written to its own file, never to the JSON.
+    commands: Any = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         if type(self.seed) is not int:

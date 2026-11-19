@@ -313,3 +313,14 @@ def test_carrying_an_object_does_not_excuse_hitting_the_other_arm():
             settle_ticks=0,
             allow_contact_with=("restock_object_1",),
         )
+
+
+def test_motions_log_the_held_arm_reference():
+    """The other arm is commanded to hold its measured state; the motion must say so."""
+    port = FakePort()
+    motion = set_gripper(port, "left", 1.0, ticks=3)
+    assert motion.held_q == RIGHT_JOINTS and motion.held_gripper == 0.9
+    moved = move_to(port, "left", target(), WORLD_TO_WORKCELL)
+    assert moved.held_q == RIGHT_JOINTS and moved.held_gripper == 0.9
+    held = [c for c in port.commands if c[0] == "right"]
+    assert all(q == moved.held_q for _, q, _, _ in held)

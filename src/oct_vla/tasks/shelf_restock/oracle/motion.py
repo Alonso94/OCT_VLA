@@ -51,6 +51,10 @@ class ExecutedMotion:
     q: tuple[tuple[float, ...], ...]
     qdot: tuple[tuple[float, ...], ...]
     gripper: tuple[float, ...]
+    #: The other arm's reference for every tick of this motion: it is commanded to hold
+    #: its *measured* joints and gripper at the motion's start, which nothing else logs.
+    held_q: tuple[float, ...] | None = None
+    held_gripper: float | None = None
 
     @property
     def ticks(self) -> int:
@@ -176,7 +180,8 @@ def move_to(
         tick(trajectory.q[-1], ZERO_VELOCITY)
 
     check_contacts(port, allow_contact_with)
-    return ExecutedMotion(side, tuple(q_log), tuple(qdot_log), tuple(gripper_log))
+    return ExecutedMotion(side, tuple(q_log), tuple(qdot_log), tuple(gripper_log),
+                          tuple(holding.joints), float(holding.gripper))
 
 
 def set_gripper(
@@ -211,4 +216,5 @@ def set_gripper(
         qdot_log.append(ZERO_VELOCITY)
         gripper_log.append(value)
 
-    return ExecutedMotion(side, tuple(q_log), tuple(qdot_log), tuple(gripper_log))
+    return ExecutedMotion(side, tuple(q_log), tuple(qdot_log), tuple(gripper_log),
+                          tuple(holding.joints), float(holding.gripper))

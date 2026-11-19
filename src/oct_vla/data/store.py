@@ -13,6 +13,7 @@ camera is always a known byte slice and needs no per-frame index.
 import gzip
 import json
 from base64 import b64decode, b64encode
+from dataclasses import dataclass
 from pathlib import Path
 
 from oct_vla.core.action import Action
@@ -169,6 +170,13 @@ def write_episode(episode: Episode, directory: str | Path) -> Path:
     for name in _CAMERA_ATTRS:
         with gzip.open(directory / f"{name}.rgb.gz", "wb") as handle:
             handle.write(bytes(camera_bytes[name]))
+    if episode.commands is not None:
+        from .commands import write_commands
+
+        if len(episode.commands.frame_ticks) != len(episode.samples):
+            raise ValueError(f"command log has {len(episode.commands.frame_ticks)} frame ticks "
+                             f"for {len(episode.samples)} samples")
+        write_commands(episode.commands, directory)
     return directory
 
 
@@ -231,3 +239,46 @@ def read_episode(directory: str | Path) -> Episode:
         success=payload["success"],
         metadata=payload["metadata"],
     )
+
+
+@dataclass(frozen=True)
+class EpisodeStates:
+    """An episode without its cameras: what pose-only consumers need.
+
+    ``read_episode`` decodes all three camera streams up front (hundreds of MB per run),
+    which ran a login node out of memory when many runs were held at once. This reads only
+    ``episode.json``. ``contexts`` and ``phases`` are the recorder's oracle labels and are
+    evaluator-only.
+    """
+
+    seed: int
+    success: bool
+    metadata: dict
+    timestamps: tuple[float, ...]
+    eef: tuple[EEFState, ...]
+    joints: tuple[JointState | None, ...]
+    scenes: tuple[ObjectScene, ...]
+    phases: tuple[str, ...]
+    contexts: tuple[TaskContext, ...]
+
+    def __len__(self) -> int:
+        return len(self.timestamps)
+
+
+def read_states(directory: str | Path) -> EpisodeStates:
+    """Every per-frame state of a recorded episode, never opening the ``*.rgb.gz`` files."""
+    payload = json.loads((Path(directory) / "episode.json").read_text())
+    stamps, eefs, joints, scenes, phases, contexts = [], [], [], [], [], []
+    for record in payload["samples"]:
+        stamps.append(float(record["timestamp"]))
+        eefs.append(EEFState(_arm_from_json(record["eef"]["left"]),
+                             _arm_from_json(record["eef"]["right"])))
+        raw = record.get("joints")
+        joints.append(None if raw is None else JointState(_joints_from_json(raw["left"]),
+                                                          _joints_from_json(raw["right"])))
+        scenes.append(_scene_from_json(record["scene"]))
+        phases.append(record["phase"])
+        contexts.append(_context_from_json(record["context"]))
+    return EpisodeStates(payload["seed"], payload["success"], dict(payload["metadata"]),
+                         tuple(stamps), tuple(eefs), tuple(joints), tuple(scenes),
+                         tuple(phases), tuple(contexts))
