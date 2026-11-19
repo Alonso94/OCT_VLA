@@ -66,7 +66,15 @@ LOWER_DEPTH = 0.24
 LIFT = 0.10
 CROSS_BODY = 0.30        # an arm may not work more than this past the midline
 #: Arm speed scale per draw, so duration never identifies a rule.
-SPEED = (0.8, 1.25)
+SPEED = (0.7, 1.5)
+#: Timing calibrated on the recorded v4 runs (scripts/bpfn_calibrate_tool.py, medians over
+#: 40 runs): a compaction push takes ~1.6 s for a few centimetres (the expert pushes
+#: slowly so the object slides instead of bouncing), and lift -> let-go totals ~2.5 s.
+#: (The recorded carry / release split is not comparable: the expert carries at constant
+#: height, so the "resting" test fires mid-carry; only their sum is.) The first generator
+#: pushed in 0.2 s and took 2.7 s from lift to let-go.
+PUSH_SPEED = 0.02        # m/s along the push
+RELEASE_PAUSE = (0.3, 1.2)   # s between opening and retreating
 
 
 class Infeasible(RuntimeError):
@@ -323,9 +331,10 @@ class _Run:
         upright = np.concatenate([dest, Q.from_axis_angle([0, 0, 1], self.s.yaws[j])])
         above = upright.copy()
         above[2] += LIFT
-        b.segment(self.dur(1.2), {arm: self.wrist_for_object(arm, above)})
+        b.segment(self.dur(0.9), {arm: self.wrist_for_object(arm, above)})
         b.segment(self.dur(0.5), {arm: self.wrist_for_object(arm, upright)})
         b.segment(0.3, aperture={arm: OPEN})
+        b.hold(self.rng.uniform(*RELEASE_PAUSE) * self.s.speed)
         retreat = b.wrist[-1][arm].copy()
         retreat[2] += LIFT
         b.detach(arm)
@@ -348,7 +357,7 @@ class _Run:
         b.attach(arm, j)                           # kinematic push contact
         self._event("push_start", j, arm)
         end = contact + direction * distance
-        b.segment(max(DT, self.dur(0.8) * distance / PUSH_D), {arm: wrist_for_grip(end, q)})
+        b.segment(max(DT, self.dur(distance / PUSH_SPEED)), {arm: wrist_for_grip(end, q)})
         b.detach(arm)
         self._event("push_end", j, arm)
         b.segment(self.dur(0.5), {arm: wrist_for_grip(end + [0, 0, LIFT], q)},

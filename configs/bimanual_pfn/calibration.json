@@ -1,0 +1,124 @@
+{
+ "source_runs": [
+  "/home/vault/g101ea/g101ea19/octvla-collection-v4/leftmost/full_run/three_object",
+  "/home/vault/g101ea/g101ea19/octvla-collection-v4/rightmost/full_run/three_object"
+ ],
+ "runs_used": 40,
+ "tool": {
+  "n_grasps": 120,
+  "object_in_eef_mean": [
+   0.144,
+   -0.0012,
+   0.0019
+  ],
+  "object_in_eef_std": [
+   0.0039,
+   0.0016,
+   0.0043
+  ],
+  "eef_local_axes_in_world_mean": {
+   "x": [
+    -0.002,
+    -0.006,
+    -1.0
+   ],
+   "y": [
+    -0.89,
+    -0.077,
+    0.002
+   ],
+   "z": [
+    -0.077,
+    0.89,
+    -0.005
+   ]
+  },
+  "generator": {
+   "tool_axis": [
+    1.0,
+    0.0,
+    0.0
+   ],
+   "tool_offset": 0.143
+  },
+  "generator_consistent": true
+ },
+ "durations_s": {
+  "approach": {
+   "recorded": {
+    "n": 120,
+    "median": 2.0399999999999885,
+    "q25": 1.76799999999999,
+    "q75": 8.97599999999995
+   },
+   "synthetic": {
+    "n": 152,
+    "median": 2.0666666666666593,
+    "q25": 1.6666666666666607,
+    "q75": 2.333333333333325
+   },
+   "ratio_recorded_to_synthetic": 0.9870967741935464
+  },
+  "lift": {
+   "recorded": {
+    "n": 120,
+    "median": 0.3399999999999981,
+    "q25": 0.27199999999999847,
+    "q75": 0.3399999999999981
+   },
+   "synthetic": {
+    "n": 152,
+    "median": 0.3999999999999986,
+    "q25": 0.33333333333333215,
+    "q75": 0.3999999999999986
+   },
+   "ratio_recorded_to_synthetic": 0.8499999999999982
+  },
+  "carry": {
+   "recorded": {
+    "n": 120,
+    "median": 0.4759999999999973,
+    "q25": 0.4079999999999977,
+    "q75": 0.5439999999999969
+   },
+   "synthetic": {
+    "n": 152,
+    "median": 2.2666666666666586,
+    "q25": 1.9333333333333265,
+    "q75": 2.466666666666658
+   },
+   "ratio_recorded_to_synthetic": 0.20999999999999955
+  },
+  "release": {
+   "recorded": {
+    "n": 120,
+    "median": 2.0399999999999885,
+    "q25": 1.9039999999999893,
+    "q75": 2.1759999999999877
+   },
+   "synthetic": {
+    "n": 152,
+    "median": 1.233333333333329,
+    "q25": 0.9999999999999964,
+    "q75": 1.5333333333333279
+   },
+   "ratio_recorded_to_synthetic": 1.6540540540540507
+  },
+  "push": {
+   "recorded": {
+    "n": 83,
+    "median": 1.6319999999999908,
+    "q25": 1.2919999999999927,
+    "q75": 1.937999999999989
+   },
+   "synthetic": {
+    "n": 45,
+    "median": 1.1999999999999957,
+    "q25": 0.9999999999999964,
+    "q75": 1.5999999999999943
+   },
+   "ratio_recorded_to_synthetic": 1.3599999999999972
+  }
+ },
+ "provenance": "measured on recorded RoboTwin runs (observation-only timelines); exchange timing is synthetic until handover recordings exist"
+}
