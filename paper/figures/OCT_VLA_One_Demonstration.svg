@@ -1,0 +1,158 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="838" viewBox="0 0 1180 838" role="img" aria-labelledby="title desc"><title id="title">One-demonstration bimanual manipulation</title><desc id="desc">Analytical pretraining fits the manipulation PFN. A three-object demonstration and a current scene table predict only two synchronized sequences of wrist poses using observed poses and entity semantics. An image-conditioned ACT or GR00T policy executes a short action prefix and observes the scene again.</desc>
+<defs><marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L8 4 L0 8 L2 4 Z" fill="#415C69"/></marker></defs>
+<rect x="0" y="0" width="1180" height="838" rx="0" fill="#FFFFFF" stroke="none" stroke-width="1"/>
+<text x="26" y="46" font-family="DejaVu Sans,sans-serif" font-size="35" font-weight="700" text-anchor="start" fill="#152E40">One-demonstration bimanual manipulation</text>
+<text x="28" y="77" font-family="DejaVu Sans,sans-serif" font-size="19" font-weight="400" text-anchor="start" fill="#415C69">A demonstration of 3D entity motion guides two wrist trajectories in a new scene.</text>
+<rect x="20" y="98" width="1140" height="171" rx="11" fill="#FBFDFD" stroke="#AEC2C7" stroke-width="1"/>
+<rect x="38" y="112" width="34" height="30" rx="6" fill="#086C68" stroke="none" stroke-width="1"/>
+<text x="55" y="134" font-family="DejaVu Sans,sans-serif" font-size="18" font-weight="700" text-anchor="middle" fill="#FFFFFF">1</text>
+<text x="84" y="135" font-family="DejaVu Sans,sans-serif" font-size="24" font-weight="700" text-anchor="start" fill="#152E40">Generate paired tables from two factors</text>
+<text x="1137" y="133" font-family="DejaVu Sans,sans-serif" font-size="15" font-weight="400" text-anchor="end" fill="#415C69">OFFLINE  /  ANALYTIC PRIOR</text>
+<text x="44" y="179" font-family="DejaVu Sans,sans-serif" font-size="20" font-weight="700" text-anchor="start" fill="#086C68">Manipulation rule</text>
+<text x="44" y="208" font-family="DejaVu Sans,sans-serif" font-size="16" font-weight="400" text-anchor="start" fill="#152E40">Left push, right push, carry, handover.</text>
+<text x="44" y="233" font-family="DejaVu Sans,sans-serif" font-size="16" font-weight="400" text-anchor="start" fill="#152E40">Both grippers appear in every scene.</text>
+<text x="366" y="209" font-family="DejaVu Sans,sans-serif" font-size="28" font-weight="700" text-anchor="middle" fill="#415C69">×</text>
+<text x="406" y="179" font-family="DejaVu Sans,sans-serif" font-size="20" font-weight="700" text-anchor="start" fill="#086C68">Compositional rule</text>
+<text x="406" y="208" font-family="DejaVu Sans,sans-serif" font-size="16" font-weight="400" text-anchor="start" fill="#152E40">Eligibility, relations, ordering, repetition.</text>
+<text x="406" y="233" font-family="DejaVu Sans,sans-serif" font-size="15" font-weight="400" text-anchor="start" fill="#152E40">Vary entity count and layout across episodes.</text>
+<path d="M770 203H800" stroke="#415C69" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" marker-end="url(#arr)"/>
+<text x="825" y="179" font-family="DejaVu Sans,sans-serif" font-size="19" font-weight="700" text-anchor="start" fill="#086C68">One support + one query</text>
+<text x="825" y="208" font-family="DejaVu Sans,sans-serif" font-size="16" font-weight="400" text-anchor="start" fill="#152E40">Same task semantics, separately</text>
+<text x="825" y="233" font-family="DejaVu Sans,sans-serif" font-size="16" font-weight="400" text-anchor="start" fill="#152E40">sampled scene parameters.</text>
+<rect x="20" y="282" width="1140" height="248" rx="11" fill="#FBFDFD" stroke="#AEC2C7" stroke-width="1"/>
+<rect x="38" y="296" width="34" height="30" rx="6" fill="#25599B" stroke="none" stroke-width="1"/>
+<text x="55" y="318" font-family="DejaVu Sans,sans-serif" font-size="18" font-weight="700" text-anchor="middle" fill="#FFFFFF">2</text>
+<text x="84" y="319" font-family="DejaVu Sans,sans-serif" font-size="24" font-weight="700" text-anchor="start" fill="#152E40">Complete two columns over a future window</text>
+<text x="1137" y="317" font-family="DejaVu Sans,sans-serif" font-size="15" font-weight="400" text-anchor="end" fill="#415C69">ONE-SHOT  /  FROZEN PFN</text>
+<text x="44" y="359" font-family="DejaVu Sans,sans-serif" font-size="18" font-weight="700" text-anchor="start" fill="#25599B">Demonstration table</text>
+<text x="44" y="384" font-family="DejaVu Sans,sans-serif" font-size="15" font-weight="400" text-anchor="start" fill="#152E40">3 objects · future targets visible</text>
+<text x="360" y="359" font-family="DejaVu Sans,sans-serif" font-size="18" font-weight="700" text-anchor="start" fill="#25599B">Query table</text>
+<text x="360" y="384" font-family="DejaVu Sans,sans-serif" font-size="15" font-weight="400" text-anchor="start" fill="#152E40">2, 4 or 5 objects · future targets masked</text>
+<rect x="44" y="401" width="26" height="22" rx="0" fill="#E3EEFB" stroke="#9FB5C4" stroke-width="0.75"/>
+<text x="57.0" y="416" font-family="DejaVu Sans,sans-serif" font-size="11" font-weight="700" text-anchor="middle" fill="#152E40">t</text>
+<rect x="44" y="423" width="26" height="22" rx="0" fill="#FFFFFF" stroke="#9FB5C4" stroke-width="0.75"/>
+<text x="57.0" y="439" font-family="DejaVu Sans,sans-serif" font-size="12" font-weight="400" text-anchor="middle" fill="#415C69">i</text>
+<rect x="44" y="445" width="26" height="22" rx="0" fill="#FFFFFF" stroke="#9FB5C4" stroke-width="0.75"/>
+<text x="57.0" y="461" font-family="DejaVu Sans,sans-serif" font-size="12" font-weight="400" text-anchor="middle" fill="#415C69">j</text>
+<rect x="70" y="401" width="26" height="22" rx="0" fill="#E3EEFB" stroke="#9FB5C4" stroke-width="0.75"/>
+<text x="83.0" y="416" font-family="DejaVu Sans,sans-serif" font-size="11" font-weight="700" text-anchor="middle" fill="#152E40">L</text>
+<rect x="70" y="423" width="26" height="22" rx="0" fill="#FFFFFF" stroke="#9FB5C4" stroke-width="0.75"/>
+<rect x="70" y="445" width="26" height="22" rx="0" fill="#FFFFFF" stroke="#9FB5C4" stroke-width="0.75"/>
+<rect x="96" y="401" width="26" height="22" rx="0" fill="#E3EEFB" stroke="#9FB5C4" stroke-width="0.75"/>
+<text x="109.0" y="416" font-family="DejaVu Sans,sans-serif" font-size="11" font-weight="700" text-anchor="middle" fill="#152E40">R</text>
+<rect x="96" y="423" width="26" height="22" rx="0" fill="#FFFFFF" stroke="#9FB5C4" stroke-width="0.75"/>
+<rect x="96" y="445" width="26" height="22" rx="0" fill="#FFFFFF" stroke="#9FB5C4" stroke-width="0.75"/>
+<rect x="122" y="401" width="26" height="22" rx="0" fill="#E3EEFB" stroke="#9FB5C4" stroke-width="0.75"/>
+<text x="135.0" y="416" font-family="DejaVu Sans,sans-serif" font-size="11" font-weight="700" text-anchor="middle" fill="#152E40">a</text>
+<rect x="122" y="423" width="26" height="22" rx="0" fill="#FFFFFF" stroke="#9FB5C4" stroke-width="0.75"/>
+<rect x="122" y="445" width="26" height="22" rx="0" fill="#FFFFFF" stroke="#9FB5C4" stroke-width="0.75"/>
+<rect x="148" y="401" width="26" height="22" rx="0" fill="#E3EEFB" stroke="#9FB5C4" stroke-width="0.75"/>
+<text x="161.0" y="416" font-family="DejaVu Sans,sans-serif" font-size="11" font-weight="700" text-anchor="middle" fill="#152E40">b</text>
+<rect x="148" y="423" width="26" height="22" rx="0" fill="#FFFFFF" stroke="#9FB5C4" stroke-width="0.75"/>
+<rect x="148" y="445" width="26" height="22" rx="0" fill="#FFFFFF" stroke="#9FB5C4" stroke-width="0.75"/>
+<rect x="174" y="401" width="26" height="22" rx="0" fill="#E3EEFB" stroke="#9FB5C4" stroke-width="0.75"/>
+<text x="187.0" y="416" font-family="DejaVu Sans,sans-serif" font-size="11" font-weight="700" text-anchor="middle" fill="#152E40">c</text>
+<rect x="174" y="423" width="26" height="22" rx="0" fill="#FFFFFF" stroke="#9FB5C4" stroke-width="0.75"/>
+<rect x="174" y="445" width="26" height="22" rx="0" fill="#FFFFFF" stroke="#9FB5C4" stroke-width="0.75"/>
+<rect x="200" y="401" width="26" height="22" rx="0" fill="#25599B" stroke="#9FB5C4" stroke-width="0.75"/>
+<text x="213.0" y="416" font-family="DejaVu Sans,sans-serif" font-size="11" font-weight="700" text-anchor="middle" fill="#FFFFFF">Yᴸ</text>
+<rect x="200" y="423" width="26" height="22" rx="0" fill="#EDF4FE" stroke="#9FB5C4" stroke-width="0.75"/>
+<text x="213.0" y="439" font-family="DejaVu Sans,sans-serif" font-size="11" font-weight="700" text-anchor="middle" fill="#25599B">p,q</text>
+<rect x="200" y="445" width="26" height="22" rx="0" fill="#EDF4FE" stroke="#9FB5C4" stroke-width="0.75"/>
+<text x="213.0" y="461" font-family="DejaVu Sans,sans-serif" font-size="11" font-weight="700" text-anchor="middle" fill="#25599B">p,q</text>
+<rect x="226" y="401" width="26" height="22" rx="0" fill="#25599B" stroke="#9FB5C4" stroke-width="0.75"/>
+<text x="239.0" y="416" font-family="DejaVu Sans,sans-serif" font-size="11" font-weight="700" text-anchor="middle" fill="#FFFFFF">Yᴿ</text>
+<rect x="226" y="423" width="26" height="22" rx="0" fill="#EDF4FE" stroke="#9FB5C4" stroke-width="0.75"/>
+<text x="239.0" y="439" font-family="DejaVu Sans,sans-serif" font-size="11" font-weight="700" text-anchor="middle" fill="#25599B">p,q</text>
+<rect x="226" y="445" width="26" height="22" rx="0" fill="#EDF4FE" stroke="#9FB5C4" stroke-width="0.75"/>
+<text x="239.0" y="461" font-family="DejaVu Sans,sans-serif" font-size="11" font-weight="700" text-anchor="middle" fill="#25599B">p,q</text>
+<rect x="360" y="401" width="26" height="22" rx="0" fill="#E3EEFB" stroke="#9FB5C4" stroke-width="0.75"/>
+<text x="373.0" y="416" font-family="DejaVu Sans,sans-serif" font-size="11" font-weight="700" text-anchor="middle" fill="#152E40">t</text>
+<rect x="360" y="423" width="26" height="22" rx="0" fill="#FFFFFF" stroke="#9FB5C4" stroke-width="0.75"/>
+<text x="373.0" y="439" font-family="DejaVu Sans,sans-serif" font-size="12" font-weight="400" text-anchor="middle" fill="#415C69">0</text>
+<rect x="360" y="445" width="26" height="22" rx="0" fill="#FFFFFF" stroke="#9FB5C4" stroke-width="0.75"/>
+<text x="373.0" y="461" font-family="DejaVu Sans,sans-serif" font-size="12" font-weight="400" text-anchor="middle" fill="#415C69">t</text>
+<rect x="386" y="401" width="26" height="22" rx="0" fill="#E3EEFB" stroke="#9FB5C4" stroke-width="0.75"/>
+<text x="399.0" y="416" font-family="DejaVu Sans,sans-serif" font-size="11" font-weight="700" text-anchor="middle" fill="#152E40">L</text>
+<rect x="386" y="423" width="26" height="22" rx="0" fill="#FFFFFF" stroke="#9FB5C4" stroke-width="0.75"/>
+<rect x="386" y="445" width="26" height="22" rx="0" fill="#FFFFFF" stroke="#9FB5C4" stroke-width="0.75"/>
+<rect x="412" y="401" width="26" height="22" rx="0" fill="#E3EEFB" stroke="#9FB5C4" stroke-width="0.75"/>
+<text x="425.0" y="416" font-family="DejaVu Sans,sans-serif" font-size="11" font-weight="700" text-anchor="middle" fill="#152E40">R</text>
+<rect x="412" y="423" width="26" height="22" rx="0" fill="#FFFFFF" stroke="#9FB5C4" stroke-width="0.75"/>
+<rect x="412" y="445" width="26" height="22" rx="0" fill="#FFFFFF" stroke="#9FB5C4" stroke-width="0.75"/>
+<rect x="438" y="401" width="26" height="22" rx="0" fill="#E3EEFB" stroke="#9FB5C4" stroke-width="0.75"/>
+<text x="451.0" y="416" font-family="DejaVu Sans,sans-serif" font-size="11" font-weight="700" text-anchor="middle" fill="#152E40">u</text>
+<rect x="438" y="423" width="26" height="22" rx="0" fill="#FFFFFF" stroke="#9FB5C4" stroke-width="0.75"/>
+<rect x="438" y="445" width="26" height="22" rx="0" fill="#FFFFFF" stroke="#9FB5C4" stroke-width="0.75"/>
+<rect x="464" y="401" width="26" height="22" rx="0" fill="#E3EEFB" stroke="#9FB5C4" stroke-width="0.75"/>
+<text x="477.0" y="416" font-family="DejaVu Sans,sans-serif" font-size="11" font-weight="700" text-anchor="middle" fill="#152E40">v</text>
+<rect x="464" y="423" width="26" height="22" rx="0" fill="#FFFFFF" stroke="#9FB5C4" stroke-width="0.75"/>
+<rect x="464" y="445" width="26" height="22" rx="0" fill="#FFFFFF" stroke="#9FB5C4" stroke-width="0.75"/>
+<rect x="490" y="401" width="26" height="22" rx="0" fill="#E3EEFB" stroke="#9FB5C4" stroke-width="0.75"/>
+<text x="503.0" y="416" font-family="DejaVu Sans,sans-serif" font-size="11" font-weight="700" text-anchor="middle" fill="#152E40">w</text>
+<rect x="490" y="423" width="26" height="22" rx="0" fill="#FFFFFF" stroke="#9FB5C4" stroke-width="0.75"/>
+<rect x="490" y="445" width="26" height="22" rx="0" fill="#FFFFFF" stroke="#9FB5C4" stroke-width="0.75"/>
+<rect x="516" y="401" width="26" height="22" rx="0" fill="#E3EEFB" stroke="#9FB5C4" stroke-width="0.75"/>
+<text x="529.0" y="416" font-family="DejaVu Sans,sans-serif" font-size="11" font-weight="700" text-anchor="middle" fill="#152E40">x</text>
+<rect x="516" y="423" width="26" height="22" rx="0" fill="#FFFFFF" stroke="#9FB5C4" stroke-width="0.75"/>
+<rect x="516" y="445" width="26" height="22" rx="0" fill="#FFFFFF" stroke="#9FB5C4" stroke-width="0.75"/>
+<rect x="542" y="401" width="26" height="22" rx="0" fill="#25599B" stroke="#9FB5C4" stroke-width="0.75"/>
+<text x="555.0" y="416" font-family="DejaVu Sans,sans-serif" font-size="11" font-weight="700" text-anchor="middle" fill="#FFFFFF">Yᴸ</text>
+<rect x="542" y="423" width="26" height="22" rx="0" fill="#EDF4FE" stroke="#9FB5C4" stroke-width="0.75"/>
+<text x="555.0" y="439" font-family="DejaVu Sans,sans-serif" font-size="11" font-weight="700" text-anchor="middle" fill="#25599B">?</text>
+<rect x="542" y="445" width="26" height="22" rx="0" fill="#EDF4FE" stroke="#9FB5C4" stroke-width="0.75"/>
+<text x="555.0" y="461" font-family="DejaVu Sans,sans-serif" font-size="11" font-weight="700" text-anchor="middle" fill="#25599B">?</text>
+<rect x="568" y="401" width="26" height="22" rx="0" fill="#25599B" stroke="#9FB5C4" stroke-width="0.75"/>
+<text x="581.0" y="416" font-family="DejaVu Sans,sans-serif" font-size="11" font-weight="700" text-anchor="middle" fill="#FFFFFF">Yᴿ</text>
+<rect x="568" y="423" width="26" height="22" rx="0" fill="#EDF4FE" stroke="#9FB5C4" stroke-width="0.75"/>
+<text x="581.0" y="439" font-family="DejaVu Sans,sans-serif" font-size="11" font-weight="700" text-anchor="middle" fill="#25599B">?</text>
+<rect x="568" y="445" width="26" height="22" rx="0" fill="#EDF4FE" stroke="#9FB5C4" stroke-width="0.75"/>
+<text x="581.0" y="461" font-family="DejaVu Sans,sans-serif" font-size="11" font-weight="700" text-anchor="middle" fill="#25599B">?</text>
+<text x="305" y="440" font-family="DejaVu Sans,sans-serif" font-size="25" font-weight="700" text-anchor="middle" fill="#415C69">+</text>
+<text x="44" y="489" font-family="DejaVu Sans,sans-serif" font-size="15" font-weight="400" text-anchor="start" fill="#415C69">Each entity and goal cell stores a pose (p, q) with 3D position and unit quaternion in a shared frame.</text>
+<text x="44" y="511" font-family="DejaVu Sans,sans-serif" font-size="15" font-weight="400" text-anchor="start" fill="#415C69">Column headers carry semantics such as gripper side, object category, colour, shape and size.</text>
+<path d="M612 435H652" stroke="#415C69" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" marker-end="url(#arr)"/>
+<rect x="665" y="396" width="137" height="77" rx="8" fill="#25599B" stroke="none" stroke-width="1"/>
+<text x="733" y="430" font-family="DejaVu Sans,sans-serif" font-size="16" font-weight="700" text-anchor="middle" fill="#FFFFFF">Manipulation</text>
+<text x="733" y="454" font-family="DejaVu Sans,sans-serif" font-size="18" font-weight="700" text-anchor="middle" fill="#FFFFFF">PFN</text>
+<path d="M812 435H841" stroke="#415C69" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" marker-end="url(#arr)"/>
+<text x="853" y="359" font-family="DejaVu Sans,sans-serif" font-size="18" font-weight="700" text-anchor="start" fill="#25599B">Paired waypoint chunk</text>
+<text x="854" y="414" font-family="DejaVu Sans,sans-serif" font-size="16" font-weight="700" text-anchor="start" fill="#25599B">L</text>
+<path d="M899 409 L939 410 L979 403 L1019 397 L1059 397" stroke="#25599B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+<circle cx="899" cy="409" r="3.4" fill="#25599B" stroke="none" stroke-width="1"/>
+<circle cx="939" cy="410" r="3.4" fill="#25599B" stroke="none" stroke-width="1"/>
+<circle cx="979" cy="403" r="3.4" fill="#25599B" stroke="none" stroke-width="1"/>
+<circle cx="1019" cy="397" r="3.4" fill="#25599B" stroke="none" stroke-width="1"/>
+<circle cx="1059" cy="397" r="3.4" fill="#25599B" stroke="none" stroke-width="1"/>
+<text x="854" y="456" font-family="DejaVu Sans,sans-serif" font-size="16" font-weight="700" text-anchor="start" fill="#086C68">R</text>
+<path d="M899 451 L939 451 L979 451 L1019 451 L1059 451" stroke="#086C68" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+<circle cx="899" cy="451" r="3.4" fill="#086C68" stroke="none" stroke-width="1"/>
+<circle cx="939" cy="451" r="3.4" fill="#086C68" stroke="none" stroke-width="1"/>
+<circle cx="979" cy="451" r="3.4" fill="#086C68" stroke="none" stroke-width="1"/>
+<circle cx="1019" cy="451" r="3.4" fill="#086C68" stroke="none" stroke-width="1"/>
+<circle cx="1059" cy="451" r="3.4" fill="#086C68" stroke="none" stroke-width="1"/>
+<text x="853" y="495" font-family="DejaVu Sans,sans-serif" font-size="15" font-weight="400" text-anchor="start" fill="#415C69">Shared clock · H poses per arm</text>
+<rect x="20" y="544" width="1140" height="226" rx="11" fill="#FBFDFD" stroke="#AEC2C7" stroke-width="1"/>
+<rect x="38" y="558" width="34" height="30" rx="6" fill="#9C4E20" stroke="none" stroke-width="1"/>
+<text x="55" y="580" font-family="DejaVu Sans,sans-serif" font-size="18" font-weight="700" text-anchor="middle" fill="#FFFFFF">3</text>
+<text x="84" y="581" font-family="DejaVu Sans,sans-serif" font-size="24" font-weight="700" text-anchor="start" fill="#152E40">Ground the pose waypoints in vision</text>
+<text x="1137" y="579" font-family="DejaVu Sans,sans-serif" font-size="15" font-weight="400" text-anchor="end" fill="#415C69">ACTION-LABELLED SOURCE DEMONSTRATIONS</text>
+<text x="45" y="623" font-family="DejaVu Sans,sans-serif" font-size="18" font-weight="700" text-anchor="start" fill="#9C4E20">Policy inputs</text>
+<text x="45" y="652" font-family="DejaVu Sans,sans-serif" font-size="16" font-weight="400" text-anchor="start" fill="#152E40">Images + proprioception</text>
+<text x="45" y="678" font-family="DejaVu Sans,sans-serif" font-size="16" font-weight="400" text-anchor="start" fill="#152E40">Predicted L/R waypoint window</text>
+<path d="M323 653H364" stroke="#415C69" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" marker-end="url(#arr)"/>
+<rect x="378" y="610" width="340" height="37" rx="6" fill="#F9E9D7" stroke="none" stroke-width="1"/>
+<text x="395" y="635" font-family="DejaVu Sans,sans-serif" font-size="16" font-weight="700" text-anchor="start" fill="#9C4E20">ACT</text>
+<text x="461" y="635" font-family="DejaVu Sans,sans-serif" font-size="15" font-weight="400" text-anchor="start" fill="#152E40">waypoint-conditioned decoder</text>
+<rect x="378" y="657" width="340" height="37" rx="6" fill="#F9E9D7" stroke="none" stroke-width="1"/>
+<text x="395" y="682" font-family="DejaVu Sans,sans-serif" font-size="16" font-weight="700" text-anchor="start" fill="#9C4E20">GR00T</text>
+<text x="471" y="682" font-family="DejaVu Sans,sans-serif" font-size="15" font-weight="400" text-anchor="start" fill="#152E40">waypoint-conditioned flow</text>
+<path d="M735 653H785" stroke="#415C69" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none" marker-end="url(#arr)"/>
+<text x="809" y="628" font-family="DejaVu Sans,sans-serif" font-size="19" font-weight="700" text-anchor="start" fill="#9C4E20">Execute a short prefix</text>
+<text x="809" y="655" font-family="DejaVu Sans,sans-serif" font-size="16" font-weight="400" text-anchor="start" fill="#152E40">Full end-effector commands,</text>
+<text x="809" y="678" font-family="DejaVu Sans,sans-serif" font-size="16" font-weight="400" text-anchor="start" fill="#152E40">with pose refinement and grip control.</text>
+<path d="M1045 699 V732 H235" stroke="#415C69" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" fill="none" marker-end="url(#arr)"/>
+<rect x="389" y="719" width="490" height="24" rx="0" fill="#FBFDFD" stroke="none" stroke-width="1"/>
+<text x="634" y="737" font-family="DejaVu Sans,sans-serif" font-size="15" font-weight="400" text-anchor="middle" fill="#415C69">Observe both grippers and objects, then query again.</text>
+<text x="33" y="811" font-family="DejaVu Sans,sans-serif" font-size="17" font-weight="400" text-anchor="start" fill="#415C69">Target-task evaluation uses one three-object demonstration and fresh scenes with different object counts.</text>
+<text x="83" y="439" font-family="DejaVu Sans,sans-serif" font-size="10" text-anchor="middle" fill="#415C69">p,q</text><text x="83" y="461" font-family="DejaVu Sans,sans-serif" font-size="10" text-anchor="middle" fill="#415C69">p,q</text><text x="109" y="439" font-family="DejaVu Sans,sans-serif" font-size="10" text-anchor="middle" fill="#415C69">p,q</text><text x="109" y="461" font-family="DejaVu Sans,sans-serif" font-size="10" text-anchor="middle" fill="#415C69">p,q</text><text x="135" y="439" font-family="DejaVu Sans,sans-serif" font-size="10" text-anchor="middle" fill="#415C69">p,q</text><text x="135" y="461" font-family="DejaVu Sans,sans-serif" font-size="10" text-anchor="middle" fill="#415C69">p,q</text><text x="161" y="439" font-family="DejaVu Sans,sans-serif" font-size="10" text-anchor="middle" fill="#415C69">p,q</text><text x="161" y="461" font-family="DejaVu Sans,sans-serif" font-size="10" text-anchor="middle" fill="#415C69">p,q</text><text x="187" y="439" font-family="DejaVu Sans,sans-serif" font-size="10" text-anchor="middle" fill="#415C69">p,q</text><text x="187" y="461" font-family="DejaVu Sans,sans-serif" font-size="10" text-anchor="middle" fill="#415C69">p,q</text><text x="399" y="439" font-family="DejaVu Sans,sans-serif" font-size="10" text-anchor="middle" fill="#415C69">p,q</text><text x="399" y="461" font-family="DejaVu Sans,sans-serif" font-size="10" text-anchor="middle" fill="#415C69">p,q</text><text x="425" y="439" font-family="DejaVu Sans,sans-serif" font-size="10" text-anchor="middle" fill="#415C69">p,q</text><text x="425" y="461" font-family="DejaVu Sans,sans-serif" font-size="10" text-anchor="middle" fill="#415C69">p,q</text><text x="451" y="439" font-family="DejaVu Sans,sans-serif" font-size="10" text-anchor="middle" fill="#415C69">p,q</text><text x="451" y="461" font-family="DejaVu Sans,sans-serif" font-size="10" text-anchor="middle" fill="#415C69">p,q</text><text x="477" y="439" font-family="DejaVu Sans,sans-serif" font-size="10" text-anchor="middle" fill="#415C69">p,q</text><text x="477" y="461" font-family="DejaVu Sans,sans-serif" font-size="10" text-anchor="middle" fill="#415C69">p,q</text><text x="503" y="439" font-family="DejaVu Sans,sans-serif" font-size="10" text-anchor="middle" fill="#415C69">p,q</text><text x="503" y="461" font-family="DejaVu Sans,sans-serif" font-size="10" text-anchor="middle" fill="#415C69">p,q</text><text x="529" y="439" font-family="DejaVu Sans,sans-serif" font-size="10" text-anchor="middle" fill="#415C69">p,q</text><text x="529" y="461" font-family="DejaVu Sans,sans-serif" font-size="10" text-anchor="middle" fill="#415C69">p,q</text></svg>
