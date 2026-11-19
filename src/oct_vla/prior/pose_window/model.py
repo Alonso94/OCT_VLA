@@ -71,6 +71,11 @@ class _Attn(nn.Module):
     def forward(self, x, kv=None, key_pad=None):
         h = self.norm(x)
         kv = h if kv is None else kv
+        if key_pad is not None and key_pad.all(1).any():
+            # A sequence with no valid key (an empty support): attend to its first entry
+            # so the result is defined; its outputs are never read (memory stays padded).
+            key_pad = key_pad.clone()
+            key_pad[key_pad.all(1), 0] = False
         out, _ = self.attn(h, kv, kv, key_padding_mask=key_pad, need_weights=False)
         return x + out
 
@@ -134,6 +139,9 @@ class PoseWindowPFN(nn.Module):
         self.time = nn.Linear(16, width)
         self.table = nn.Embedding(2, width)                     # support / query
         self.goal_mask = nn.Parameter(torch.zeros(width))
+        #: One always-valid memory token per layer, so a support with every row masked
+        #: (the "none" condition) is well defined instead of a NaN softmax.
+        self.null_mem = nn.Parameter(torch.zeros(layers, width))
         self.layers = nn.ModuleList(_Layer(width, heads) for _ in range(layers))
         self.dec_query = nn.Parameter(torch.randn(2 * horizon, width) * 0.02)
         dec = nn.TransformerDecoderLayer(width, heads, 4 * width, batch_first=True,
@@ -194,11 +202,13 @@ class PoseWindowPFN(nn.Module):
         B, T, C, W = x.shape
         mems, pads = [], []
         mem_pad = row_pad[:, :, None].expand(B, T, 4).reshape(B, T * 4)
-        for layer in self.layers:
+        null_pad = torch.zeros(B, 1, dtype=torch.bool, device=x.device)
+        for k, layer in enumerate(self.layers):
             x = layer.support(x, cell_pad, row_pad)
             cells = torch.gather(x, 2, idx[:, None, :, None].expand(B, T, 4, W))
-            mems.append(cells.reshape(B, T * 4, W))
-            pads.append(mem_pad)
+            null = self.null_mem[k].expand(B, 1, W)
+            mems.append(torch.cat([cells.reshape(B, T * 4, W), null], 1))
+            pads.append(torch.cat([mem_pad, null_pad], 1))
         return {"mem": mems, "pad": pads}
 
     def predict(self, memory: dict | None, b: dict) -> dict:

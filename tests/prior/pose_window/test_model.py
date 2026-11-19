@@ -109,3 +109,12 @@ def test_decision_rule_recovers_the_expert_and_rejects_hold(items):
                 for it in items if it["meta"]["pair"] == k] for k in pairs}
     r = Me.paired_both_correct(held)
     assert r["both_correct"] == 0.0 and r["unassignable"] == 1.0
+
+
+def test_an_empty_support_is_defined_not_nan(items):
+    m = _model()
+    b = M.to_torch(Bt.pack(items, s_rows=32))
+    b["s_row_valid"] = torch.zeros_like(b["s_row_valid"])
+    with torch.no_grad():
+        w = m(b)["window"]
+    assert torch.isfinite(w).all()
