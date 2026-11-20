@@ -125,3 +125,17 @@ def test_an_empty_support_is_defined_not_nan(items):
     with torch.no_grad():
         w2 = m(M.to_torch(Bt.pack(other, s_rows=32)))["window"]
     torch.testing.assert_close(w, w2)
+
+
+def test_errors_ignore_invalid_horizons_past_the_episode_end():
+    """Regression: every training job crashed at its first dev evaluation, because the
+    angle was computed on zero-filled targets past an episode's end."""
+    ep = __import__("oct_vla.prior.pose_window.branches", fromlist=["handover"]).handover()
+    w, v = S.target_window(ep, ep.T - 3, horizon=16)
+    assert v.sum() == 2 and np.allclose(np.linalg.norm(w[..., 3:], axis=-1), 1.0)
+    zeroed = w.copy()
+    zeroed[~v] = 0.0                                   # what an old pack would hold
+    r = Me.errors(w[None], zeroed[None], v[None])
+    assert r["trans_mm"] == pytest.approx(0.0) and r["rot_deg"] == pytest.approx(0.0, abs=1e-3)
+    # Moving / idle is decided on the last valid horizon, not on a padded one.
+    assert r["idle_drift_mm"] == pytest.approx(0.0)

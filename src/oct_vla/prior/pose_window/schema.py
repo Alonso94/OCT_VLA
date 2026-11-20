@@ -169,6 +169,7 @@ def target_window(ep: Episode, t: int, horizon: int = 8,
     if cue is not None and t < cue:
         valid &= idx < cue
     window = np.zeros((horizon, 2, POSE_DIM), np.float32)
+    window[..., 6] = 1.0          # an invalid cell holds the identity, never an all-zero pose
     window[valid] = ep.wrist[idx[valid]]
     return window, valid
 

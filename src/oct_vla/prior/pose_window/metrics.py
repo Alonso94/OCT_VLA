@@ -27,8 +27,16 @@ def errors(pred: np.ndarray, target: np.ndarray, valid: np.ndarray) -> dict:
     """``pred``/``target`` ``[N, H, 2, 7]``, ``valid`` ``[N, H]``."""
     v = np.broadcast_to(valid[..., None], pred.shape[:-1])
     trans = np.linalg.norm(pred[..., :3] - target[..., :3], axis=-1)
-    ang = np.degrees(Q.angle(pred[..., 3:], target[..., 3:]))
-    tgt_move = np.linalg.norm(target[:, -1, :, :3] - target[:, 0, :, :3], axis=-1)   # [N, 2]
+    # Angles only where the target is valid: an invalid horizon (past the episode's end)
+    # carries no orientation to compare with.
+    ang = np.zeros(v.shape)
+    if v.any():
+        ang[v] = np.degrees(Q.angle(pred[..., 3:][v], target[..., 3:][v]))
+    # Moving vs idle from the first to the *last valid* horizon of each item.
+    last = np.maximum(valid.shape[1] - 1 - np.argmax(valid[:, ::-1], axis=1), 0)
+    end = target[np.arange(len(target)), last]                                    # [N, 2, 7]
+    tgt_move = np.linalg.norm(end[..., :3] - target[:, 0, :, :3], axis=-1)          # [N, 2]
+    tgt_move[~valid.any(1)] = 0.0
     moving = (tgt_move > MOVING)[:, None, :] & v
     idle = (tgt_move <= MOVING)[:, None, :] & v
     pred_move = np.linalg.norm(pred[..., :3] - pred[:, :1, :, :3], axis=-1)
