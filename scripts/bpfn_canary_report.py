@@ -4,9 +4,11 @@
 For every collected run under ``--root`` (``*/full_run/*/seed_*/episode_*``):
 
 - ``colour_known``: every object carries a colour, with the counts the run asked for;
-- ``rendered``: red and blue are both visible in the first head-camera frame (pixels
-  near the tint colours), and a labelled contact sheet of all three cameras is saved
-  for a human look (a fake-actor test cannot show this);
+- ``rendered``: in the first head-camera frame, the red and blue blobs (channel
+  dominance), left to right, are exactly the recorded colours sorted by object x -- each
+  label matches the object it names, not merely "some red is visible" (the untinted
+  coffee-box texture is itself red-dominant). A labelled contact sheet of all three
+  cameras is saved for a human look;
 - ``round_trip``: colours survive the wire codec (store round trip is the read itself);
 - ``distractors_still``: every object the rule does not select ends within 2 cm of its
   start;
@@ -42,6 +44,26 @@ def _frame(rgb) -> np.ndarray:
     return np.frombuffer(rgb.data, np.uint8).reshape(rgb.height, rgb.width, 3)
 
 
+DOMINANCE = 60    # a channel this far above the other two marks a tinted pixel
+MIN_BLOB = 30
+
+
+def colour_sequence(image: np.ndarray) -> list[str]:
+    """Red / blue blobs left to right (column runs of dominant pixels)."""
+    x = image.astype(int)
+    r, g, b = x[..., 0], x[..., 1], x[..., 2]
+    blobs = []
+    for name, mask in (("red", r - np.maximum(g, b) > DOMINANCE),
+                       ("blue", b - np.maximum(r, g) > DOMINANCE)):
+        cols = np.flatnonzero(mask.any(0))
+        if len(cols) == 0:
+            continue
+        for run in np.split(cols, np.flatnonzero(np.diff(cols) > 3) + 1):
+            if mask[:, run].sum() > MIN_BLOB:
+                blobs.append((run.mean(), name))
+    return [n for _, n in sorted(blobs)]
+
+
 def tint_pixels(image: np.ndarray, rgb) -> int:
     """Pixels whose normalised colour is within PIXEL_TOL of ``rgb`` (chromaticity, so
     shading does not matter)."""
@@ -70,7 +92,10 @@ def check_run(path: Path) -> tuple[dict, list[np.ndarray]]:
     head = _frame(ep.samples[0].observation.head_rgb)
     counts = {c: tint_pixels(head, colours.RGB[c]) for c in ("red", "blue")}
     out["tint_pixels"] = counts
-    out["rendered"] = out["colour_known"] and all(counts[c] >= MIN_PIXELS for c in set(names))
+    by_x = [o.colour for o in sorted(first.objects, key=lambda o: o.pose.position[0])]
+    seen = colour_sequence(head)
+    out["image_sequence"], out["labels_by_x"] = seen, by_x
+    out["rendered"] = out["colour_known"] and seen == by_x
     back = codec.scene_from_json(codec.scene_to_json(first))
     out["round_trip"] = [o.colour for o in back.objects] == names
     wanted = RULE_ELIGIBLE_COLOUR.get(rule)
