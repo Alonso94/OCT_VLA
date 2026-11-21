@@ -5,7 +5,7 @@ import pytest
 import torch
 
 from oct_vla.policies.conditioning import pose_tokens as P
-from oct_vla.prior.pose_window import fixtures as F
+from oct_vla.bpfn.benchmark_tools import fixtures
 
 
 def _window(H=16, seed=0):
@@ -34,7 +34,7 @@ def test_window_tokens_round_trip_and_layout():
 
 
 def test_support_tokens_carry_both_wrists_and_every_object():
-    ep = F.restock_episode([-0.2, 0.0, 0.2], ["red", "blue", "red"], "red")
+    ep = fixtures.restock_episode([-0.2, 0.0, 0.2], ["red", "blue", "red"], "red")
     t = P.support_tokens(ep, rows=8)
     roles = t[:, 7:13].argmax(1)
     assert (roles == P.ROLES.index("left_wrist")).sum() == 8

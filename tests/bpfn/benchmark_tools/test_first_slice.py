@@ -6,7 +6,7 @@ import pytest
 
 from oct_vla.core import geometry as G
 from oct_vla.bpfn.data.syn_data import branches
-from oct_vla.prior.pose_window import fixtures as F
+from oct_vla.bpfn.benchmark_tools import fixtures
 from oct_vla.bpfn import quat
 from oct_vla.bpfn import schema
 def test_quaternions_match_core_geometry():
@@ -48,7 +48,7 @@ def test_query_never_contains_rows_after_t_and_masks_goals():
 
 
 def test_column_shuffle_carries_headers_and_relabel_keeps_reserved_ids():
-    ep = F.restock_episode([-0.2, 0.0, 0.2], ["red", "blue", "red"], "red")
+    ep = fixtures.restock_episode([-0.2, 0.0, 0.2], ["red", "blue", "red"], "red")
     t = schema.support_table(ep)
     ts, perm = schema.shuffle_columns(t, np.random.default_rng(3))
     for new, old in enumerate(perm):
@@ -73,7 +73,7 @@ def test_episode_refuses_non_unit_quaternions():
 
 @pytest.mark.parametrize("seed", [0, 1])
 def test_colour_fixture_acceptance(seed):
-    r = F.colour_fixture(seed=seed)
+    r = fixtures.colour_fixture(seed=seed)
     assert all(r["checks"].values()), r["checks"]
     assert r["sets"]["red"] == {"obj_1", "obj_2"} and r["sets"]["blue"] == {"obj_0", "obj_3"}
     for ep in r["supports"].values():
@@ -82,14 +82,14 @@ def test_colour_fixture_acceptance(seed):
 
 def test_colour_reader_refuses_an_uninformative_support():
     """All objects moved: no colour is singled out, so the reader must not guess."""
-    ep = F.restock_episode([-0.2, 0.1], ["red", "red"], "red")
-    assert F.demonstrated_colour(schema.support_table(ep)) == schema.colour_id("red")
-    mixed = F.restock_episode([-0.2, 0.1], ["red", "blue"], "red")
-    assert F.demonstrated_colour(schema.support_table(mixed)) == schema.colour_id("red")
+    ep = fixtures.restock_episode([-0.2, 0.1], ["red", "red"], "red")
+    assert fixtures.demonstrated_colour(schema.support_table(ep)) == schema.colour_id("red")
+    mixed = fixtures.restock_episode([-0.2, 0.1], ["red", "blue"], "red")
+    assert fixtures.demonstrated_colour(schema.support_table(mixed)) == schema.colour_id("red")
     # A support whose moved set has two colours identifies nothing.
-    both = schema.support_table(F.restock_episode([-0.2, 0.1], ["red", "red"], "red"))
+    both = schema.support_table(fixtures.restock_episode([-0.2, 0.1], ["red", "red"], "red"))
     both.colour[both.column("obj_1")] = schema.colour_id("blue")
-    assert F.demonstrated_colour(both) is None
+    assert fixtures.demonstrated_colour(both) is None
 
 
 @pytest.mark.parametrize("giver", [0, 1])

@@ -10,7 +10,7 @@ import torch
 from oct_vla.core.frames import Pose
 from oct_vla.core.objects import ObjectScene, ObjectState
 from oct_vla.core.state import ArmState, EEFState
-from oct_vla.prior.pose_window import fixtures as F
+from oct_vla.bpfn.benchmark_tools import fixtures
 from oct_vla.prior.pose_window import online as On
 from oct_vla.bpfn.models.pose_window_pfn import PoseWindowPFN
 from oct_vla.bpfn.data.syn_data.trajectory import TOP_DOWN, wrist_for_grip
@@ -55,7 +55,7 @@ OBJ = {"obj_0": ((-0.2, -0.25, 0.78), "red"), "obj_1": ((0.1, -0.25, 0.78), "blu
 def test_pfn_loop_sends_absolute_actions_and_never_reads_the_context():
     torch.manual_seed(0)
     model = PoseWindowPFN(width=32, heads=2, layers=1).eval()
-    support = F.restock_episode([-0.2, 0.1], ["red", "blue"], "red")
+    support = fixtures.restock_episode([-0.2, 0.1], ["red", "blue"], "red")
     ctrl = On.PFNController(model, support, k=2, s_rows=32)
     client = ScriptedClient([_obs(0.067 * i, L0, R0, OBJ) for i in range(6)])
     res = On.run_episode(client, ctrl, On.ObservableGripper(), seed=0, profile="four_object",

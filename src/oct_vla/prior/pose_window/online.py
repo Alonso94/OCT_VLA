@@ -92,7 +92,7 @@ class History:
 
 
 def _category(asset: str | None) -> str | None:
-    from .real import CATEGORY_OF_ASSET
+    from oct_vla.bpfn.data.real_data.robotwin import CATEGORY_OF_ASSET
 
     return CATEGORY_OF_ASSET.get(asset)
 
@@ -280,7 +280,7 @@ class PoseTokenFutureSource:
 
         from oct_vla.policies.conditioning import pose_tokens as P
 
-        from .real import read_recording
+        from oct_vla.bpfn.data.real_data.robotwin import read_recording
 
         self.P = P
         self.kind = provenance["kind"]

@@ -54,8 +54,8 @@ def main() -> int:
     from oct_vla.policies.conditioning import pose_tokens as P
     from oct_vla.policies.conditioning.future import FUTURE_KEYFRAME, FUTURE_MASK
     from oct_vla.bpfn.data import batches
-    from oct_vla.prior.pose_window.real import read_recording
-    from oct_vla.prior.pose_window.real_eval import find_runs
+    from oct_vla.bpfn.data.real_data.robotwin import read_recording
+    from oct_vla.bpfn.data.real import find_runs
     from oct_vla.bpfn.schema import query_table, support_table
     from project_dataset_view import link_tree
 

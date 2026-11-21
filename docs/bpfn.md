@@ -7,7 +7,8 @@ bpfn/
   schema.py, quat.py        the pose-window table contract and quaternion helpers
   data/
     syn_data/               the analytic prior: programs, trajectories, branches, observation
-    real_data/              recorded episodes (RoboTwin)
+    real_data/robotwin.py   recorded RoboTwin runs -> Episode (states only, no cameras)
+    real.py                 RealData: runs per rule, rule check, bounded episode cache
     batches.py              items: (support table, query table, target window), packing
     bank.py                 the pre-generated episode bank (storage and loading)
     synthetic.py            SyntheticData: builds the bank and the evaluation packs
@@ -21,7 +22,11 @@ bpfn/
     losses/window.py        the window loss (paper Eq. loss)
   benchmark_tools/
     evaluator.py            Evaluator: correct / shuffled / no support, hold and replay baselines
+    real_evaluator.py       RealEvaluator: same-rule / other-rule / no support on recordings
     metrics.py              pose errors, the first-pick decision rule, paired both-correct
+    atlas.py, render.py     the marker scan and figures
+    checker.py              independent geometric checker of episodes
+    fixtures.py             the first-slice acceptance fixtures
 ```
 
 The remaining layers (`envs/`, `downstream/`) are described below as they are added.
@@ -32,6 +37,9 @@ The remaining layers (`envs/`, `downstream/`) are described below as they are ad
 |---|---|
 | 1, prior data | `stage1_generate_data.py`: the episode bank and the evaluation packs |
 | 1, prior training | `stage1_train_prior.py`: one arm x seed; `--overfit` runs the CPU memorisation gate |
+| 2, offline evaluation | `stage2_evaluate.py --data synthetic` (a pack), `--data real` (recordings), `--data atlas` (marker scan) |
+
+`stage1_generate_data.py --fixtures OUT` runs the first-slice acceptance fixtures.
 
 ## Items (`data/batches.py`)
 

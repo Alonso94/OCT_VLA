@@ -25,29 +25,18 @@ let-go, the window moves less than ``metrics.MIN_MOVE`` (dwell / clear).
 
 from __future__ import annotations
 
-import gc
-from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
-from oct_vla.bpfn.data import batches
 from oct_vla.bpfn.benchmark_tools import metrics
-from .real import read_recording
-from oct_vla.bpfn.schema import (MOVABLE, Episode, colour_id, empty_support, query_table, support_table,
-                     target_window)
+from oct_vla.bpfn.benchmark_tools.evaluator import predict
+from oct_vla.bpfn.data import batches
+from oct_vla.bpfn.data.real import RealData
+from oct_vla.bpfn.schema import (MOVABLE, Episode, colour_id, empty_support, query_table,
+                                 support_table, target_window)
 
 LOWER_Z = 0.86     # m: an object centre below this is still on the lower shelf
-
-
-@dataclass
-class Corpus:
-    rule: str
-    runs: list[Path]
-
-
-def find_runs(root: Path) -> list[Path]:
-    return sorted(p for p in Path(root).glob("**/seed_*/episode_*") if (p / "episode.json").exists())
 
 
 def remaining(ep: Episode, t: int) -> list[str]:
@@ -74,15 +63,15 @@ def expected(ep: Episode, t: int, rule: str) -> set[str]:
 def decision_times(ep: Episode, horizon: int = batches.HORIZON) -> list[int]:
     """The approach onset after row 0 and after every object's let-go (observation-only
     timelines for the anchors)."""
-    from oct_vla.data import effects as E
+    from oct_vla.data import effects
 
     movable = [j for j in range(len(ep.track_ids)) if ep.kind[j] == MOVABLE]
     lower_top = LOWER_Z
     upper = ep.objects[:, movable, 2] > lower_top
-    tracks = E.Tracks(tuple(ep.track_ids[j] for j in movable), ep.objects[:, movable, :3],
+    tracks = effects.Tracks(tuple(ep.track_ids[j] for j in movable), ep.objects[:, movable, :3],
                       ep.objects[:, movable, 3:], ep.size[movable], ep.wrist[..., :3],
                       ep.aperture, upper)
-    lines = E.timelines(tracks)
+    lines = effects.timelines(tracks)
     lets = sorted(v["let_go"] for v in lines.values() if v.get("let_go") is not None)
     anchors = [0] + [int(t) for t in lets if t < ep.T - 1]
     return [t for t in (approach_onset(ep, a, horizon) for a in anchors) if t is not None]
@@ -121,65 +110,91 @@ def _item(support: Episode | None, query: Episode, t: int, s_rows: int, history:
             "meta": {}}
 
 
-def evaluate(model, corpora: dict[str, Corpus], *, conditions=("same", "other", "none"),
-             queries_per_rule: int | None = None, supports_per_query: int = 1,
-             s_rows: int = batches.S_ROWS, history: int = batches.HISTORY, horizon: int = batches.HORIZON,
-             seed: int = 0, device: str = "cpu", support_pool: dict | None = None) -> dict:
-    """Score ``model`` on ``corpora`` (rule -> runs used as queries). ``support_pool``
-    (rule -> runs) supplies supports; default: the corpora themselves, never the query's
-    own run."""
-    from oct_vla.bpfn.benchmark_tools.evaluator import predict
+class RealEvaluator:
+    """Scores a model on recorded runs under the same-rule, other-rule and no support.
 
-    rules = list(corpora)
-    pool = support_pool or {r: c.runs for r, c in corpora.items()}
-    rng = np.random.default_rng(seed)
-    cache: dict[Path, Episode] = {}
+    Args:
+        queries: the corpora whose runs are the queries (rule -> runs).
+        supports: where supports come from (None: the query corpora; never the query's own run).
+        queries_per_rule: cap on query runs per rule (None: all).
+        supports_per_query: supports drawn per (query, condition).
+        seed: seed of the support draws.
+        device: where the model runs.
+    """
 
-    def load(path: Path) -> Episode:
-        if path not in cache:
-            if len(cache) > 24:            # keep memory bounded on a login node
-                cache.clear()
-                gc.collect()
-            cache[path] = read_recording(path)
-        return cache[path]
+    CONDITIONS = ("same", "other", "none")
 
-    records = []
-    for rule in rules:
-        runs = corpora[rule].runs[:queries_per_rule] if queries_per_rule else corpora[rule].runs
-        for qpath in runs:
-            query = load(qpath)
-            times = decision_times(query, horizon)
-            for cond in conditions:
-                if cond == "none":
-                    sup_paths = [None]
-                else:
-                    srule = rule if cond == "same" else next(r for r in rules if r != rule)
-                    cands = [p for p in pool[srule] if p != qpath]
-                    sup_paths = [cands[i] for i in rng.choice(len(cands), supports_per_query,
-                                                              replace=False)]
-                for spath in sup_paths:
-                    support = None if spath is None else load(spath)
-                    srule = None if cond == "none" else (rule if cond == "same" else
-                                                        next(r for r in rules if r != rule))
-                    items = [_item(support, query, t, s_rows, history, horizon) for t in times]
-                    windows = predict(model, items,
-                                      max(1, max(len(i["support"].time) for i in items)), device)
-                    for t, it, w in zip(times, items, windows):
-                        want = expected(query, t, srule) if srule else set()
-                        records.append({
-                            "query": str(qpath), "rule": rule, "condition": cond,
-                            "support": None if spath is None else str(spath),
-                            "support_rule": srule, "t": int(t),
-                            "decision": metrics.decision(w, it["query"], set(remaining(query, t))),
-                            "expected": sorted(want),
-                            "expert_decision": metrics.decision(it["target"], it["query"],
-                                                           set(remaining(query, t))),
-                            "window": w, "target": it["target"], "valid": it["target_valid"],
-                            "hold": metrics.hold(it["query"], horizon),
-                            "replay": (None if support is None else
-                                       metrics.replay(it["support"], it["query"], horizon)),
-                        })
-    return summarise(records)
+    def __init__(self, queries: RealData, supports: RealData | None = None,
+                 queries_per_rule: int | None = None, supports_per_query: int = 1,
+                 s_rows: int = batches.S_ROWS, history: int = batches.HISTORY,
+                 horizon: int = batches.HORIZON, seed: int = 0, device: str = "cpu") -> None:
+        self.queries = queries
+        self.supports = supports or queries
+        self.queries_per_rule = queries_per_rule
+        self.supports_per_query = supports_per_query
+        self.s_rows = s_rows
+        self.history = history
+        self.horizon = horizon
+        self.seed = seed
+        self.device = device
+
+    def run(self, model) -> dict:
+        rng = np.random.default_rng(self.seed)
+        records = []
+        for rule in self.queries.rules:
+            runs = self.queries.runs[rule]
+            if self.queries_per_rule:
+                runs = runs[:self.queries_per_rule]
+            for query_path in runs:
+                query = self.queries.episode(query_path)
+                times = decision_times(query, self.horizon)
+                for condition in self.CONDITIONS:
+                    support_rule = self._support_rule(rule, condition)
+                    for support_path in self._support_paths(support_rule, query_path, rng):
+                        records += self._records(model, rule, condition, support_rule, query,
+                                                 query_path, support_path, times)
+        return summarise(records)
+
+    def _support_rule(self, rule: str, condition: str) -> str | None:
+        if condition == "none":
+            return None
+        if condition == "same":
+            return rule
+        return next(other for other in self.queries.rules if other != rule)
+
+    def _support_paths(self, support_rule: str | None, query_path: Path,
+                       rng: np.random.Generator) -> list[Path | None]:
+        if support_rule is None:
+            return [None]
+        candidates = [p for p in self.supports.runs[support_rule] if p != query_path]
+        picks = rng.choice(len(candidates), self.supports_per_query, replace=False)
+        return [candidates[i] for i in picks]
+
+    def _records(self, model, rule: str, condition: str, support_rule: str | None,
+                 query: Episode, query_path: Path, support_path: Path | None,
+                 times: list[int]) -> list[dict]:
+        support = None if support_path is None else self.supports.episode(support_path)
+        items = [_item(support, query, t, self.s_rows, self.history, self.horizon) for t in times]
+        s_rows = max(1, max(len(i["support"].time) for i in items))
+        windows = predict(model, items, s_rows, self.device)
+        records = []
+        for t, item, window in zip(times, items, windows):
+            left = set(remaining(query, t))
+            wanted = expected(query, t, support_rule) if support_rule else set()
+            replay = None
+            if support is not None:
+                replay = metrics.replay(item["support"], item["query"], self.horizon)
+            records.append({
+                "query": str(query_path), "rule": rule, "condition": condition,
+                "support": None if support_path is None else str(support_path),
+                "support_rule": support_rule, "t": int(t),
+                "decision": metrics.decision(window, item["query"], left),
+                "expected": sorted(wanted),
+                "expert_decision": metrics.decision(item["target"], item["query"], left),
+                "window": window, "target": item["target"], "valid": item["target_valid"],
+                "hold": metrics.hold(item["query"], self.horizon), "replay": replay,
+            })
+        return records
 
 
 def summarise(records: list[dict]) -> dict:

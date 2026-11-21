@@ -95,7 +95,7 @@ def expert_predict(items):
 
 def render(rows: list[dict], out, title: str = "") -> list:
     """Decision field per support over the marker sweep, analytic boundary and ties."""
-    from .render import _plt, _save
+    from oct_vla.bpfn.benchmark_tools.render import _plt, _save
 
     plt = _plt()
     fig, axes = plt.subplots(2, 1, figsize=(7.0, 3.2), sharex=True)

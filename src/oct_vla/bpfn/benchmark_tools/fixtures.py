@@ -14,6 +14,9 @@ the other colour), and one mixed-colour query. Checks:
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import numpy as np
 
 from oct_vla.bpfn import quat
@@ -147,3 +150,27 @@ def colour_fixture(seed: int = 0) -> dict:
 
 __all__ = ["COLOURS", "colour_fixture", "demonstrated_colour", "eligible_first_picks",
            "grip_point", "restock_episode"]
+
+
+def acceptance_report(out: Path, seed: int = 0) -> dict:
+    """Runs both first-slice fixtures, writes their figures and ``fixtures.json`` to ``out``."""
+    from oct_vla.bpfn.benchmark_tools import render
+    from oct_vla.bpfn.data.syn_data import branches
+
+    colour = colour_fixture(seed=seed)
+    report = {"colour": {"checks": colour["checks"],
+                         "first_picks": {k: sorted(v) for k, v in colour["sets"].items()}},
+              "handover": {}}
+    written = render.colour_fixture_figure(colour, out / "colour_fixture")
+    for giver, name in ((0, "left_gives"), (1, "right_gives")):
+        episodes = branches.family(giver=giver)
+        checks = branches.handover_checks(episodes)
+        report["handover"][name] = {"cue_row": checks["cue"], "extra_hold_s": checks["extra_hold_s"],
+                                    "checks": checks["checks"]}
+        written += render.handover_fixture_figure(episodes, checks, out / f"handover_fixture_{name}")
+    handover_ok = all(all(v["checks"].values()) for v in report["handover"].values())
+    report["passed"] = all(colour["checks"].values()) and handover_ok
+    report["figures"] = [str(p) for p in written]
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "fixtures.json").write_text(json.dumps(report, indent=1) + "\n")
+    return report

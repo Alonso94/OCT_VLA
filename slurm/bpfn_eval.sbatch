@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# BimanualPFN evaluation of one trained run on every synthetic pack (array element = run).
+# BimanualPFN stage 2, offline evaluation of one trained run on every synthetic pack (array element = run).
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
@@ -16,6 +16,6 @@ export PYTHONPATH="$OCTVLA_REPO/src${PYTHONPATH:+:$PYTHONPATH}" PYTHONUNBUFFERED
 for PACK in ${BPFN_PACKS:-dev heldout_handover_colour count_eval}; do
   OUT="$RUN/eval_${PACK}.json"
   [ -f "$OUT" ] && { echo "$OUT exists; skipping"; continue; }
-  srun "$OCTVLA_POLICY_PYTHON" -u "$OCTVLA_REPO/scripts/bimanual_pfn.py" eval \
+  srun "$OCTVLA_POLICY_PYTHON" -u "$OCTVLA_REPO/scripts/bpfn/stage2_evaluate.py" --data synthetic \
     --run "$RUN" --pack "$BPFN_ROOT/packs/$PACK.pkl" --out "$OUT" --device cuda
 done

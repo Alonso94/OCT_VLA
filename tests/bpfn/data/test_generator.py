@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from oct_vla.bpfn.data import batches
-from oct_vla.prior.pose_window import checker as C
+from oct_vla.bpfn.benchmark_tools import checker
 from oct_vla.bpfn.data.syn_data import generator
 from oct_vla.bpfn.data.syn_data import observation
 from oct_vla.bpfn import schema
@@ -27,7 +27,7 @@ def _episode(manip="carry_left", elig="all", order="left_to_right", repeat="unti
 @pytest.mark.parametrize("seed", [0, 1, 2])
 def test_every_manipulation_passes_the_independent_checker(manip, elig, compaction, seed):
     ep = _episode(manip, elig, compaction=compaction, seed=seed)
-    assert C.violations(ep) == 0, C.check(ep)
+    assert checker.violations(ep) == 0, checker.check(ep)
 
 
 def test_checker_catches_each_violation():
@@ -37,19 +37,19 @@ def test_checker_catches_each_violation():
     j = ep.track_ids.index(distractor)
     bad = copy.deepcopy(ep)
     bad.objects[40:, j, 0] += 0.05                      # a distractor slides away untouched
-    found = C.check(bad)
+    found = checker.check(bad)
     assert found["distractor_moved"] and found["moved_without_contact"]
     bad = copy.deepcopy(ep)
     sel = ep.track_ids.index(ep.annotations["selected"][0])
     bad.objects[-1, sel, 2] += 0.02                     # a placed object floats
-    assert C.check(bad)["not_resting"]
+    assert checker.check(bad)["not_resting"]
     bad = copy.deepcopy(ep)
     other = ep.track_ids.index(ep.annotations["selected"][1])
     bad.objects[-1, other, :2] = bad.objects[-1, sel, :2]   # two objects in one place
-    assert C.check(bad)["overlap"]
+    assert checker.check(bad)["overlap"]
     bad = copy.deepcopy(ep)
     bad.wrist[5:, 0, 3:] *= -1                          # a sign jump
-    assert C.check(bad)["bad_quaternion"]
+    assert checker.check(bad)["bad_quaternion"]
 
 
 def test_selection_rules_and_distractors():
@@ -80,7 +80,7 @@ def test_handover_branch_shares_a_prefix_and_delays_the_release():
     np.testing.assert_array_equal(nominal.wrist[:cue], delayed.wrist[:cue])
     rel = lambda ep: next(e["row"] for e in ep.annotations["events"] if e["event"] == "transfer")  # noqa: E731
     assert rel(delayed) > rel(nominal)
-    assert C.violations(delayed) == 0
+    assert checker.violations(delayed) == 0
 
 
 def test_observation_faults_hold_the_last_measurement_and_never_touch_wrists():

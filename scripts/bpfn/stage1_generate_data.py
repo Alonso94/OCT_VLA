@@ -3,11 +3,13 @@
 
     stage1_generate_data.py --bank $WORK/octvla-scratch/bpfn-bank/v1
     stage1_generate_data.py --packs-root $HPCVAULT/octvla-bpfn/packs --packs dev test
+    stage1_generate_data.py --fixtures reports/fixtures     # first-slice acceptance + figures
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -31,9 +33,20 @@ def main() -> int:
     parser.add_argument("--packs", nargs="+", default=[], help="pack names (data/packs.py)")
     parser.add_argument("--items", type=int, default=512, help="items per pack")
     parser.add_argument("--s-rows", type=int, default=128)
+    parser.add_argument("--fixtures", type=Path, help="write the first-slice fixtures here")
     args = parser.parse_args()
-    if args.bank is None and not args.packs:
-        parser.error("nothing to do: pass --bank and/or --packs")
+    if args.bank is None and not args.packs and args.fixtures is None:
+        parser.error("nothing to do: pass --bank, --packs and/or --fixtures")
+
+    if args.fixtures is not None:
+        from oct_vla.bpfn.benchmark_tools.fixtures import acceptance_report
+
+        report = acceptance_report(args.fixtures)
+        print(json.dumps(report, indent=1))
+        if not report["passed"]:
+            return 1
+        if args.bank is None and not args.packs:
+            return 0
 
     spec = BankSpec(name=args.bank_name, pool=args.pool, conflict=args.conflict,
                     handover=args.handover, shards=args.shards)

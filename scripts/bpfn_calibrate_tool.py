@@ -68,8 +68,8 @@ def summary(values: list[float]) -> dict:
 def main() -> int:
     from oct_vla.bpfn.data.syn_data import generator
     from oct_vla.bpfn import quat
-    from oct_vla.prior.pose_window.real import read_recording
-    from oct_vla.prior.pose_window.real_eval import find_runs
+    from oct_vla.bpfn.data.real_data.robotwin import read_recording
+    from oct_vla.bpfn.data.real import find_runs
     from oct_vla.bpfn.data.syn_data.trajectory import TOOL_AXIS, TOOL_OFFSET
 
     ap = argparse.ArgumentParser(description=__doc__)
