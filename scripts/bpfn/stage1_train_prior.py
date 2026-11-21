@@ -45,9 +45,15 @@ def run_training(args) -> int:
                       workers=args.workers, s_rows=args.s_rows, eval_every=args.eval_every,
                       device=args.device, bank=args.bank, reuse=args.reuse,
                       pair_extra=args.pair_extra, conflict_fraction=args.conflict_fraction,
-                      per_support=args.per_support, tf32=args.tf32)
-    dev_items = packs.load(args.dev) if args.dev else None
-    PFNTrainer(cfg, dev_items).train()
+                      per_support=args.per_support, tf32=args.tf32,
+                      fresh_supports=args.fresh_supports)
+    val_packs = {}
+    if args.dev:
+        val_packs["dev"] = packs.load(args.dev)
+    for value in args.val or []:
+        name, path = value.split("=", 1)
+        val_packs[name] = packs.load(Path(path))
+    PFNTrainer(cfg, val_packs).train()
     return 0
 
 
@@ -66,6 +72,7 @@ def main() -> int:
     parser.add_argument("--eval-every", type=int, default=5000)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--dev", type=Path, help="dev pack (logged, never used for selection)")
+    parser.add_argument("--val", action="append", help="NAME=PACK, more packs logged in training")
     parser.add_argument("--bank", type=Path, help="episode bank (stage1_generate_data.py)")
     parser.add_argument("--reuse", type=int, help="items per support/query pair")
     parser.add_argument("--pair-extra", type=int, help="extra items per conflict member")
@@ -73,6 +80,8 @@ def main() -> int:
     parser.add_argument("--per-support", type=int, default=1,
                         help="queries per support in a batch (bank only; supports encoded once)")
     parser.add_argument("--tf32", action="store_true", help="TF32 matmuls on CUDA")
+    parser.add_argument("--fresh-supports", action="store_true",
+                        help="bank queries, every support generated anew")
     parser.add_argument("--overfit", action="store_true", help="run the CPU memorisation gate")
     parser.add_argument("--pairs", type=int, default=32, help="overfit: conflict pairs")
     parser.add_argument("--overfit-steps", type=int, default=1500)

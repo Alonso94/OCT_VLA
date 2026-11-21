@@ -22,5 +22,8 @@ srun "$OCTVLA_POLICY_PYTHON" -u "$OCTVLA_REPO/scripts/bpfn/stage1_train_prior.py
   ${BPFN_REUSE:+--reuse "$BPFN_REUSE"} ${BPFN_PAIR_EXTRA:+--pair-extra "$BPFN_PAIR_EXTRA"} \
   ${BPFN_BANK:+--bank "$BPFN_BANK"} \
   ${BPFN_PER_SUPPORT:+--per-support "$BPFN_PER_SUPPORT"} ${BPFN_TF32:+--tf32} \
+  ${BPFN_FRESH_SUPPORTS:+--fresh-supports} ${BPFN_EVAL_EVERY:+--eval-every "$BPFN_EVAL_EVERY"} \
+  --val "heldout_handover_colour=$BPFN_ROOT/packs/heldout_handover_colour.pkl" \
+  --val "count_eval=$BPFN_ROOT/packs/count_eval.pkl" \
   ${BPFN_CONFLICT:+--conflict-fraction "$BPFN_CONFLICT"} \
   --dev "$BPFN_ROOT/packs/dev.pkl" --device cuda

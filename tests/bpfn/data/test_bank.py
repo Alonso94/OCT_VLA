@@ -264,3 +264,50 @@ def test_train_grouped_smoke(tmp_path, bank_dir, monkeypatch):
     with pytest.raises(SystemExit, match="per_support"):
         PFNTrainer(TrainConfig(out=tmp_path / "run2", steps=1, batch=6, per_support=4,
                                bank=bank_dir, device="cpu"))
+
+
+def _first_wrist_row(table):
+    """Both wrists at the support's first row (row 0 is always kept), as float32 bytes."""
+    rows = [table.pose[0, table.column("left")], table.pose[0, table.column("right")]]
+    return np.stack(rows).astype(np.float32).tobytes()
+
+
+def test_fresh_supports_are_new_episodes_and_keep_the_group_invariants(episode_bank):
+    stored = set()
+    for g in range(episode_bank.episodes):
+        stored.add(episode_bank.episode(g).wrist[0].astype(np.float32).tobytes())
+    cfg = _cfg("full", conflict_fraction=0.5, s_rows=48)
+
+    from_bank = BankSampler(episode_bank, cfg).sample_groups(np.random.default_rng(8), 12, 3)
+    assert all(_first_wrist_row(g["support"]) in stored for g in from_bank)    # the control
+
+    fresh = BankSampler(episode_bank, cfg, fresh_supports=True).sample_groups(
+        np.random.default_rng(8), 12, 3)
+    assert not any(_first_wrist_row(g["support"]) in stored for g in fresh)
+    assert all(g["items"] for g in fresh)
+    assert any(it["meta"]["pair"] is not None for g in fresh for it in g["items"])
+
+    # The bank-only sampler is unchanged by the option's existence.
+    a = BankSampler(episode_bank, cfg).sample_items(np.random.default_rng(9), 20)
+    b = BankSampler(episode_bank, cfg, fresh_supports=False).sample_items(np.random.default_rng(9), 20)
+    pa, pb = batches.pack(a, s_rows=48), batches.pack(b, s_rows=48)
+    assert all(np.array_equal(pa[k], pb[k]) for k in pa)
+
+
+def test_training_logs_every_validation_pack(tmp_path, bank_dir, monkeypatch):
+    from oct_vla.bpfn.training_tools.trainer import PFNTrainer, TrainConfig
+
+    orig = splits.programs_for
+    monkeypatch.setattr(splits, "programs_for",
+                        lambda arm="full": tuple(p for p in PROGRAMS if p in orig(arm)))
+    pack = BankSampler(bank.Bank(bank_dir, log=lambda *_: None),
+                       _cfg("full", conflict_fraction=1.0, s_rows=32)).sample_items(
+        np.random.default_rng(0), 8)
+    cfg = TrainConfig(out=tmp_path / "run", steps=2, batch=8, width=16, layers=1, workers=0,
+                      s_rows=32, device="cpu", eval_every=1, bank=bank_dir, per_support=4,
+                      fresh_supports=True)
+    PFNTrainer(cfg, {"dev": pack, "heldout": pack[:4]}).train()
+    rows = [json.loads(line) for line in (tmp_path / "run" / "history.jsonl").read_text().splitlines()]
+    scored = [r for r in rows if "dev" in r]
+    assert len(scored) == 2 and all("heldout" in r and "both_correct" in r["dev"] for r in scored)
+    assert json.loads((tmp_path / "run" / "config.json").read_text())["fresh_supports"] is True

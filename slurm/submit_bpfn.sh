@@ -7,6 +7,7 @@
 #   DRY_RUN=1 slurm/submit_bpfn.sh stage1-canary    # colour canary: 2 seeds x 2 rules + 1 swap
 #   DRY_RUN=1 slurm/submit_bpfn.sh stage1-probe     # built-in coverage probes (10 seeds each)
 #   DRY_RUN=1 slurm/submit_bpfn.sh stage1-collect   # wave 2, only after the canary passes
+#   DRY_RUN=1 slurm/submit_bpfn.sh stage1-count     # more four-object count queries
 #   DRY_RUN=1 slurm/submit_bpfn.sh stage1-generate  # the training episode bank
 #   DRY_RUN=1 slurm/submit_bpfn.sh stage1-train     # 5 arms x 3 seeds (BPFN_BANK: from the bank)
 #   Stage 2, the frozen PFN alone:
@@ -22,7 +23,7 @@
 # dev 2200-2249, support banks 2250-2299, count queries 2300-2399. Evaluation scenes
 # 800-819 and every v4 block stay untouched.
 set -euo pipefail
-STAGE="${1:?step: stage1-canary, -probe, -collect, -generate, -train; stage2-evaluate, -online; stage3-views, -act, -groot, -camera-check}"
+STAGE="${1:?step: stage1-canary, -probe, -collect, -count, -generate, -train; stage2-evaluate, -online; stage3-views, -act, -groot, -camera-check}"
 source "${OCTVLA_ENV:-$HOME/octvla/env-v4.sh}"
 export OCTVLA_REPO="${OCTVLA_REPO:-$HOME/OCT_VLA}"
 export BPFN_ROOT="${BPFN_ROOT:-$HPCVAULT/octvla-bpfn}"
@@ -75,6 +76,11 @@ case "$STAGE" in
         "${SB[@]}" --array=0-9 --job-name="bpfn-probe-$task" \
         --output="$LOGS/probe-$task-%A_%a.out" --export=ALL slurm/collect_robotwin_builtin_array.sbatch
     done
+    ;;
+  stage1-count)
+    # More four-object count queries (block 2300-2399): a four-transfer run succeeds
+    # ~0.64^4 = 17 % of the time, and 2300-2319 gave 0 / 20.
+    collect leftmost four_object "${BPFN_COUNT_SEEDS:-2320-2399}" "$COLLECT_ROOT/count_queries/leftmost"
     ;;
   stage1-generate)
     submit BPFN_BANK="${BPFN_BANK:-$BANK_DEFAULT}" -- \

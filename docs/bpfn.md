@@ -123,3 +123,11 @@ Synthetic and recorded supports go through the same function. A privileged phase
 - a grouped batch predicts exactly what the same items predict with one support copy each;
 - a wrong `support_index` changes the answer, so the index cannot be silently ignored;
 - an index out of range is refused.
+
+## Fresh supports (`--fresh-supports`)
+
+Two pilots, C and D, trained from the bank and scored 0.87 and 0.84 on dev, but only 0.05 and 0.17 on the held-out handover×colour composition. Every run trained on freshly generated episodes composed: recipe 1 scored 0.53–0.65, and pilot A 0.75 at 65k steps.
+
+The likely cause is support memorisation. With 72 support episodes per program, a model can recognise the support and recall its program's behaviour, instead of reading the rule from what the demonstration does.
+
+`--fresh-supports` keeps the bank's queries and conflict families but generates every support anew. Grouping makes this affordable: one new support per K queries. Training logs the held-out and count packs beside dev (`--val`), so a recipe that loses composition shows up during training. These scores are logged only and never used to select a checkpoint.

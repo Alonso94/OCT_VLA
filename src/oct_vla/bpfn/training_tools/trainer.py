@@ -58,6 +58,7 @@ class TrainConfig:
     pair_extra: int | None = None
     conflict_fraction: float | None = None
     per_support: int = 1        # queries per support in a batch (bank only)
+    fresh_supports: bool = False  # bank queries, but every support generated anew
     tf32: bool = False          # TF32 matmuls on CUDA
 
 
@@ -66,16 +67,19 @@ class PFNTrainer:
 
     Args:
         cfg: the run.
-        dev_items: the fixed dev pack (None: no validation).
+        val_packs: fixed packs scored during training, by name (dev, held-out, count);
+            logged only, never used to pick a checkpoint. None: no validation.
     """
 
-    def __init__(self, cfg: TrainConfig, dev_items: list[dict] | None = None) -> None:
+    def __init__(self, cfg: TrainConfig, val_packs: dict[str, list[dict]] | None = None) -> None:
         self.cfg = cfg
         self.out = Path(cfg.out)
         if self.out.exists():
             raise SystemExit(f"Refusing to overwrite {self.out}")
         if cfg.per_support > 1 and (cfg.bank is None or cfg.batch % cfg.per_support):
             raise SystemExit("per_support > 1 needs a bank and a batch divisible by it")
+        if cfg.fresh_supports and cfg.bank is None:
+            raise SystemExit("fresh_supports draws queries from a bank: pass one")
         if cfg.tf32 and cfg.device != "cpu":
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
@@ -85,7 +89,7 @@ class PFNTrainer:
         self.out.mkdir(parents=True)
         self.item_cfg = self._item_config()
         if self.bank is not None:
-            sampler = BankSampler(self.bank, self.item_cfg)
+            sampler = BankSampler(self.bank, self.item_cfg, fresh_supports=cfg.fresh_supports)
         else:
             sampler = OnTheFlySampler(self.item_cfg)
 
@@ -104,7 +108,9 @@ class PFNTrainer:
                                            cfg.per_support)
 
         # Validation (logged only; never used to pick a checkpoint).
-        self.validator = TrainingValidator(dev_items, cfg.device) if dev_items else None
+        self.validators = {}
+        for name, items in (val_packs or {}).items():
+            self.validators[name] = TrainingValidator(items, cfg.device)
 
     def _item_config(self) -> batches.ItemConfig:
         cfg = self.cfg
@@ -135,7 +141,8 @@ class PFNTrainer:
                 "counts": item_cfg.counts.kind, "branch_fraction": item_cfg.branch_fraction,
                 "schema": "pose-window-v1", "reuse": item_cfg.reuse,
                 "pair_extra": item_cfg.pair_extra, "conflict_fraction": item_cfg.conflict_fraction,
-                "workers": cfg.workers, "bank": bank, "per_support": cfg.per_support, "lambda_rot": self.loss_fn.lambda_rot,
+                "workers": cfg.workers, "bank": bank, "per_support": cfg.per_support,
+                "fresh_supports": cfg.fresh_supports, "lambda_rot": self.loss_fn.lambda_rot,
                 "run": {k: str(v) if isinstance(v, Path) else v for k, v in asdict(cfg).items()}}
 
     def _lr_factor(self, step: int) -> float:
@@ -189,8 +196,11 @@ class PFNTrainer:
                            "data_wait_s": round(waited / cfg.log_every, 4),
                            "compute_s": round(computed / cfg.log_every, 4)})
                 waited = computed = 0.0
-            if self.validator is not None and (step % cfg.eval_every == 0 or step == cfg.steps):
-                self._log({"step": step, "dev": self.validator.run_validation(self.model)})
+            if self.validators and (step % cfg.eval_every == 0 or step == cfg.steps):
+                record = {"step": step}
+                for name, validator in self.validators.items():
+                    record[name] = validator.run_validation(self.model)
+                self._log(record)
             if step % cfg.eval_every == 0 and step < cfg.steps:
                 self._save_checkpoint(step)        # one file, overwritten: a timeout keeps the latest
             if step >= cfg.steps:

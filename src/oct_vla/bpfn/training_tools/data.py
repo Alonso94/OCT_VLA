@@ -9,7 +9,7 @@ import torch
 from oct_vla.bpfn.data import batches
 from oct_vla.bpfn.data.bank import CONFLICT, HANDOVER, POOL, Bank
 from oct_vla.bpfn.data.syn_data import generator
-from oct_vla.bpfn.schema import semantic_relabeling
+from oct_vla.bpfn.schema import Episode, semantic_relabeling
 
 
 class OnTheFlySampler:
@@ -32,11 +32,16 @@ class BankSampler:
     Args:
         bank: the loaded bank.
         cfg: the arm's item configuration; only its programs and counts are used.
+        fresh_supports: generate every support episode instead of drawing it from the bank
+            (queries and conflict families still come from the bank). With bank supports
+            the model can recognise a support episode instead of reading its rule: held-out
+            compositions then fail (pilots C and D).
     """
 
-    def __init__(self, bank: Bank, cfg: batches.ItemConfig) -> None:
+    def __init__(self, bank: Bank, cfg: batches.ItemConfig, fresh_supports: bool = False) -> None:
         self.bank = bank
         self.cfg = cfg
+        self.fresh_supports = fresh_supports
         allowed = {program.key for program in cfg.programs}
         missing = allowed - set(bank.programs)
         if missing:
@@ -82,13 +87,25 @@ class BankSampler:
             ids = ids[ids != avoid]
         return int(ids[int(rng.integers(len(ids)))])
 
+    def _support_episode(self, rng: np.random.Generator, program: int, count: int) -> tuple[int, Episode]:
+        """A support of ``program`` at ``count``: (bank id, episode), or (-1, a new episode)."""
+        if not self.fresh_supports:
+            support_id = self._support(rng, program, count)
+            return support_id, self.bank.episode(support_id)
+        prog = self.programs[self.bank.programs[program]]
+        while True:
+            try:
+                return -1, generator.sample_episode(prog, count, batches._distractors(prog), rng)
+            except generator.Infeasible:
+                continue
+
     def single(self, rng: np.random.Generator) -> list[dict]:
         """One support and one query of the same program (``cfg.reuse`` items at other times)."""
         cfg = self.cfg
         p = self.arm_programs[int(rng.integers(len(self.arm_programs)))]
         program = self.programs[self.bank.programs[p]]
         s_count, q_count = cfg.counts.draw(rng)
-        support_id = self._support(rng, p, s_count)
+        support_id, support = self._support_episode(rng, p, s_count)
 
         cue, branch = None, "nominal"
         families = self.handover.get((p, q_count))
@@ -100,7 +117,6 @@ class BankSampler:
             query = self.bank.episode(int(family[5] if branch == "delayed" else family[4]))
         else:
             query = self.bank.episode(self._support(rng, p, q_count, avoid=support_id))
-        support = self.bank.episode(support_id)
 
         items = []
         for _ in range(max(1, cfg.reuse)):
@@ -126,7 +142,7 @@ class BankSampler:
         items, extra = [], []
         for p, query in ((int(family[1]), query_a), (int(family[2]), query_b)):
             program = self.programs[self.bank.programs[p]]
-            support = self.bank.episode(self._support(rng, p, s_count))
+            _, support = self._support_episode(rng, p, s_count)
             meta = {"program": program.key, "family": program.family, "branch": "nominal",
                     "pair": pair, "first_pick": query.annotations["selected"][0], "diverge": split}
             items.append(batches._item(rng, cfg, support, query, t, stratum, None, meta, mapping))
@@ -160,7 +176,7 @@ class BankSampler:
         p = self.arm_programs[int(rng.integers(len(self.arm_programs)))]
         program = self.programs[self.bank.programs[p]]
         s_count = cfg.counts.draw(rng)[0]
-        support_id = self._support(rng, p, s_count)
+        support_id, support = self._support_episode(rng, p, s_count)
         entries = []
         for _ in range(k):
             q_count = self._query_count(rng, s_count)
@@ -178,7 +194,7 @@ class BankSampler:
             meta = {"program": program.key, "family": program.family, "branch": branch, "pair": None}
             entries.append((query, t, stratum, cue, meta))
         mapping = semantic_relabeling(rng) if cfg.relabel else None
-        return [batches.group(rng, cfg, self.bank.episode(support_id), entries, mapping)]
+        return [batches.group(rng, cfg, support, entries, mapping)]
 
     def group_pair(self, rng: np.random.Generator, k: int) -> list[dict]:
         """Two groups (supports of programs a and b) over ``k`` conflict families of the
@@ -214,7 +230,7 @@ class BankSampler:
         mapping = semantic_relabeling(rng) if cfg.relabel else None
         groups = []
         for p in (a, b):
-            support = self.bank.episode(self._support(rng, p, s_count))
+            _, support = self._support_episode(rng, p, s_count)
             groups.append(batches.group(rng, cfg, support, entries[p], mapping))
         return groups
 
