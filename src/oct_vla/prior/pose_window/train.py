@@ -94,16 +94,21 @@ class _Stream(torch.utils.data.IterableDataset):
     def __iter__(self):
         info = torch.utils.data.get_worker_info()
         rng = np.random.default_rng([self.seed, 0 if info is None else info.id])
+        pending: list[dict] = []
         while True:
-            items = Bt.sample_items(rng, self.cfg, self.batch)[:self.batch + 1]
+            # Reused groups overshoot a batch; the rest starts the next one.
+            if len(pending) < self.batch:
+                pending += Bt.sample_items(rng, self.cfg, self.batch - len(pending))
+            items, pending = pending[:self.batch], pending[self.batch:]
             yield {k: torch.as_tensor(v) for k, v in Bt.pack(items, s_rows=self.s_rows).items()}
 
 
-def train(out: Path, *, arm: str = "full", steps: int = 20000, batch: int = 64,
+def train(out: Path, *, arm: str = "full", steps: int = 80000, batch: int = 64,
           width: int = 128, heads: int = 4, layers: int = 4, lr: float = 3e-4,
           warmup: int = 1000, workers: int = 8, seed: int = 0, s_rows: int = Bt.S_ROWS,
-          dev_items: list[dict] | None = None, eval_every: int = 2000, log_every: int = 100,
-          device: str = "cuda", faults=None) -> dict:
+          dev_items: list[dict] | None = None, eval_every: int = 5000, log_every: int = 100,
+          device: str = "cuda", faults=None, reuse: int = 8, pair_extra: int | None = None,
+          conflict_fraction: float | None = None) -> dict:
     out = Path(out)
     if out.exists():
         raise SystemExit(f"Refusing to overwrite {out}")
@@ -112,13 +117,19 @@ def train(out: Path, *, arm: str = "full", steps: int = 20000, batch: int = 64,
 
     cfg = Bt.ItemConfig(programs=Sp.programs_for(arm), counts=Sp.count_matrix_for(arm),
                         branch_fraction=0.0 if arm == "nominal_only" else 0.3,
-                        faults=faults or CLEAN, s_rows=s_rows)
+                        faults=faults or CLEAN, s_rows=s_rows, reuse=reuse,
+                        pair_extra=(1 if reuse > 1 else 0) if pair_extra is None else pair_extra,
+                        conflict_fraction=((0.7 if reuse > 1 else 0.5) if conflict_fraction is None
+                                           else conflict_fraction))
     model = PoseWindowPFN(width=width, heads=heads, layers=layers, horizon=Bt.HORIZON,
                           use_support=arm != "scene_only").to(device)
     config = {"arm": arm, "steps": steps, "batch": batch, "lr": lr, "warmup": warmup,
               "seed": seed, "s_rows": s_rows, "model": model.config,
               "programs": len(cfg.programs), "counts": cfg.counts.kind,
-              "branch_fraction": cfg.branch_fraction, "schema": "pose-window-v1"}
+              "branch_fraction": cfg.branch_fraction, "schema": "pose-window-v1",
+              "reuse": reuse, "pair_extra": cfg.pair_extra,
+              "conflict_fraction": cfg.conflict_fraction, "workers": workers,
+              "lambda_rot": __import__("oct_vla.prior.pose_window.model", fromlist=["LAMBDA_ROT"]).LAMBDA_ROT}
     (out / "config.json").write_text(json.dumps(config, indent=1) + "\n")
     torch.manual_seed(seed)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
@@ -128,7 +139,11 @@ def train(out: Path, *, arm: str = "full", steps: int = 20000, batch: int = 64,
                                          num_workers=workers, persistent_workers=workers > 0)
     history = (out / "history.jsonl").open("a")
     t0 = time.time()
+    waited = computed = 0.0
+    mark = time.time()
     for step, b in enumerate(loader, start=1):
+        got = time.time()
+        waited += got - mark                       # time blocked on the data loader
         b = {k: v.to(device, torch.float32 if v.is_floating_point() else None) for k, v in b.items()}
         model.train()
         loss, stats = window_loss(model(b)["window"], b["target"], b["target_valid"])
@@ -137,14 +152,26 @@ def train(out: Path, *, arm: str = "full", steps: int = 20000, batch: int = 64,
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
         sched.step()
+        if device != "cpu":
+            torch.cuda.synchronize()
+        mark = time.time()
+        computed += mark - got
         if step % log_every == 0:
             history.write(json.dumps({"step": step, **stats, "lr": sched.get_last_lr()[0],
-                                      "elapsed_s": round(time.time() - t0, 1)}) + "\n")
+                                      "elapsed_s": round(time.time() - t0, 1),
+                                      "data_wait_s": round(waited / log_every, 4),
+                                      "compute_s": round(computed / log_every, 4)}) + "\n")
             history.flush()
+            waited = computed = 0.0
         if dev_items is not None and (step % eval_every == 0 or step == steps):
-            res = evaluate(predict(model, dev_items, s_rows, device), dev_items)
+            dev_rows = max(len(i["support"].time) for i in dev_items)   # the pack's own size
+            res = evaluate(predict(model, dev_items, dev_rows, device), dev_items)
             history.write(json.dumps({"step": step, "dev": res}) + "\n")
             history.flush()
+        if step % eval_every == 0 and step < steps:
+            # One checkpoint, overwritten: a timeout keeps the latest, never several.
+            torch.save({"config": model.config, "state": model.state_dict(), "steps": step,
+                        "train_config": config}, out / "model.pt")
         if step >= steps:
             break
     torch.save({"config": model.config, "state": model.state_dict(), "steps": steps,

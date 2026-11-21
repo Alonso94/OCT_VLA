@@ -100,6 +100,14 @@ class ItemConfig:
     history: int = HISTORY
     horizon: int = HORIZON
     s_rows: int = S_ROWS              # support row budget (observable sampler)
+    #: Items per generated support/query pair, at independently drawn query times (and
+    #: fresh column shuffles). Episode generation dominates the cost of an item (~0.1 s
+    #: against ~0.2 ms to pack), so reuse multiplies throughput; the items of one group
+    #: are correlated, which a batch of 64 dilutes.
+    reuse: int = 1
+    #: Extra items per conflict-pair member at other times. Kept small so the pure pairs
+    #: (identical inputs, support decides) stay a large share of each batch.
+    pair_extra: int = 0
 
 
 def _distractors(program: Gn.Program) -> int:
@@ -139,8 +147,10 @@ def _remaining(ep: Episode, t: int) -> int:
     return len([o for o in ep.annotations.get("selected", []) if o not in done])
 
 
-def sample_item(rng, cfg: ItemConfig, program: Gn.Program | None = None) -> dict:
-    """One support--query item of one program (independent scenes)."""
+def sample_item(rng, cfg: ItemConfig, program: Gn.Program | None = None,
+                reuse: int | None = None):
+    """One support--query item of one program (independent scenes); with ``cfg.reuse`` > 1
+    (or ``reuse``), a list of that many items from the same pair at different times."""
     program = program or cfg.programs[int(rng.integers(len(cfg.programs)))]
     s_n, q_n = cfg.counts.draw(rng)
     support = Gn.sample_episode(program, s_n, _distractors(program), rng)
@@ -167,11 +177,14 @@ def sample_item(rng, cfg: ItemConfig, program: Gn.Program | None = None) -> dict
         query = delayed if branch == "delayed" else nominal
     else:
         query = Gn.sample_episode(program, q_n, _distractors(program), rng)
-    t, stratum = query_time(query, rng)
-    mapping = semantic_relabeling(rng) if cfg.relabel else None
-    return _item(rng, cfg, support, query, t, stratum, cue,
-                 {"program": program.key, "family": program.family, "branch": branch,
-                  "pair": None}, mapping)
+    group = []
+    for _ in range(max(1, reuse if reuse is not None else cfg.reuse)):
+        t, stratum = query_time(query, rng)
+        mapping = semantic_relabeling(rng) if cfg.relabel else None
+        group.append(_item(rng, cfg, support, query, t, stratum, cue,
+                           {"program": program.key, "family": program.family,
+                            "branch": branch, "pair": None}, mapping))
+    return group[0] if reuse is None and cfg.reuse == 1 else group
 
 
 def conflict_partner(program: Gn.Program, rng) -> tuple[Gn.Program, str | None]:
@@ -219,14 +232,21 @@ def sample_pair(rng, cfg: ItemConfig, program: Gn.Program | None = None) -> list
     t, stratum = query_time(qa, rng, before=split)
     mapping = semantic_relabeling(rng) if cfg.relabel else None
     pair = int(rng.integers(1 << 62))
-    items = []
+    items, extra = [], []
     for prog, q in ((program, qa), (partner, qb)):
         sup = Gn.sample_episode(prog, s_n, _distractors(prog), rng)
         items.append(_item(rng, cfg, sup, q, t, stratum, None,
                            {"program": prog.key, "family": prog.family, "branch": "nominal",
                             "pair": pair, "first_pick": q.annotations["selected"][0],
                             "diverge": split}, mapping))
-    return items
+        # Reuse: the same support and query at other times are ordinary supervised items
+        # (only the pair itself needs identical inputs).
+        for _ in range(cfg.pair_extra):
+            tt, st = query_time(q, rng)
+            extra.append(_item(rng, cfg, sup, q, tt, st, None,
+                               {"program": prog.key, "family": prog.family,
+                                "branch": "nominal", "pair": None}, None))
+    return items + extra
 
 
 def sample_items(rng, cfg: ItemConfig, n: int) -> list[dict]:
@@ -236,7 +256,8 @@ def sample_items(rng, cfg: ItemConfig, n: int) -> list[dict]:
             if rng.random() < cfg.conflict_fraction:
                 out.extend(sample_pair(rng, cfg))
             else:
-                out.append(sample_item(rng, cfg))
+                got = sample_item(rng, cfg, reuse=cfg.reuse)
+                out.extend(got)
         except Gn.Infeasible:
             continue
     return out   # may exceed n by one so a conflict pair is never split

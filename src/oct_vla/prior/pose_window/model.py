@@ -36,6 +36,8 @@ from .schema import CATEGORIES, COLOURS, KINDS, LEFT_WRIST, PAD, RIGHT_WRIST
 POS_CENTRE = (0.0, -0.15, 1.0)
 POS_SCALE = 0.3
 DELTA_SCALE = 0.10      # m: translation offsets are predicted in these units
+SIZE_SCALE = 0.1        # m: object extents enter as size / SIZE_SCALE
+LOGVOL_CENTRE, LOGVOL_SCALE = -9.0, 1.5   # log(m^3): a 5 cm cube is about -9
 
 
 def _quat_mul(a, b):
@@ -134,7 +136,10 @@ class PoseWindowPFN(nn.Module):
         self.kind = nn.Embedding(len(KINDS) + 2, width)        # + goal_left, goal_right
         self.colour = nn.Embedding(len(COLOURS), width)
         self.category = nn.Embedding(len(CATEGORIES), width)
-        self.size = nn.Linear(3, width)
+        #: Size enters scaled (extents / SIZE_SCALE) plus a log-volume channel: raw metres
+        #: (0.04-0.14) through one linear layer barely separated sizes, and size-order
+        #: rules scored 0.00-0.33 paired on dev (recipe 1).
+        self.size = nn.Linear(4, width)
         self.obs = nn.Linear(2, width)                          # observed flag, age
         self.time = nn.Linear(16, width)
         self.table = nn.Embedding(2, width)                     # support / query
@@ -166,8 +171,11 @@ class PoseWindowPFN(nn.Module):
     def _cells(self, b, prefix, which):
         pose, obs, age = b[prefix + "pose"], b[prefix + "observed"], b[prefix + "age"]
         B, T, C, _ = pose.shape
+        size = b[prefix + "size"]
+        logvol = (torch.log(size.prod(-1, keepdim=True).clamp(min=1e-7)) - LOGVOL_CENTRE) / LOGVOL_SCALE
         header = (self.kind(b[prefix + "kind"].long()) + self.colour(b[prefix + "colour"].long())
-                  + self.category(b[prefix + "category"].long()) + self.size(b[prefix + "size"]))
+                  + self.category(b[prefix + "category"].long())
+                  + self.size(torch.cat([size / SIZE_SCALE, logvol], -1)))
         ents = self._pose(pose) + header[:, None] \
             + self.obs(torch.stack([obs.float(), age], -1))
         goal_kinds = self.kind(torch.tensor([len(KINDS), len(KINDS) + 1], device=pose.device))
@@ -238,8 +246,13 @@ class PoseWindowPFN(nn.Module):
         return self.predict(memory, b)
 
 
+#: Rotation weight. 1 - <q_hat, q>^2 is ~0.005 at 8 degrees against a translation term
+#: near 1, so with weight 1 rotation got almost no gradient (stuck at ~8 deg, recipe 1).
+LAMBDA_ROT = 10.0
+
+
 def window_loss(pred: torch.Tensor, target: torch.Tensor, valid: torch.Tensor,
-                length: float = 0.05, lambda_rot: float = 1.0) -> tuple[torch.Tensor, dict]:
+                length: float = 0.05, lambda_rot: float = LAMBDA_ROT) -> tuple[torch.Tensor, dict]:
     """Huber on translation / ``length`` + lambda (1 - <q_hat, q>^2), mean over valid
     (arm, horizon) pairs; ``valid`` is ``[B, H]`` (both arms share a horizon's validity)."""
     v = valid[..., None].expand(pred.shape[:-1]).float()             # [B, H, 2]
@@ -248,11 +261,14 @@ def window_loss(pred: torch.Tensor, target: torch.Tensor, valid: torch.Tensor,
                          delta=1.0).sum(-1)
     dot = (pred[..., 3:] * target[..., 3:]).sum(-1)
     rot = 1 - dot**2
-    loss = ((trans + lambda_rot * rot) * v).sum() / n
+    loss_trans = (trans * v).sum() / n
+    loss_rot = (rot * v).sum() / n
+    loss = loss_trans + lambda_rot * loss_rot
     err = (pred[..., :3] - target[..., :3]).norm(dim=-1)
     ang = 2 * torch.acos(dot.abs().clamp(0, 1))
     loss_value = loss.detach()
-    return loss, {"loss": float(loss_value), "trans_mm": float((err * v).sum().detach() / n * 1000),
+    return loss, {"loss": float(loss_value), "loss_trans": float(loss_trans.detach()),
+                  "loss_rot": float(loss_rot.detach()), "trans_mm": float((err * v).sum().detach() / n * 1000),
                   "rot_deg": float((ang * v).sum().detach() / n * 180 / math.pi)}
 
 

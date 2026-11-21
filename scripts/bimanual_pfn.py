@@ -80,7 +80,9 @@ def cmd_train(args) -> int:
     dev = packs.load(args.dev) if args.dev else None
     Tr.train(args.out, arm=args.arm, steps=args.steps, batch=args.batch, width=args.width,
              layers=args.layers, lr=args.lr, workers=args.workers, seed=args.seed,
-             s_rows=args.s_rows, dev_items=dev, eval_every=args.eval_every, device=args.device)
+             s_rows=args.s_rows, dev_items=dev, eval_every=args.eval_every, device=args.device,
+             reuse=args.reuse, pair_extra=args.pair_extra,
+             conflict_fraction=args.conflict_fraction)
     return 0
 
 
@@ -163,7 +165,10 @@ def main() -> int:
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--arm", default="full")
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--steps", type=int, default=20000)
+    p.add_argument("--steps", type=int, default=80000)
+    p.add_argument("--reuse", type=int, default=8, help="items per generated support/query pair")
+    p.add_argument("--pair-extra", type=int, default=None, help="extra items per conflict member")
+    p.add_argument("--conflict-fraction", type=float, default=None)
     p.add_argument("--batch", type=int, default=64)
     p.add_argument("--width", type=int, default=128)
     p.add_argument("--layers", type=int, default=4)
@@ -171,7 +176,7 @@ def main() -> int:
     p.add_argument("--workers", type=int, default=8)
     p.add_argument("--s-rows", type=int, default=128)
     p.add_argument("--dev", type=Path)
-    p.add_argument("--eval-every", type=int, default=2000)
+    p.add_argument("--eval-every", type=int, default=5000)
     p.add_argument("--device", default="cuda")
     p.set_defaults(func=cmd_train)
     p = sub.add_parser("eval", help="score a checkpoint on a pack (correct / shuffled / none)")

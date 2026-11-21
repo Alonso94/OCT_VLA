@@ -10,7 +10,7 @@ set -euo pipefail
 read -r -a ARMS <<< "$BPFN_ARMS"; read -r -a SEEDS <<< "$BPFN_SEEDS"
 I="${SLURM_ARRAY_TASK_ID:?}"
 ARM="${ARMS[$(( I / ${#SEEDS[@]} ))]}"; SEED="${SEEDS[$(( I % ${#SEEDS[@]} ))]}"
-RUN="$BPFN_ROOT/runs/${ARM}_s${SEED}"
+RUN="$BPFN_ROOT/${BPFN_RUNS_DIR:-runs}/${ARM}_s${SEED}${BPFN_RUN_SUFFIX:-}"
 [ -f "$RUN/DONE" ] || { echo "$RUN has no DONE receipt; train first" >&2; exit 2; }
 export PYTHONPATH="$OCTVLA_REPO/src${PYTHONPATH:+:$PYTHONPATH}" PYTHONUNBUFFERED=1
 for PACK in ${BPFN_PACKS:-dev heldout_handover_colour count_eval}; do
