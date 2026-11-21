@@ -79,7 +79,7 @@ def tokens_to_window(tokens: Tensor) -> Tensor:
 def support_tokens(episode, rows: int = 32) -> np.ndarray:
     """The direct-demo baseline's set: both wrists at ``rows`` evenly spaced rows, and every
     object's (and fixture's) first and last pose. ``episode`` is a pose-window Episode."""
-    from oct_vla.prior.pose_window.schema import FIXTURE
+    from oct_vla.bpfn.schema import FIXTURE
 
     T = episode.T
     idx = np.unique(np.linspace(0, T - 1, rows).round().astype(int))

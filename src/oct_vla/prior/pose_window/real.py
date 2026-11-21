@@ -24,8 +24,8 @@ from pathlib import Path
 
 import numpy as np
 
-from . import quat as Q
-from .schema import FIXTURE, MOVABLE, Episode, category_id, colour_id
+from oct_vla.bpfn import quat
+from oct_vla.bpfn.schema import FIXTURE, MOVABLE, Episode, category_id, colour_id
 
 #: Asset name -> stable category. Unlisted assets are unknown, never guessed.
 CATEGORY_OF_ASSET = {
@@ -76,8 +76,8 @@ def episode_from_states(states, *, shelf_spec=None) -> Episode:
             category.append(category_id(None))
             size.append(tuple(deck.size_xyz))
             tracks.append(name)
-    wrist[..., 3:] = np.stack([Q.continuous(Q.normalize(wrist[:, a, 3:])) for a in range(2)], 1)
-    objects[..., 3:] = np.stack([Q.continuous(Q.normalize(objects[:, j, 3:]))
+    wrist[..., 3:] = np.stack([quat.continuous(quat.normalize(wrist[:, a, 3:])) for a in range(2)], 1)
+    objects[..., 3:] = np.stack([quat.continuous(quat.normalize(objects[:, j, 3:]))
                                  for j in range(objects.shape[1])], 1)
     annotations = {
         "source": "recording", "seed": states.seed, "success": states.success,

@@ -22,7 +22,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 
 def cmd_fixtures(args) -> int:
-    from oct_vla.prior.pose_window import branches as B
+    from oct_vla.bpfn.data.syn_data import branches
     from oct_vla.prior.pose_window import fixtures as F
     from oct_vla.prior.pose_window import render as R
 
@@ -32,8 +32,8 @@ def cmd_fixtures(args) -> int:
               "handover": {}}
     written = R.colour_fixture_figure(colour, args.out / "colour_fixture")
     for giver, name in ((0, "left_gives"), (1, "right_gives")):
-        eps = B.family(giver=giver)
-        checks = B.handover_checks(eps)
+        eps = branches.family(giver=giver)
+        checks = branches.handover_checks(eps)
         report["handover"][name] = {"cue_row": checks["cue"], "extra_hold_s": checks["extra_hold_s"],
                                     "checks": checks["checks"]}
         written += R.handover_fixture_figure(eps, checks, args.out / f"handover_fixture_{name}")
@@ -47,8 +47,7 @@ def cmd_fixtures(args) -> int:
 
 
 def cmd_generate(args) -> int:
-    from oct_vla.prior.pose_window import packs
-
+    from oct_vla.bpfn.data import packs
     for name in args.packs:
         path = packs.build(name, args.out, args.items, s_rows=args.s_rows)
         print(path, (path.with_suffix(".json")).read_text())
@@ -88,12 +87,11 @@ def cmd_train(args) -> int:
 
 
 def cmd_bank(args) -> int:
-    from oct_vla.prior.pose_window import bank as Bk
-
-    spec = Bk.BankSpec(name=args.name, pool=args.pool, conflict=args.conflict,
+    from oct_vla.bpfn.data import bank
+    spec = bank.BankSpec(name=args.name, pool=args.pool, conflict=args.conflict,
                        handover=args.handover, shards=args.shards)
-    man = Bk.build(args.out, spec, shards=args.shard_ids, workers=args.workers)
-    done = sum(Bk.shard_path(args.out, k).exists() for k in range(spec.shards))
+    man = bank.build(args.out, spec, shards=args.shard_ids, workers=args.workers)
+    done = sum(bank.shard_path(args.out, k).exists() for k in range(spec.shards))
     print(json.dumps({"units": man["units"], "shards_done": done, "shards": spec.shards}))
     return 0
 
@@ -102,7 +100,7 @@ def cmd_eval(args) -> int:
     import numpy as np
 
     from oct_vla.prior.pose_window import packs, train as Tr
-    from oct_vla.prior.pose_window.schema import empty_support
+    from oct_vla.bpfn.schema import empty_support
 
     if args.out.exists():
         raise SystemExit(f"Refusing to overwrite {args.out}")

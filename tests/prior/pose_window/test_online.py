@@ -13,7 +13,7 @@ from oct_vla.core.state import ArmState, EEFState
 from oct_vla.prior.pose_window import fixtures as F
 from oct_vla.prior.pose_window import online as On
 from oct_vla.prior.pose_window.model import PoseWindowPFN
-from oct_vla.prior.pose_window.trajectory import TOP_DOWN, wrist_for_grip
+from oct_vla.bpfn.data.syn_data.trajectory import TOP_DOWN, wrist_for_grip
 
 
 def _obs(t, left, right, objects, grips=(0.83, 0.83), arm_targets=None):

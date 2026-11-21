@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import numpy as np
 
-from . import quat as Q
-from .schema import (COLOURS, MOVABLE, Episode, Table, category_id, colour_id, query_table,
+from oct_vla.bpfn import quat
+from oct_vla.bpfn.schema import (COLOURS, MOVABLE, Episode, Table, category_id, colour_id, query_table,
                      relabel, semantic_relabeling, shuffle_columns, support_table)
-from .trajectory import CLOSED, OPEN, TOP_DOWN, Builder, grip_point, wrist_for_grip
+from oct_vla.bpfn.data.syn_data.trajectory import CLOSED, OPEN, TOP_DOWN, Builder, grip_point, wrist_for_grip
 
 # Synthetic shelf geometry (workcell metres), close to the RoboTwin shelf task.
 LOWER_Y, LOWER_TOP = -0.25, 0.745
@@ -34,7 +34,7 @@ LOWER_BAND = 0.85   # m: an object centre below this is still on the lower shelf
 
 
 def _object(x: float, y: float, top: float, size=BOX) -> np.ndarray:
-    return np.array([x, y, top + size[2] / 2, *Q.IDENTITY])
+    return np.array([x, y, top + size[2] / 2, *quat.IDENTITY])
 
 
 def restock_episode(xs, colours, rule_colour: str, arm: int = 0, seed: int = 0) -> Episode:

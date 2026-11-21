@@ -7,12 +7,12 @@ import numpy as np
 import pytest
 import torch
 
-from oct_vla.prior.pose_window import batches as Bt
-from oct_vla.prior.pose_window import generator as Gn
+from oct_vla.bpfn.data import batches
+from oct_vla.bpfn.data.syn_data import generator
 from oct_vla.prior.pose_window import metrics as Me
 from oct_vla.prior.pose_window import model as M
-from oct_vla.prior.pose_window import schema as S
-from oct_vla.prior.pose_window import splits as Sp
+from oct_vla.bpfn import schema
+from oct_vla.bpfn.data import splits
 from oct_vla.prior.pose_window import train as Tr
 
 
@@ -31,7 +31,7 @@ def _model(**kw):
 
 def test_cached_support_equals_uncached(items):
     m = _model()
-    b = M.to_torch(Bt.pack(items, s_rows=32))
+    b = M.to_torch(batches.pack(items, s_rows=32))
     with torch.no_grad():
         a = m(b)["window"]
         c = m.predict(m.encode_support(b), b)["window"]
@@ -44,18 +44,18 @@ def test_predictions_are_invariant_to_column_order(items):
     shuffled = []
     for it in items:
         it2 = dict(it)
-        it2["support"], _ = S.shuffle_columns(it["support"], rng)
-        it2["query"], _ = S.shuffle_columns(it["query"], rng)
+        it2["support"], _ = schema.shuffle_columns(it["support"], rng)
+        it2["query"], _ = schema.shuffle_columns(it["query"], rng)
         shuffled.append(it2)
     with torch.no_grad():
-        a = m(M.to_torch(Bt.pack(items, s_rows=32)))["window"]
-        b = m(M.to_torch(Bt.pack(shuffled, s_rows=32)))["window"]
+        a = m(M.to_torch(batches.pack(items, s_rows=32)))["window"]
+        b = m(M.to_torch(batches.pack(shuffled, s_rows=32)))["window"]
     torch.testing.assert_close(a, b, atol=1e-5, rtol=1e-5)
 
 
 def test_support_matters_and_scene_only_ignores_it(items):
     m, so = _model(), _model(use_support=False)
-    b = M.to_torch(Bt.pack(items, s_rows=32))
+    b = M.to_torch(batches.pack(items, s_rows=32))
     other = dict(b)
     other.update({k: v.flip(0) for k, v in b.items() if k.startswith("s_")})   # swap supports
     with torch.no_grad():
@@ -65,7 +65,7 @@ def test_support_matters_and_scene_only_ignores_it(items):
 
 def test_every_parameter_learns(items):
     m = M.PoseWindowPFN(width=32, heads=2, layers=2)
-    b = M.to_torch(Bt.pack(items, s_rows=32))
+    b = M.to_torch(batches.pack(items, s_rows=32))
     opt = torch.optim.SGD(m.parameters(), lr=0.1)
     for _ in range(2):     # the zero head blocks upstream gradient on the first step only
         loss, _ = M.window_loss(m(b)["window"], b["target"], b["target_valid"])
@@ -78,11 +78,11 @@ def test_every_parameter_learns(items):
 
 def test_outputs_are_unit_quaternions_anchored_at_the_current_wrist(items):
     m = M.PoseWindowPFN(width=32, heads=2, layers=2).eval()   # zero head: hold
-    b = M.to_torch(Bt.pack(items, s_rows=32))
+    b = M.to_torch(batches.pack(items, s_rows=32))
     with torch.no_grad():
         w = m(b)["window"]
     torch.testing.assert_close(w[..., 3:].norm(dim=-1), torch.ones(w.shape[:-1]))
-    held = np.stack([Me.hold(it["query"], Bt.HORIZON) for it in items])
+    held = np.stack([Me.hold(it["query"], batches.HORIZON) for it in items])
     np.testing.assert_allclose(w.numpy(), held, atol=1e-5)
 
 
@@ -113,17 +113,17 @@ def test_decision_rule_recovers_the_expert_and_rejects_hold(items):
 
 def test_an_empty_support_is_defined_not_nan(items):
     m = _model()
-    empty = [dict(it, support=S.empty_support(it["support"])) for it in items]
-    b = M.to_torch(Bt.pack(empty, s_rows=32))
+    empty = [dict(it, support=schema.empty_support(it["support"])) for it in items]
+    b = M.to_torch(batches.pack(empty, s_rows=32))
     assert not b["s_row_valid"].any()         # no row of the demonstration is valid
     with torch.no_grad():
         w = m(b)["window"]
     assert torch.isfinite(w).all()
     # ...and it is the same prediction whatever support was emptied.
-    other = [dict(it, support=S.empty_support(items[(k + 1) % len(items)]["support"]))
+    other = [dict(it, support=schema.empty_support(items[(k + 1) % len(items)]["support"]))
              for k, it in enumerate(items)]
     with torch.no_grad():
-        w2 = m(M.to_torch(Bt.pack(other, s_rows=32)))["window"]
+        w2 = m(M.to_torch(batches.pack(other, s_rows=32)))["window"]
     torch.testing.assert_close(w, w2)
 
 
@@ -131,7 +131,7 @@ def test_errors_ignore_invalid_horizons_past_the_episode_end():
     """Regression: every training job crashed at its first dev evaluation, because the
     angle was computed on zero-filled targets past an episode's end."""
     ep = __import__("oct_vla.prior.pose_window.branches", fromlist=["handover"]).handover()
-    w, v = S.target_window(ep, ep.T - 3, horizon=16)
+    w, v = schema.target_window(ep, ep.T - 3, horizon=16)
     assert v.sum() == 2 and np.allclose(np.linalg.norm(w[..., 3:], axis=-1), 1.0)
     zeroed = w.copy()
     zeroed[~v] = 0.0                                   # what an old pack would hold

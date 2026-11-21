@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .schema import COLOURS, DT, MOVABLE
+from oct_vla.bpfn.schema import COLOURS, DT, MOVABLE
 
 _RGB = {"red": "#c0392b", "blue": "#2166ac", "green": "#1a9850", "yellow": "#d4a017",
         "unknown": "#7f7f7f"}
@@ -91,7 +91,7 @@ def colour_fixture_figure(result: dict, out: Path) -> list[Path]:
 
 def handover_fixture_figure(eps: dict, checks: dict, out: Path) -> list[Path]:
     """Receiver progress, giver aperture and the extra hold, per branch."""
-    from .trajectory import grip_point
+    from oct_vla.bpfn.data.syn_data.trajectory import grip_point
 
     plt = _plt()
     giver = eps["nominal"].annotations["giver"]

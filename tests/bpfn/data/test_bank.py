@@ -10,33 +10,33 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from oct_vla.prior.pose_window import bank as Bk  # noqa: E402
-from oct_vla.prior.pose_window import batches as Bt  # noqa: E402
-from oct_vla.prior.pose_window import splits as Sp  # noqa: E402
+from oct_vla.bpfn.data import bank  # noqa: E402
+from oct_vla.bpfn.data import batches  # noqa: E402
+from oct_vla.bpfn.data import splits  # noqa: E402
 
 #: A partner-closed subset (each program's order flip is in it), with a handover program.
-PROGRAMS = tuple(p for p in Sp.programs_for("full")
+PROGRAMS = tuple(p for p in splits.programs_for("full")
                  if p.eligibility == "all" and p.order in ("left_to_right", "right_to_left")
                  and p.compaction == "none" and p.repeat == "until_empty"
                  and p.manipulation in ("carry_left", "handover"))
-SPEC = Bk.BankSpec(name="test", pool=2, conflict=1, handover=1, shards=2)
+SPEC = bank.BankSpec(name="test", pool=2, conflict=1, handover=1, shards=2)
 
 
 @pytest.fixture(scope="module")
 def bank_dir(tmp_path_factory):
     root = tmp_path_factory.mktemp("bank")
-    Bk.build(root, SPEC, workers=2, programs=PROGRAMS, log=lambda *_: None)
+    bank.build(root, SPEC, workers=2, programs=PROGRAMS, log=lambda *_: None)
     return root
 
 
 @pytest.fixture(scope="module")
-def bank(bank_dir):
-    return Bk.Bank(bank_dir, log=lambda *_: None)
+def episode_bank(bank_dir):
+    return bank.Bank(bank_dir, log=lambda *_: None)
 
 
 def _cfg(arm, **kw):
-    return Bt.ItemConfig(programs=tuple(p for p in PROGRAMS if p in Sp.programs_for(arm)),
-                         counts=Sp.count_matrix_for(arm),
+    return batches.ItemConfig(programs=tuple(p for p in PROGRAMS if p in splits.programs_for(arm)),
+                         counts=splits.count_matrix_for(arm),
                          branch_fraction=0.0 if arm == "nominal_only" else 0.5, **kw)
 
 
@@ -44,27 +44,27 @@ def test_subset_is_partner_closed():
     assert {p.manipulation for p in PROGRAMS} == {"carry_left", "handover"}
     keys = {p.key for p in PROGRAMS}
     for p in PROGRAMS:
-        assert Bt.conflict_partner(p, np.random.default_rng(0))[0].key in keys
+        assert batches.conflict_partner(p, np.random.default_rng(0))[0].key in keys
 
 
 def test_units_do_not_depend_on_sharding():
-    unit = Bk.units(SPEC, PROGRAMS)[5]
+    unit = bank.units(SPEC, PROGRAMS)[5]
     by = {p.key: p for p in PROGRAMS}
-    a, _, _ = Bk.generate_unit(SPEC, unit, by)
-    b, _, _ = Bk.generate_unit(Bk.BankSpec(name="test", pool=2, conflict=1, handover=1,
+    a, _, _ = bank.generate_unit(SPEC, unit, by)
+    b, _, _ = bank.generate_unit(bank.BankSpec(name="test", pool=2, conflict=1, handover=1,
                                            shards=7), unit, by)
     assert np.array_equal(a[0].wrist, b[0].wrist)
-    c, _, _ = Bk.generate_unit(Bk.BankSpec(name="other"), unit, by)
+    c, _, _ = bank.generate_unit(bank.BankSpec(name="other"), unit, by)
     assert not np.array_equal(a[0].wrist, c[0].wrist)
 
 
 def test_storage_round_trip():
     by = {p.key: p for p in PROGRAMS}
-    eps = Bk.generate_unit(SPEC, Bk.units(SPEC, PROGRAMS)[2], by)[0]
-    eps += Bk.generate_unit(SPEC, Bk.units(SPEC, PROGRAMS)[0], by)[0]
-    packed = Bk.pack_episodes(eps)
+    eps = bank.generate_unit(SPEC, bank.units(SPEC, PROGRAMS)[2], by)[0]
+    eps += bank.generate_unit(SPEC, bank.units(SPEC, PROGRAMS)[0], by)[0]
+    packed = bank.pack_episodes(eps)
     for i, e in enumerate(eps):
-        back = Bk.unpack_episode(packed, i)
+        back = bank.unpack_episode(packed, i)
         for f in ("time", "wrist", "aperture", "objects", "size"):
             np.testing.assert_allclose(getattr(back, f), getattr(e, f), atol=1e-6)
         for f in ("kind", "colour", "category"):
@@ -73,13 +73,13 @@ def test_storage_round_trip():
         assert back.annotations["selected"] == e.annotations["selected"]
 
 
-def test_bank_is_complete_and_resumable(bank_dir, bank):
-    assert bank.episodes > 0 and not any(
-        Bk.shard_path(bank_dir, k).with_suffix("").name.endswith("tmp") for k in range(2))
-    before = Bk.shard_path(bank_dir, 0).stat().st_mtime_ns
-    Bk.build(bank_dir, SPEC, workers=1, programs=PROGRAMS, log=lambda *_: None)
-    assert Bk.shard_path(bank_dir, 0).stat().st_mtime_ns == before      # skipped
-    kinds = np.bincount(bank.records[:, 0], minlength=3)
+def test_bank_is_complete_and_resumable(bank_dir, episode_bank):
+    assert episode_bank.episodes > 0 and not any(
+        bank.shard_path(bank_dir, k).with_suffix("").name.endswith("tmp") for k in range(2))
+    before = bank.shard_path(bank_dir, 0).stat().st_mtime_ns
+    bank.build(bank_dir, SPEC, workers=1, programs=PROGRAMS, log=lambda *_: None)
+    assert bank.shard_path(bank_dir, 0).stat().st_mtime_ns == before      # skipped
+    kinds = np.bincount(episode_bank.records[:, 0], minlength=3)
     n_ho = sum(p.manipulation == "handover" for p in PROGRAMS)
     c = len(SPEC.counts)
     assert kinds.tolist() == [len(PROGRAMS) * c * SPEC.pool, len(PROGRAMS) * c * SPEC.conflict,
@@ -88,18 +88,18 @@ def test_bank_is_complete_and_resumable(bank_dir, bank):
 
 def test_refuses_another_bank_in_the_same_directory(bank_dir):
     with pytest.raises(SystemExit, match="different bank"):
-        Bk.build(bank_dir, Bk.BankSpec(name="test", pool=3, conflict=1, handover=1, shards=2),
+        bank.build(bank_dir, bank.BankSpec(name="test", pool=3, conflict=1, handover=1, shards=2),
                  programs=PROGRAMS, log=lambda *_: None)
 
 
 def test_refuses_an_incomplete_bank(tmp_path, bank_dir):
     (tmp_path / "bank.json").write_text((bank_dir / "bank.json").read_text())
     with pytest.raises(SystemExit, match="incomplete"):
-        Bk.Bank(tmp_path, log=lambda *_: None)
+        bank.Bank(tmp_path, log=lambda *_: None)
 
 
-def test_conflict_pairs_share_inputs_and_split_on_the_support(bank):
-    s = Bk.BankSampler(bank, _cfg("full", conflict_fraction=1.0))
+def test_conflict_pairs_share_inputs_and_split_on_the_support(episode_bank):
+    s = bank.BankSampler(episode_bank, _cfg("full", conflict_fraction=1.0))
     items = s.sample_items(np.random.default_rng(0), 40)
     assert all(i["meta"]["pair"] is not None for i in items)
     for a, b in zip(items[::2], items[1::2]):
@@ -112,9 +112,9 @@ def test_conflict_pairs_share_inputs_and_split_on_the_support(bank):
 
 
 @pytest.mark.parametrize("arm", ["full", "equal_count", "no_handover", "nominal_only"])
-def test_arm_semantics(bank, arm):
+def test_arm_semantics(episode_bank, arm):
     cfg = _cfg(arm, conflict_fraction=0.3)
-    items = Bk.BankSampler(bank, cfg).sample_items(np.random.default_rng(1), 300)
+    items = bank.BankSampler(episode_bank, cfg).sample_items(np.random.default_rng(1), 300)
     meta = [i["meta"] for i in items]
     allowed = {p.key for p in cfg.programs}
     assert {m["program"] for m in meta} <= allowed
@@ -133,12 +133,12 @@ def test_arm_semantics(bank, arm):
         assert all(same)
     else:
         assert not all(same)
-    batch = Bt.pack(items[:16])
-    assert batch["target"].shape == (16, Bt.HORIZON, 2, 7)
+    batch = batches.pack(items[:16])
+    assert batch["target"].shape == (16, batches.HORIZON, 2, 7)
 
 
-def test_support_and_query_are_different_episodes(bank):
-    s = Bk.BankSampler(bank, _cfg("equal_count"))
+def test_support_and_query_are_different_episodes(episode_bank):
+    s = bank.BankSampler(episode_bank, _cfg("equal_count"))
     rng = np.random.default_rng(2)
     for (p, n), ids in s.pool.items():
         assert len(ids) >= 2
@@ -149,8 +149,8 @@ def test_support_and_query_are_different_episodes(bank):
 def test_train_from_bank_smoke(tmp_path, bank_dir, monkeypatch):
     from oct_vla.prior.pose_window import train as Tr
 
-    orig = Sp.programs_for
-    monkeypatch.setattr(Sp, "programs_for",
+    orig = splits.programs_for
+    monkeypatch.setattr(splits, "programs_for",
                         lambda arm="full": tuple(p for p in PROGRAMS if p in orig(arm)))
     cfg = Tr.train(tmp_path / "run", arm="full", steps=3, batch=4, width=16, layers=1,
                    workers=0, s_rows=32, device="cpu", eval_every=10, bank=bank_dir)
@@ -158,3 +158,19 @@ def test_train_from_bank_smoke(tmp_path, bank_dir, monkeypatch):
     assert (tmp_path / "run" / "DONE").exists()
     stored = json.loads((tmp_path / "run" / "config.json").read_text())
     assert stored["bank"]["path"] == str(bank_dir)
+
+
+def test_synthetic_data_builds_bank_and_keeps_existing_packs(tmp_path):
+    from oct_vla.bpfn.data.synthetic import SyntheticData
+
+    data = SyntheticData(bank_root=tmp_path / "bank", bank_spec=SPEC, packs_root=tmp_path / "packs",
+                         pack_names=("dev",), pack_items=4, s_rows=32, workers=1,
+                         programs=PROGRAMS)
+    data.generate_data()
+    assert (tmp_path / "bank" / "bank.json").exists()
+    assert all(bank.shard_path(tmp_path / "bank", k).exists() for k in range(SPEC.shards))
+    pack = tmp_path / "packs" / "dev.pkl"
+    before = pack.stat().st_mtime_ns
+    data.bank_root = None
+    data.generate_data()
+    assert pack.stat().st_mtime_ns == before

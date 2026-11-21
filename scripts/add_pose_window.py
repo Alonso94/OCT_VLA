@@ -53,10 +53,10 @@ def main() -> int:
     from oct_vla.data.store import read_states
     from oct_vla.policies.conditioning import pose_tokens as P
     from oct_vla.policies.conditioning.future import FUTURE_KEYFRAME, FUTURE_MASK
-    from oct_vla.prior.pose_window import batches as Bt
+    from oct_vla.bpfn.data import batches
     from oct_vla.prior.pose_window.real import read_recording
     from oct_vla.prior.pose_window.real_eval import find_runs
-    from oct_vla.prior.pose_window.schema import query_table, support_table
+    from oct_vla.bpfn.schema import query_table, support_table
     from project_dataset_view import link_tree
 
     ap = argparse.ArgumentParser(description=__doc__)
@@ -138,12 +138,12 @@ def main() -> int:
                     for t in range(query.T):
                         per_frame[t][k] = toks
                     continue
-                s_tab = support_table(sup, Bt.support_rows(sup, Bt.S_ROWS))
-                items = [{"support": s_tab, "query": query_table(query, t, Bt.HISTORY),
+                s_tab = support_table(sup, batches.support_rows(sup, batches.S_ROWS))
+                items = [{"support": s_tab, "query": query_table(query, t, batches.HISTORY),
                           "target": np.zeros((horizon, 2, 7), np.float32),
                           "target_valid": np.zeros(horizon, bool), "meta": {}}
                          for t in range(query.T)]
-                for t, w in enumerate(Tr.predict(model, items, Bt.S_ROWS, args.device)):
+                for t, w in enumerate(Tr.predict(model, items, batches.S_ROWS, args.device)):
                     per_frame[t][k] = P.window_tokens(w)
             order = part["frame_index"].to_numpy()
             for position, index in enumerate(part.index):

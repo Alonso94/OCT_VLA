@@ -49,7 +49,7 @@ def phase_durations(ep, lines) -> dict[str, list[float]]:
 
 def _lines(ep):
     from oct_vla.data import effects as E
-    from oct_vla.prior.pose_window.schema import MOVABLE
+    from oct_vla.bpfn.schema import MOVABLE
 
     mov = [j for j in range(len(ep.track_ids)) if ep.kind[j] == MOVABLE]
     upper = ep.objects[:, mov, 2] > 0.86
@@ -66,11 +66,11 @@ def summary(values: list[float]) -> dict:
 
 
 def main() -> int:
-    from oct_vla.prior.pose_window import generator as Gn
-    from oct_vla.prior.pose_window import quat as Q
+    from oct_vla.bpfn.data.syn_data import generator
+    from oct_vla.bpfn import quat
     from oct_vla.prior.pose_window.real import read_recording
     from oct_vla.prior.pose_window.real_eval import find_runs
-    from oct_vla.prior.pose_window.trajectory import TOOL_AXIS, TOOL_OFFSET
+    from oct_vla.bpfn.data.syn_data.trajectory import TOOL_AXIS, TOOL_OFFSET
 
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--runs", type=Path, action="append", required=True)
@@ -92,8 +92,8 @@ def main() -> int:
             t, j = v["grasp"], ep.track_ids.index(tid)
             arm = 0 if v["mover"] == "left" else 1
             w, o = ep.wrist[t, arm], ep.objects[t, j]
-            local.append(Q.rotate(Q.inverse(w[3:]), o[:3] - w[:3]))
-            axes.append(Q.to_matrix(w[3:]))
+            local.append(quat.rotate(quat.inverse(w[3:]), o[:3] - w[:3]))
+            axes.append(quat.to_matrix(w[3:]))
         for k, vals in phase_durations(ep, lines).items():
             real[k] += vals
     local, axes = np.array(local), np.array(axes)
@@ -108,12 +108,12 @@ def main() -> int:
 
     synth = {k: [] for k in PHASES}
     rng = np.random.default_rng(0)
-    progs = [p for p in Gn.all_programs() if p.manipulation.startswith("carry")]
+    progs = [p for p in generator.all_programs() if p.manipulation.startswith("carry")]
     for i in range(args.synthetic):
         p = progs[int(rng.integers(len(progs)))]
         try:
-            ep = Gn.sample_episode(p, 3, 0 if p.eligibility_kind == "all" else 1, rng)
-        except Gn.Infeasible:
+            ep = generator.sample_episode(p, 3, 0 if p.eligibility_kind == "all" else 1, rng)
+        except generator.Infeasible:
             continue
         lines, _ = _lines(ep)
         for k, vals in phase_durations(ep, lines).items():

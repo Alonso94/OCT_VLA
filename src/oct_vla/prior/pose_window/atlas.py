@@ -15,10 +15,10 @@ from __future__ import annotations
 
 import numpy as np
 
-from . import quat as Q
+from oct_vla.bpfn import quat
 from . import metrics as Me
-from .schema import FIXTURE, MOVABLE, colour_id, category_id, query_table, support_table, target_window
-from .trajectory import CLOSED, OPEN, TOP_DOWN, Builder, wrist_for_grip
+from oct_vla.bpfn.schema import FIXTURE, MOVABLE, colour_id, category_id, query_table, support_table, target_window
+from oct_vla.bpfn.data.syn_data.trajectory import CLOSED, OPEN, TOP_DOWN, Builder, wrist_for_grip
 
 X_OBJ = (-0.10, 0.10)
 MARKERS = np.linspace(-0.15, 0.15, 31)
@@ -33,15 +33,15 @@ def _push_episode(xs, marker, rule: str, seed: int = 0):
     """The left arm pushes the object nearest / farthest from the marker forward."""
     rng = np.random.default_rng(seed)
     n = len(xs)
-    objs = [np.array([x, Y0, Z_TOP + BOX[2] / 2, *Q.IDENTITY]) for x in xs]
-    deck = np.array([0.0, Y0 + 0.06, Z_TOP - 0.01, *Q.IDENTITY])
-    mark = np.array([marker, Y0 + 0.12, Z_TOP + 0.005, *Q.IDENTITY])
+    objs = [np.array([x, Y0, Z_TOP + BOX[2] / 2, *quat.IDENTITY]) for x in xs]
+    deck = np.array([0.0, Y0 + 0.06, Z_TOP - 0.01, *quat.IDENTITY])
+    mark = np.array([marker, Y0 + 0.12, Z_TOP + 0.005, *quat.IDENTITY])
     b = Builder(np.stack([LEFT, RIGHT]), np.stack(objs + [deck, mark]))
     d = np.abs(np.asarray(xs) - marker)
     j = int(np.argmin(d) if rule == "nearest" else np.argmax(d))
     obj = b.objects[-1][j]
     contact = obj[:3] - np.array([0, BOX[1] / 2 + 0.015, 0])
-    q = Q.multiply(Q.from_axis_angle([0, 0, 1], np.pi / 2), TOP_DOWN)
+    q = quat.multiply(quat.from_axis_angle([0, 0, 1], np.pi / 2), TOP_DOWN)
     speed = rng.uniform(0.9, 1.1)
     b.segment(1.0 * speed, {0: wrist_for_grip(contact + [0, 0, 0.10], q)}, aperture={0: CLOSED})
     b.segment(0.5 * speed, {0: wrist_for_grip(contact, q)})

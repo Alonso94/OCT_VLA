@@ -26,11 +26,11 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from . import quat as Q
+from oct_vla.bpfn import quat
 from .metrics import LOWER_Z
-from .schema import (FIXTURE, MOVABLE, Episode, category_id, colour_id, query_table,
+from oct_vla.bpfn.schema import (FIXTURE, MOVABLE, Episode, category_id, colour_id, query_table,
                      support_table)
-from .trajectory import grip_point
+from oct_vla.bpfn.data.syn_data.trajectory import grip_point
 
 ACTION_DIM = 16
 CLOSE_RADIUS = 0.02     # m: grip point to object centre
@@ -81,9 +81,9 @@ class History:
 
     def episode(self) -> Episode:
         wr = np.stack(self.wrists)
-        wr[..., 3:] = np.stack([Q.continuous(Q.normalize(wr[:, a, 3:])) for a in range(2)], 1)
+        wr[..., 3:] = np.stack([quat.continuous(quat.normalize(wr[:, a, 3:])) for a in range(2)], 1)
         ob = np.stack(self.objects)
-        ob[..., 3:] = np.stack([Q.continuous(Q.normalize(ob[:, j, 3:])) for j in range(ob.shape[1])], 1)
+        ob[..., 3:] = np.stack([quat.continuous(quat.normalize(ob[:, j, 3:])) for j in range(ob.shape[1])], 1)
         h = self.header
         return Episode(np.asarray(self.times), wr, np.asarray(self.apertures, float), ob,
                        np.asarray(h["kind"], np.int8), np.asarray(h["colour"], np.int8),
@@ -158,12 +158,11 @@ class PFNController:
 
     def __init__(self, model, support: Episode, k: int = 1, device: str = "cpu",
                  s_rows: int | None = None, history: int | None = None) -> None:
-        from . import batches as Bt
-
+        from oct_vla.bpfn.data import batches
         self.model, self.k, self.device = model, k, device
-        self.s_rows = s_rows or Bt.S_ROWS
-        self.history = history or Bt.HISTORY
-        self.support_tab = support_table(support, Bt.support_rows(support, self.s_rows))
+        self.s_rows = s_rows or batches.S_ROWS
+        self.history = history or batches.HISTORY
+        self.support_tab = support_table(support, batches.support_rows(support, self.s_rows))
         self._memory = None
         self._queue: list[np.ndarray] = []
         self.windows: list[np.ndarray] = []
@@ -174,14 +173,14 @@ class PFNController:
     def __call__(self, ep: Episode) -> np.ndarray:
         import torch
 
-        from . import batches as Bt
+        from oct_vla.bpfn.data import batches
         from .model import to_torch
 
         if not self._queue:
             item = {"support": self.support_tab, "query": query_table(ep, ep.T - 1, self.history),
                     "target": np.zeros((self.model.horizon, 2, 7), np.float32),
                     "target_valid": np.zeros(self.model.horizon, bool), "meta": {}}
-            b = to_torch(Bt.pack([item], s_rows=self.s_rows), self.device)
+            b = to_torch(batches.pack([item], s_rows=self.s_rows), self.device)
             with torch.no_grad():
                 if self._memory is None:
                     self._memory = self.model.encode_support(b)
@@ -209,9 +208,9 @@ class ExpertWindowController:
             d = tgt[:3] - cur[a, :3]
             n = np.linalg.norm(d)
             out[a, :3] = cur[a, :3] + (d if n <= MAX_STEP else d / n * MAX_STEP)
-            ang = float(Q.angle(cur[a, 3:], tgt[3:]))
+            ang = float(quat.angle(cur[a, 3:], tgt[3:]))
             s = 1.0 if ang <= MAX_TURN else MAX_TURN / ang
-            out[a, 3:] = Q.slerp(cur[a, 3:], tgt[3:], np.array([s]))[0]
+            out[a, 3:] = quat.slerp(cur[a, 3:], tgt[3:], np.array([s]))[0]
         return out
 
 

@@ -18,23 +18,23 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from . import batches as Bt
-from . import generator as Gn
+from oct_vla.bpfn.data import batches
+from oct_vla.bpfn.data.syn_data import generator
 from . import metrics as Me
-from . import splits as Sp
+from oct_vla.bpfn.data import splits
 from .model import PoseWindowPFN, to_torch, window_loss
 
 
 def conflict_items(n_pairs: int, seed: int, programs=None, counts=None,
                    s_rows: int = 64) -> list[dict]:
-    cfg = Bt.ItemConfig(programs=programs or Sp.programs_for("full"),
-                        counts=counts or Sp.CountMatrix(), s_rows=s_rows)
+    cfg = batches.ItemConfig(programs=programs or splits.programs_for("full"),
+                        counts=counts or splits.CountMatrix(), s_rows=s_rows)
     rng = np.random.default_rng(seed)
     items: list[dict] = []
     while len(items) < 2 * n_pairs:
         try:
-            items.extend(Bt.sample_pair(rng, cfg))
-        except Gn.Infeasible:
+            items.extend(batches.sample_pair(rng, cfg))
+        except generator.Infeasible:
             continue
     return items
 
@@ -45,7 +45,7 @@ def predict(model: PoseWindowPFN, items: list[dict], s_rows: int, device="cpu",
     model.eval()
     out = []
     for k in range(0, len(items), batch):
-        b = to_torch(Bt.pack(items[k:k + batch], s_rows=s_rows), device)
+        b = to_torch(batches.pack(items[k:k + batch], s_rows=s_rows), device)
         out.extend(model(b)["window"].cpu().numpy())
     return out
 
@@ -61,7 +61,7 @@ def evaluate(windows: list[np.ndarray], items: list[dict]) -> dict:
     return {**errs, **Me.paired_both_correct(pairs)}
 
 
-def baselines(items: list[dict], horizon: int = Bt.HORIZON) -> dict:
+def baselines(items: list[dict], horizon: int = batches.HORIZON) -> dict:
     return {"hold": evaluate([Me.hold(i["query"], horizon) for i in items], items),
             "replay": evaluate([Me.replay(i["support"], i["query"], horizon) for i in items], items)}
 
@@ -71,7 +71,7 @@ def overfit(items: list[dict], *, steps: int = 1500, width: int = 64, layers: in
     torch.manual_seed(seed)
     model = PoseWindowPFN(width=width, layers=layers)
     opt = torch.optim.AdamW(model.parameters(), lr=lr)
-    b = to_torch(Bt.pack(items, s_rows=s_rows))
+    b = to_torch(batches.pack(items, s_rows=s_rows))
     for step in range(1, steps + 1):
         model.train()
         loss, stats = window_loss(model(b)["window"], b["target"], b["target_valid"])
@@ -91,7 +91,7 @@ class _Stream(torch.utils.data.IterableDataset):
     """Packed batches from ``sampler`` (a ``bank.BankSampler``) or, without one, from
     episodes generated on the fly."""
 
-    def __init__(self, cfg: Bt.ItemConfig, batch: int, seed: int, s_rows: int, sampler=None):
+    def __init__(self, cfg: batches.ItemConfig, batch: int, seed: int, s_rows: int, sampler=None):
         self.cfg, self.batch, self.seed, self.s_rows = cfg, batch, seed, s_rows
         self.sampler = sampler
 
@@ -104,14 +104,14 @@ class _Stream(torch.utils.data.IterableDataset):
             if len(pending) < self.batch:
                 pending += (self.sampler.sample_items(rng, self.batch - len(pending))
                             if self.sampler is not None
-                            else Bt.sample_items(rng, self.cfg, self.batch - len(pending)))
+                            else batches.sample_items(rng, self.cfg, self.batch - len(pending)))
             items, pending = pending[:self.batch], pending[self.batch:]
-            yield {k: torch.as_tensor(v) for k, v in Bt.pack(items, s_rows=self.s_rows).items()}
+            yield {k: torch.as_tensor(v) for k, v in batches.pack(items, s_rows=self.s_rows).items()}
 
 
 def train(out: Path, *, arm: str = "full", steps: int = 80000, batch: int = 64,
           width: int = 128, heads: int = 4, layers: int = 4, lr: float = 3e-4,
-          warmup: int = 1000, workers: int = 8, seed: int = 0, s_rows: int = Bt.S_ROWS,
+          warmup: int = 1000, workers: int = 8, seed: int = 0, s_rows: int = batches.S_ROWS,
           dev_items: list[dict] | None = None, eval_every: int = 5000, log_every: int = 100,
           device: str = "cuda", faults=None, reuse: int | None = None,
           pair_extra: int | None = None, conflict_fraction: float | None = None,
@@ -123,24 +123,23 @@ def train(out: Path, *, arm: str = "full", steps: int = 80000, batch: int = 64,
     out = Path(out)
     if out.exists():
         raise SystemExit(f"Refusing to overwrite {out}")
-    from .observation import CLEAN
+    from oct_vla.bpfn.data.syn_data.observation import CLEAN
 
     if reuse is None:
         reuse = 1 if bank is not None else 8
     store = None
     if bank is not None:
-        from . import bank as Bk
-
-        store = Bk.Bank(bank)       # in RAM before the workers fork; they share it
+        from oct_vla.bpfn.data.bank import Bank, BankSampler
+        store = Bank(bank)       # in RAM before the workers fork; they share it
     out.mkdir(parents=True)
 
-    cfg = Bt.ItemConfig(programs=Sp.programs_for(arm), counts=Sp.count_matrix_for(arm),
+    cfg = batches.ItemConfig(programs=splits.programs_for(arm), counts=splits.count_matrix_for(arm),
                         branch_fraction=0.0 if arm == "nominal_only" else 0.3,
                         faults=faults or CLEAN, s_rows=s_rows, reuse=reuse,
                         pair_extra=(1 if reuse > 1 else 0) if pair_extra is None else pair_extra,
                         conflict_fraction=((0.7 if reuse > 1 else 0.5) if conflict_fraction is None
                                            else conflict_fraction))
-    model = PoseWindowPFN(width=width, heads=heads, layers=layers, horizon=Bt.HORIZON,
+    model = PoseWindowPFN(width=width, heads=heads, layers=layers, horizon=batches.HORIZON,
                           use_support=arm != "scene_only").to(device)
     config = {"arm": arm, "steps": steps, "batch": batch, "lr": lr, "warmup": warmup,
               "seed": seed, "s_rows": s_rows, "model": model.config,
@@ -156,7 +155,7 @@ def train(out: Path, *, arm: str = "full", steps: int = 80000, batch: int = 64,
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1.0, (s + 1) / warmup) * 0.5 * (
         1 + math.cos(math.pi * min(1.0, s / steps))))
-    sampler = None if store is None else Bk.BankSampler(store, cfg)
+    sampler = None if store is None else BankSampler(store, cfg)
     loader = torch.utils.data.DataLoader(_Stream(cfg, batch, seed, s_rows, sampler), batch_size=None,
                                          num_workers=workers, persistent_workers=workers > 0)
     history = (out / "history.jsonl").open("a")

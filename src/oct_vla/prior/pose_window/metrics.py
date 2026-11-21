@@ -15,9 +15,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from . import quat as Q
-from .schema import LEFT_WRIST, MOVABLE, RIGHT_WRIST, Table
-from .trajectory import grip_point
+from oct_vla.bpfn import quat
+from oct_vla.bpfn.schema import LEFT_WRIST, MOVABLE, RIGHT_WRIST, Table
+from oct_vla.bpfn.data.syn_data.trajectory import grip_point
 
 MIN_MOVE = 0.01          # m: a window that moves less decides nothing
 MOVING = 0.005           # m: a target that moves more is a moving wrist
@@ -31,7 +31,7 @@ def errors(pred: np.ndarray, target: np.ndarray, valid: np.ndarray) -> dict:
     # carries no orientation to compare with.
     ang = np.zeros(v.shape)
     if v.any():
-        ang[v] = np.degrees(Q.angle(pred[..., 3:][v], target[..., 3:][v]))
+        ang[v] = np.degrees(quat.angle(pred[..., 3:][v], target[..., 3:][v]))
     # Moving vs idle from the first to the *last valid* horizon of each item.
     last = np.maximum(valid.shape[1] - 1 - np.argmax(valid[:, ::-1], axis=1), 0)
     end = target[np.arange(len(target)), last]                                    # [N, 2, 7]
@@ -75,7 +75,7 @@ def decision(window: np.ndarray, query: Table, cands: set[str] | None = None) ->
     (recorded v4 windows: 100 % with relative gain at H = 16, against 78 % for a heading
     cosine). The window is the only input: no rule, no target id.
     """
-    from .trajectory import grip_point as _gp
+    from oct_vla.bpfn.data.syn_data.trajectory import grip_point as _gp
 
     last = query.pose[-1]
     cands = candidates(query) if cands is None else cands

@@ -31,10 +31,10 @@ from pathlib import Path
 
 import numpy as np
 
-from . import batches as Bt
+from oct_vla.bpfn.data import batches
 from . import metrics as Me
 from .real import read_recording
-from .schema import (MOVABLE, Episode, colour_id, empty_support, query_table, support_table,
+from oct_vla.bpfn.schema import (MOVABLE, Episode, colour_id, empty_support, query_table, support_table,
                      target_window)
 
 LOWER_Z = 0.86     # m: an object centre below this is still on the lower shelf
@@ -71,7 +71,7 @@ def expected(ep: Episode, t: int, rule: str) -> set[str]:
     raise ValueError(f"no eligible-set scorer for rule {rule!r}")
 
 
-def decision_times(ep: Episode, horizon: int = Bt.HORIZON) -> list[int]:
+def decision_times(ep: Episode, horizon: int = batches.HORIZON) -> list[int]:
     """The approach onset after row 0 and after every object's let-go (observation-only
     timelines for the anchors)."""
     from oct_vla.data import effects as E
@@ -88,14 +88,14 @@ def decision_times(ep: Episode, horizon: int = Bt.HORIZON) -> list[int]:
     return [t for t in (approach_onset(ep, a, horizon) for a in anchors) if t is not None]
 
 
-def approach_onset(ep: Episode, anchor: int, horizon: int = Bt.HORIZON,
+def approach_onset(ep: Episode, anchor: int, horizon: int = batches.HORIZON,
                    min_gain: float = 0.02, search: int = 120) -> int | None:
     """The first row at or after ``anchor`` at which some wrist's next ``horizon`` rows close
     at least ``min_gain`` of horizontal distance to *some* object still on the source shelf:
     where the next approach becomes visible in one window. Evaluator-side and rule-free (it
     reads the recorded future only to *place* the query, never as an input); without it
     most anchors fall in a pause or a retreat that heads nowhere."""
-    from .trajectory import grip_point
+    from oct_vla.bpfn.data.syn_data.trajectory import grip_point
 
     grips = grip_point(ep.wrist)                                   # [T, 2, 3]
     for t in range(anchor, min(ep.T - horizon - 1, anchor + search)):
@@ -114,7 +114,7 @@ def _item(support: Episode | None, query: Episode, t: int, s_rows: int, history:
     if support is None:
         s_tab = empty_support(support_table(query, np.array([0])))   # columns, no rows
     else:
-        s_tab = support_table(support, Bt.support_rows(support, s_rows))
+        s_tab = support_table(support, batches.support_rows(support, s_rows))
     q_tab = query_table(query, t, history)
     window, valid = target_window(query, t, horizon)
     return {"support": s_tab, "query": q_tab, "target": window, "target_valid": valid,
@@ -123,7 +123,7 @@ def _item(support: Episode | None, query: Episode, t: int, s_rows: int, history:
 
 def evaluate(model, corpora: dict[str, Corpus], *, conditions=("same", "other", "none"),
              queries_per_rule: int | None = None, supports_per_query: int = 1,
-             s_rows: int = Bt.S_ROWS, history: int = Bt.HISTORY, horizon: int = Bt.HORIZON,
+             s_rows: int = batches.S_ROWS, history: int = batches.HISTORY, horizon: int = batches.HORIZON,
              seed: int = 0, device: str = "cpu", support_pool: dict | None = None) -> dict:
     """Score ``model`` on ``corpora`` (rule -> runs used as queries). ``support_pool``
     (rule -> runs) supplies supports; default: the corpora themselves, never the query's

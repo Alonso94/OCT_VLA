@@ -17,9 +17,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from . import quat as Q
-from .schema import FIXTURE, MOVABLE, Episode
-from .trajectory import grip_point
+from oct_vla.bpfn import quat
+from oct_vla.bpfn.schema import FIXTURE, MOVABLE, Episode
+from oct_vla.bpfn.data.syn_data.trajectory import grip_point
 
 STILL = 1e-7          # m per row: below this an object has not moved
 CONTACT_MARGIN = 0.03  # m beyond the object's half extents a pushing grip point may be
@@ -32,12 +32,12 @@ def _grip(wrist: np.ndarray) -> np.ndarray:
 
 
 def _local(obj_pose: np.ndarray, point: np.ndarray) -> np.ndarray:
-    return Q.rotate(Q.inverse(obj_pose[3:]), point - obj_pose[:3])
+    return quat.rotate(quat.inverse(obj_pose[3:]), point - obj_pose[:3])
 
 
 def _footprint(pose, size) -> tuple[np.ndarray, np.ndarray]:
     corners = np.array([[sx, sy, 0] for sx in (-1, 1) for sy in (-1, 1)]) * size / 2
-    world = Q.rotate(np.broadcast_to(pose[3:], (4, 4)), corners)[:, :2] + pose[:2]
+    world = quat.rotate(np.broadcast_to(pose[3:], (4, 4)), corners)[:, :2] + pose[:2]
     return world.min(0), world.max(0)
 
 

@@ -31,7 +31,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from .schema import CATEGORIES, COLOURS, KINDS, LEFT_WRIST, PAD, RIGHT_WRIST
+from oct_vla.bpfn.schema import CATEGORIES, COLOURS, KINDS, LEFT_WRIST, PAD, RIGHT_WRIST
 
 POS_CENTRE = (0.0, -0.15, 1.0)
 POS_SCALE = 0.3
