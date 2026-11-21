@@ -82,14 +82,15 @@ class PFNTrainer:
         else:
             sampler = OnTheFlySampler(self.item_cfg)
 
-        # Model, loss, optimisation.
+        # Model, loss, optimisation. Seeded first: torch's own start-up seed is random, so
+        # without this the initial weights would differ on every launch of the same seed.
+        torch.manual_seed(cfg.seed)
         self.model = PoseWindowPFN(width=cfg.width, heads=cfg.heads, layers=cfg.layers,
                                    horizon=batches.HORIZON,
                                    use_support=cfg.arm != "scene_only").to(cfg.device)
         self.loss_fn = WindowLoss()
         self.config = self._config_record()
         (self.out / "config.json").write_text(json.dumps(self.config, indent=1) + "\n")
-        torch.manual_seed(cfg.seed)
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=cfg.lr, weight_decay=0.01)
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, self._lr_factor)
         self.dataloader = build_dataloader(sampler, cfg.batch, cfg.seed, cfg.s_rows, cfg.workers)
