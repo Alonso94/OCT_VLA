@@ -130,7 +130,7 @@ def test_an_empty_support_is_defined_not_nan(items):
 def test_errors_ignore_invalid_horizons_past_the_episode_end():
     """Regression: every training job crashed at its first dev evaluation, because the
     angle was computed on zero-filled targets past an episode's end."""
-    ep = __import__("oct_vla.prior.pose_window.branches", fromlist=["handover"]).handover()
+    ep = __import__("oct_vla.bpfn.data.syn_data.branches", fromlist=["handover"]).handover()
     w, v = schema.target_window(ep, ep.T - 3, horizon=16)
     assert v.sum() == 2 and np.allclose(np.linalg.norm(w[..., 3:], axis=-1), 1.0)
     zeroed = w.copy()

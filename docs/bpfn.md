@@ -27,9 +27,25 @@ bpfn/
     atlas.py, render.py     the marker scan and figures
     checker.py              independent geometric checker of episodes
     fixtures.py             the first-slice acceptance fixtures
+  envs/
+    controllers.py          PFNController, HoldController: read an Episode, return [2, 7] poses
+    robotwin/
+      history.py            server observations -> the measured history as an Episode
+      grippers.py           ObservableGripper, OracleGripper (privileged)
+      oracle.py             ExpertWindowController (privileged bridge check)
+      rollout.py            run_episode against the evaluation server
+      future_source.py      PoseTokenFutureSource: the executor's pose tokens (stage 3)
 ```
 
-The remaining layers (`envs/`, `downstream/`) are described below as they are added.
+The remaining layer (`downstream/`) is described below as it is added.
+
+**Adding an environment.** Controllers read only an `Episode`, so they carry over to any environment. A new environment gets its own `envs/<name>/`, with:
+- a history adapter (its observations to `Episode` rows);
+- its gripper sources;
+- a rollout loop against its own client;
+- for stage 3, a future source.
+
+Recorded demonstrations from it enter as a new `data/real_data/<name>.py` reader.
 
 ## Stage runners
 
@@ -38,6 +54,7 @@ The remaining layers (`envs/`, `downstream/`) are described below as they are ad
 | 1, prior data | `stage1_generate_data.py`: the episode bank and the evaluation packs |
 | 1, prior training | `stage1_train_prior.py`: one arm x seed; `--overfit` runs the CPU memorisation gate |
 | 2, offline evaluation | `stage2_evaluate.py --data synthetic` (a pack), `--data real` (recordings), `--data atlas` (marker scan) |
+| 2, online pilot | `stage2_online_pilot.py`: the frozen PFN (or the expert / hold) drives the wrists on the server |
 
 `stage1_generate_data.py --fixtures OUT` runs the first-slice acceptance fixtures.
 

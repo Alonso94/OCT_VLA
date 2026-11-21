@@ -29,7 +29,7 @@ done
 EXTRA=()
 [ -n "${BPFN_RUN:-}" ] && EXTRA+=(--run "$BPFN_RUN")
 [ -n "${BPFN_SUPPORT:-}" ] && EXTRA+=(--support "$BPFN_SUPPORT")
-"$OCTVLA_POLICY_PYTHON" -u "$OCTVLA_REPO/scripts/bpfn_online.py" \
+"$OCTVLA_POLICY_PYTHON" -u "$OCTVLA_REPO/scripts/bpfn/stage2_online_pilot.py" \
   --controller "$BPFN_CONTROLLER" --gripper "$BPFN_GRIPPER" --seeds "$BPFN_SEEDS" \
   --profile "${BPFN_PROFILE:-four_object}" --k "${BPFN_K:-1}" --port "$PORT" \
   --post-success-steps "${BPFN_POST_SUCCESS:-30}" --out "$BPFN_OUT" \

@@ -721,7 +721,7 @@ def main() -> int:
             # BimanualPFN pose tokens (stage 3): one recorded support per rollout.
             if args.pose_support is None:
                 raise SystemExit(f"a {kind} checkpoint needs --pose-support (a recorded run)")
-            from oct_vla.prior.pose_window.online import PoseTokenFutureSource
+            from oct_vla.bpfn.envs.robotwin.future_source import PoseTokenFutureSource
 
             future_source = PoseTokenFutureSource(
                 provenance, args.pose_support,

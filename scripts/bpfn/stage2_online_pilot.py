@@ -1,10 +1,10 @@
 #!/usr/bin/env python
-"""Closed-loop pilot without a learned executor (plan stage 2b): a client of the running
-evaluation server (scripts/robotwin_eval_server.py, started for the assigned rule).
+"""Stage 2, online pilot without a learned executor: a client of the running evaluation
+server (scripts/robotwin_eval_server.py, started for the assigned rule).
 
-    bpfn_online.py --controller pfn --gripper observable --run RUN --support EPISODE_DIR \\
+    stage2_online_pilot.py --controller pfn --gripper observable --run RUN --support EPISODE_DIR \\
         --seeds 800-809 --profile four_object --out OUT.json [--k 1] [--post-success-steps 30]
-    bpfn_online.py --controller expert_window --gripper oracle ...   (privileged bridge check)
+    stage2_online_pilot.py --controller expert_window --gripper oracle ...   (privileged bridge check)
 
 Every result names its controller, gripper source, support, checkpoint and whether
 privileged server information was used. Traces (commanded and measured wrists, gripper
@@ -20,8 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 
 def _seeds(spec: str) -> list[int]:
@@ -33,7 +32,10 @@ def _seeds(spec: str) -> list[int]:
 
 
 def main() -> int:
-    from oct_vla.prior.pose_window import online as On
+    from oct_vla.bpfn.envs.controllers import HoldController, PFNController
+    from oct_vla.bpfn.envs.robotwin.grippers import ObservableGripper, OracleGripper
+    from oct_vla.bpfn.envs.robotwin.oracle import ExpertWindowController
+    from oct_vla.bpfn.envs.robotwin.rollout import run_episode
     from oct_vla.serve.client import ShelfRestockEvalClient
 
     ap = argparse.ArgumentParser(description=__doc__)
@@ -64,18 +66,18 @@ def main() -> int:
         from oct_vla.bpfn.data.real_data.robotwin import read_recording
 
         model = PoseWindowPFN.from_run(args.run, args.device)
-        controller = On.PFNController(model, read_recording(args.support), k=args.k,
+        controller = PFNController(model, read_recording(args.support), k=args.k,
                                       device=args.device)
     elif args.controller == "expert_window":
-        controller = On.ExpertWindowController()
+        controller = ExpertWindowController()
     else:
-        controller = On.HoldController()
+        controller = HoldController()
 
     results = []
     with ShelfRestockEvalClient(args.host, args.port) as client:
         for seed in _seeds(args.seeds):
-            gripper = On.ObservableGripper() if args.gripper == "observable" else On.OracleGripper()
-            r = On.run_episode(client, controller, gripper, seed=seed, profile=args.profile,
+            gripper = ObservableGripper() if args.gripper == "observable" else OracleGripper()
+            r = run_episode(client, controller, gripper, seed=seed, profile=args.profile,
                                max_steps=args.max_steps,
                                post_success_steps=args.post_success_steps,
                                privileged=privileged)
