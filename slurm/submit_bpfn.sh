@@ -73,13 +73,13 @@ case "$STAGE" in
     ;;
   train)
     submit BPFN_ROOT="$BPFN_ROOT" BPFN_ARMS="$BPFN_ARMS" BPFN_SEEDS="$BPFN_SEEDS" -- \
-      "${SB[@]}" --array="0-$((N - 1))%${BPFN_CONCURRENCY:-4}" --job-name=bpfn-train \
+      "${SB[@]}" --array="0-$((N - 1))${BPFN_CONCURRENCY:+%$BPFN_CONCURRENCY}" --job-name=bpfn-train \
       --output="$LOGS/train-%A_%a.out" --export=ALL slurm/bpfn_train.sbatch
     ;;
   eval)
     DEP=""; [ -n "${AFTER_TRAIN:-}" ] && DEP="--dependency=aftercorr:$AFTER_TRAIN"
     submit BPFN_ROOT="$BPFN_ROOT" BPFN_ARMS="$BPFN_ARMS" BPFN_SEEDS="$BPFN_SEEDS" -- \
-      "${SB[@]}" --array="0-$((N - 1))%${BPFN_CONCURRENCY:-4}" $DEP --job-name=bpfn-eval \
+      "${SB[@]}" --array="0-$((N - 1))${BPFN_CONCURRENCY:+%$BPFN_CONCURRENCY}" $DEP --job-name=bpfn-eval \
       --output="$LOGS/eval-%A_%a.out" --export=ALL slurm/bpfn_eval.sbatch
     ;;
   pilot)
