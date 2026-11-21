@@ -140,6 +140,46 @@ def _item(rng, cfg: ItemConfig, support: Episode, query: Episode, t: int, stratu
                      "remaining_query": _remaining(query, t)}}
 
 
+def handover_family(program: Gn.Program, q_n: int, rng) -> tuple[Episode, Episode, int]:
+    """Nominal and delayed-receiver handovers from one scene and one random stream, and
+    the cue (first row at which they differ)."""
+    for _ in range(50):
+        try:
+            scene = Gn.sample_scene(program, q_n, _distractors(program), rng)
+            state = copy.deepcopy(rng)
+            nominal = Gn.execute(program, scene, copy.deepcopy(state))
+            k = int(rng.integers(len(nominal.annotations["selected"])))
+            delayed = Gn.execute(program, scene, copy.deepcopy(state),
+                                 perturb={"transfer": k, "at": float(rng.uniform(0.2, 0.8)),
+                                          "slow": float(rng.uniform(0.25, 0.5))})
+            return nominal, delayed, first_divergence(nominal, delayed)
+        except Gn.Infeasible:
+            continue
+    raise Gn.Infeasible("no feasible handover family")
+
+
+def conflict_queries(program: Gn.Program, partner: Gn.Program, value: str | None, q_n: int,
+                     rng) -> tuple[Episode, Episode, int]:
+    """One query scene executed under two programs with different first picks, and the
+    row at which the executions diverge."""
+    for _ in range(50):
+        try:
+            d = _distractors(program) or 0
+            scene = Gn.sample_scene(program, q_n, max(d, 1 if value else 0), rng,
+                                    distractor_value=value)
+            state = copy.deepcopy(rng)
+            qa = Gn.execute(program, scene, copy.deepcopy(state))
+            qb = Gn.execute(partner, Gn.rescope(scene, partner), copy.deepcopy(state))
+            break
+        except Gn.Infeasible:
+            continue
+    else:
+        raise Gn.Infeasible("no feasible conflict scene")
+    if qa.annotations["selected"][0] == qb.annotations["selected"][0]:
+        raise Gn.Infeasible("conflict pair with the same first pick")
+    return qa, qb, first_divergence(qa, qb)
+
+
 def _remaining(ep: Episode, t: int) -> int:
     """Selected objects not yet let go by time t (evaluator-only count)."""
     done = {e["obj"] for e in ep.annotations.get("events", [])
@@ -156,23 +196,7 @@ def sample_item(rng, cfg: ItemConfig, program: Gn.Program | None = None,
     support = Gn.sample_episode(program, s_n, _distractors(program), rng)
     cue, branch = None, "nominal"
     if program.manipulation == "handover" and rng.random() < cfg.branch_fraction:
-        # A family: nominal and delayed from one scene and one random stream.
-        scene = None
-        for _ in range(50):
-            try:
-                scene = Gn.sample_scene(program, q_n, _distractors(program), rng)
-                state = copy.deepcopy(rng)
-                nominal = Gn.execute(program, scene, copy.deepcopy(state))
-                k = int(rng.integers(len(nominal.annotations["selected"])))
-                delayed = Gn.execute(program, scene, copy.deepcopy(state),
-                                     perturb={"transfer": k, "at": float(rng.uniform(0.2, 0.8)),
-                                              "slow": float(rng.uniform(0.25, 0.5))})
-                break
-            except Gn.Infeasible:
-                scene = None
-        if scene is None:
-            raise Gn.Infeasible("no feasible handover family")
-        cue = first_divergence(nominal, delayed)
+        nominal, delayed, cue = handover_family(program, q_n, rng)
         branch = "delayed" if rng.random() < 0.5 else "nominal"
         query = delayed if branch == "delayed" else nominal
     else:
@@ -213,22 +237,7 @@ def sample_pair(rng, cfg: ItemConfig, program: Gn.Program | None = None) -> list
     if partner not in cfg.programs and program in cfg.programs:
         raise Gn.Infeasible(f"partner {partner.key} is outside this arm's programs")
     s_n, q_n = cfg.counts.draw(rng)
-    for _ in range(50):
-        try:
-            d = _distractors(program) or 0
-            scene = Gn.sample_scene(program, q_n, max(d, 1 if value else 0), rng,
-                                    distractor_value=value)
-            state = copy.deepcopy(rng)
-            qa = Gn.execute(program, scene, copy.deepcopy(state))
-            qb = Gn.execute(partner, Gn.rescope(scene, partner), copy.deepcopy(state))
-            break
-        except Gn.Infeasible:
-            continue
-    else:
-        raise Gn.Infeasible("no feasible conflict scene")
-    if qa.annotations["selected"][0] == qb.annotations["selected"][0]:
-        raise Gn.Infeasible("conflict pair with the same first pick")
-    split = first_divergence(qa, qb)
+    qa, qb, split = conflict_queries(program, partner, value, q_n, rng)
     t, stratum = query_time(qa, rng, before=split)
     mapping = semantic_relabeling(rng) if cfg.relabel else None
     pair = int(rng.integers(1 << 62))

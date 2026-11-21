@@ -5,7 +5,8 @@
 #
 #   DRY_RUN=1 slurm/submit_bpfn.sh canary     # colour canary: 2 seeds x 2 rules + 1 swap
 #   DRY_RUN=1 slurm/submit_bpfn.sh probe      # built-in coverage probes (10 seeds each)
-#   DRY_RUN=1 slurm/submit_bpfn.sh train      # 5 arms x 3 seeds, bounded concurrency
+#   DRY_RUN=1 slurm/submit_bpfn.sh bank       # pre-generate the training episode bank
+#   DRY_RUN=1 slurm/submit_bpfn.sh train      # 5 arms x 3 seeds (BPFN_BANK: from the bank)
 #   DRY_RUN=1 slurm/submit_bpfn.sh eval       # synthetic packs, bound to train receipts
 #   DRY_RUN=1 slurm/submit_bpfn.sh pilot      # wave 2, only after the canary passes
 #   DRY_RUN=1 BPFN_RUN=... SUPPORT_RED=... SUPPORT_BLUE=... slurm/submit_bpfn.sh online
@@ -23,6 +24,8 @@ STAGE="${1:?stage: canary | probe | train | eval | pilot}"
 source "${OCTVLA_ENV:-$HOME/octvla/env-v4.sh}"
 export OCTVLA_REPO="${OCTVLA_REPO:-$HOME/OCT_VLA}"
 export BPFN_ROOT="${BPFN_ROOT:-$HPCVAULT/octvla-bpfn}"
+#: The episode bank is re-creatable (deterministic), so it lives on $WORK, not the vault.
+BANK_DEFAULT="$WORK/octvla-scratch/bpfn-bank/v1"
 COLLECT_ROOT="${BPFN_COLLECT_ROOT:-$HPCVAULT/octvla-collection-bpfn}"
 #: Stage 3: executor views and runs, apart from the v4 roots (same filesystem: hard links).
 BPFN_DATA="${BPFN_DATA:-$BPFN_ROOT/datasets}"
@@ -71,9 +74,19 @@ case "$STAGE" in
         --output="$LOGS/probe-$task-%A_%a.out" --export=ALL slurm/collect_robotwin_builtin_array.sbatch
     done
     ;;
+  bank)
+    submit BPFN_BANK="${BPFN_BANK:-$BANK_DEFAULT}" -- \
+      "${SB[@]}" --job-name=bpfn-bank --output="$LOGS/bank-%j.out" --export=ALL \
+      slurm/bpfn_bank.sbatch
+    ;;
   train)
+    if [ -n "${BPFN_BANK:-}" ] && [ ! -f "$BPFN_BANK/bank.json" ] && [ -z "${AFTER_BANK:-}" ]; then
+      echo "BPFN_BANK=$BPFN_BANK has no bank.json (build it: submit_bpfn.sh bank, or set AFTER_BANK)" >&2
+      exit 2
+    fi
+    DEP=""; [ -n "${AFTER_BANK:-}" ] && DEP="--dependency=afterok:$AFTER_BANK"
     submit BPFN_ROOT="$BPFN_ROOT" BPFN_ARMS="$BPFN_ARMS" BPFN_SEEDS="$BPFN_SEEDS" -- \
-      "${SB[@]}" --array="0-$((N - 1))${BPFN_CONCURRENCY:+%$BPFN_CONCURRENCY}" --job-name=bpfn-train \
+      "${SB[@]}" --array="0-$((N - 1))${BPFN_CONCURRENCY:+%$BPFN_CONCURRENCY}" $DEP --job-name=bpfn-train \
       --output="$LOGS/train-%A_%a.out" --export=ALL slurm/bpfn_train.sbatch
     ;;
   eval)

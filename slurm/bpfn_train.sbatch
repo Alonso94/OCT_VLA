@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # BimanualPFN prior training: one (arm, seed) per array element (slurm/submit_bpfn.sh).
+# BPFN_BANK: draw items from a pre-generated bank (bpfn_bank.sbatch) instead of
+# generating episodes on the fly; it is loaded into RAM once and shared by the workers.
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
@@ -17,6 +19,7 @@ export PYTHONPATH="$OCTVLA_REPO/src${PYTHONPATH:+:$PYTHONPATH}" PYTHONUNBUFFERED
 srun "$OCTVLA_POLICY_PYTHON" -u "$OCTVLA_REPO/scripts/bimanual_pfn.py" train \
   --out "$RUN" --arm "$ARM" --seed "$SEED" --steps "${BPFN_STEPS:-80000}" \
   --batch "${BPFN_BATCH:-64}" --workers "$(( ${SLURM_CPUS_PER_TASK:-16} - 2 ))" \
-  --reuse "${BPFN_REUSE:-8}" ${BPFN_PAIR_EXTRA:+--pair-extra "$BPFN_PAIR_EXTRA"} \
+  ${BPFN_REUSE:+--reuse "$BPFN_REUSE"} ${BPFN_PAIR_EXTRA:+--pair-extra "$BPFN_PAIR_EXTRA"} \
+  ${BPFN_BANK:+--bank "$BPFN_BANK"} \
   ${BPFN_CONFLICT:+--conflict-fraction "$BPFN_CONFLICT"} \
   --dev "$BPFN_ROOT/packs/dev.pkl" --device cuda

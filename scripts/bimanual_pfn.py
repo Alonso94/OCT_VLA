@@ -5,6 +5,7 @@ they are built.
     bimanual_pfn.py fixtures --out reports/fixtures     # first-slice acceptance + figures
     bimanual_pfn.py generate --out PACKS --packs dev heldout_handover_colour --items 512
     bimanual_pfn.py overfit  --out reports/overfit.json  # CPU memorisation gate
+    bimanual_pfn.py bank     --out BANK                 # pre-generated training episodes
     bimanual_pfn.py train    --out RUN --arm full --seed 0 --dev PACKS/dev.pkl
     bimanual_pfn.py eval     --run RUN --pack PACKS/dev.pkl --out RUN/eval_dev.json
 """
@@ -82,7 +83,18 @@ def cmd_train(args) -> int:
              layers=args.layers, lr=args.lr, workers=args.workers, seed=args.seed,
              s_rows=args.s_rows, dev_items=dev, eval_every=args.eval_every, device=args.device,
              reuse=args.reuse, pair_extra=args.pair_extra,
-             conflict_fraction=args.conflict_fraction)
+             conflict_fraction=args.conflict_fraction, bank=args.bank)
+    return 0
+
+
+def cmd_bank(args) -> int:
+    from oct_vla.prior.pose_window import bank as Bk
+
+    spec = Bk.BankSpec(name=args.name, pool=args.pool, conflict=args.conflict,
+                       handover=args.handover, shards=args.shards)
+    man = Bk.build(args.out, spec, shards=args.shard_ids, workers=args.workers)
+    done = sum(Bk.shard_path(args.out, k).exists() for k in range(spec.shards))
+    print(json.dumps({"units": man["units"], "shards_done": done, "shards": spec.shards}))
     return 0
 
 
@@ -166,7 +178,9 @@ def main() -> int:
     p.add_argument("--arm", default="full")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--steps", type=int, default=80000)
-    p.add_argument("--reuse", type=int, default=8, help="items per generated support/query pair")
+    p.add_argument("--reuse", type=int, default=None,
+                   help="items per support/query pair (default 8 on the fly, 1 from a bank)")
+    p.add_argument("--bank", type=Path, help="pre-generated episode bank (bimanual_pfn.py bank)")
     p.add_argument("--pair-extra", type=int, default=None, help="extra items per conflict member")
     p.add_argument("--conflict-fraction", type=float, default=None)
     p.add_argument("--batch", type=int, default=64)
@@ -179,6 +193,16 @@ def main() -> int:
     p.add_argument("--eval-every", type=int, default=5000)
     p.add_argument("--device", default="cuda")
     p.set_defaults(func=cmd_train)
+    p = sub.add_parser("bank", help="pre-generate the training episode bank (CPU, parallel)")
+    p.add_argument("--out", type=Path, required=True)
+    p.add_argument("--name", default="v1")
+    p.add_argument("--pool", type=int, default=24)
+    p.add_argument("--conflict", type=int, default=24)
+    p.add_argument("--handover", type=int, default=48)
+    p.add_argument("--shards", type=int, default=32)
+    p.add_argument("--shard-ids", type=int, nargs="+", help="build only these (default all)")
+    p.add_argument("--workers", type=int, help="processes (default: the CPUs this job owns)")
+    p.set_defaults(func=cmd_bank)
     p = sub.add_parser("eval", help="score a checkpoint on a pack (correct / shuffled / none)")
     p.add_argument("--run", type=Path, required=True)
     p.add_argument("--pack", type=Path, required=True)

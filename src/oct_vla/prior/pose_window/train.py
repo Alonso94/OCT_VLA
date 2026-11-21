@@ -88,8 +88,12 @@ def overfit(items: list[dict], *, steps: int = 1500, width: int = 64, layers: in
 
 
 class _Stream(torch.utils.data.IterableDataset):
-    def __init__(self, cfg: Bt.ItemConfig, batch: int, seed: int, s_rows: int):
+    """Packed batches from ``sampler`` (a ``bank.BankSampler``) or, without one, from
+    episodes generated on the fly."""
+
+    def __init__(self, cfg: Bt.ItemConfig, batch: int, seed: int, s_rows: int, sampler=None):
         self.cfg, self.batch, self.seed, self.s_rows = cfg, batch, seed, s_rows
+        self.sampler = sampler
 
     def __iter__(self):
         info = torch.utils.data.get_worker_info()
@@ -98,7 +102,9 @@ class _Stream(torch.utils.data.IterableDataset):
         while True:
             # Reused groups overshoot a batch; the rest starts the next one.
             if len(pending) < self.batch:
-                pending += Bt.sample_items(rng, self.cfg, self.batch - len(pending))
+                pending += (self.sampler.sample_items(rng, self.batch - len(pending))
+                            if self.sampler is not None
+                            else Bt.sample_items(rng, self.cfg, self.batch - len(pending)))
             items, pending = pending[:self.batch], pending[self.batch:]
             yield {k: torch.as_tensor(v) for k, v in Bt.pack(items, s_rows=self.s_rows).items()}
 
@@ -107,13 +113,26 @@ def train(out: Path, *, arm: str = "full", steps: int = 80000, batch: int = 64,
           width: int = 128, heads: int = 4, layers: int = 4, lr: float = 3e-4,
           warmup: int = 1000, workers: int = 8, seed: int = 0, s_rows: int = Bt.S_ROWS,
           dev_items: list[dict] | None = None, eval_every: int = 5000, log_every: int = 100,
-          device: str = "cuda", faults=None, reuse: int = 8, pair_extra: int | None = None,
-          conflict_fraction: float | None = None) -> dict:
+          device: str = "cuda", faults=None, reuse: int | None = None,
+          pair_extra: int | None = None, conflict_fraction: float | None = None,
+          bank: Path | None = None) -> dict:
+    """``bank``: a pre-generated episode bank (``bank.py``); items are then drawn from it
+    and the defaults are recipe 1's item mix (one item per support/query pair, conflict
+    pairs half the draws), since generation is no longer the cost. Without a bank,
+    episodes are generated on the fly and reused 8 times."""
     out = Path(out)
     if out.exists():
         raise SystemExit(f"Refusing to overwrite {out}")
-    out.mkdir(parents=True)
     from .observation import CLEAN
+
+    if reuse is None:
+        reuse = 1 if bank is not None else 8
+    store = None
+    if bank is not None:
+        from . import bank as Bk
+
+        store = Bk.Bank(bank)       # in RAM before the workers fork; they share it
+    out.mkdir(parents=True)
 
     cfg = Bt.ItemConfig(programs=Sp.programs_for(arm), counts=Sp.count_matrix_for(arm),
                         branch_fraction=0.0 if arm == "nominal_only" else 0.3,
@@ -129,13 +148,16 @@ def train(out: Path, *, arm: str = "full", steps: int = 80000, batch: int = 64,
               "branch_fraction": cfg.branch_fraction, "schema": "pose-window-v1",
               "reuse": reuse, "pair_extra": cfg.pair_extra,
               "conflict_fraction": cfg.conflict_fraction, "workers": workers,
+              "bank": None if store is None else {"path": str(bank), "episodes": store.episodes,
+                                                  "spec": store.manifest["spec"]},
               "lambda_rot": __import__("oct_vla.prior.pose_window.model", fromlist=["LAMBDA_ROT"]).LAMBDA_ROT}
     (out / "config.json").write_text(json.dumps(config, indent=1) + "\n")
     torch.manual_seed(seed)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: min(1.0, (s + 1) / warmup) * 0.5 * (
         1 + math.cos(math.pi * min(1.0, s / steps))))
-    loader = torch.utils.data.DataLoader(_Stream(cfg, batch, seed, s_rows), batch_size=None,
+    sampler = None if store is None else Bk.BankSampler(store, cfg)
+    loader = torch.utils.data.DataLoader(_Stream(cfg, batch, seed, s_rows, sampler), batch_size=None,
                                          num_workers=workers, persistent_workers=workers > 0)
     history = (out / "history.jsonl").open("a")
     t0 = time.time()
