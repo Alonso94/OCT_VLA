@@ -9,7 +9,7 @@ per-channel normalisation. The script fails on a missing, duplicated or permuted
 -- GR00T matches cameras to its video keys and, on no match, falls back to alphabetical
 order with only a warning -- and writes a labelled contact sheet of what arrived.
 
-    check_camera_routes.py --checkpoint RUN/checkpoints/last/pretrained_model \\
+    stage3_check_camera_routes.py --checkpoint RUN/checkpoints/last/pretrained_model \\
         --dataset-root VIEW --out OUT_DIR
 """
 
@@ -23,7 +23,7 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
 PATTERNS = {"observation.images.head": 0, "observation.images.left_wrist": 1,

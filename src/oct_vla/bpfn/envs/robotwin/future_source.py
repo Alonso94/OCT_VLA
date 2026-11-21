@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from oct_vla.bpfn.downstream import tokens
 from oct_vla.bpfn.envs.controllers import PFNController
 from oct_vla.bpfn.envs.robotwin.history import History
 
@@ -19,11 +20,8 @@ class PoseTokenFutureSource:
         import hashlib
         from pathlib import Path
 
-        from oct_vla.policies.conditioning import pose_tokens as P
-
         from oct_vla.bpfn.data.real_data.robotwin import read_recording
 
-        self.P = P
         self.kind = provenance["kind"]
         self.bank, self.rows = int(provenance["bank"]), int(provenance["rows"])
         self.support_path = str(support)
@@ -39,7 +37,7 @@ class PoseTokenFutureSource:
             self.model = PoseWindowPFN.from_run(run, device)
             self.controller = PFNController(self.model, self.support, k=1, device=device)
         elif self.kind == "support_table":
-            self.static = P.support_tokens(self.support, int(provenance["support_rows"]))
+            self.static = tokens.support_tokens(self.support, int(provenance["support_rows"]))
         else:
             raise ValueError(f"not a pose-token view: {self.kind!r}")
         self.history: History | None = None
@@ -61,8 +59,8 @@ class PoseTokenFutureSource:
         if self.kind == "support_table":
             entry = self.static
         else:
-            entry = self.P.window_tokens(self.controller(self.history.episode()))
+            entry = tokens.window_tokens(self.controller(self.history.episode()))
             self.controller._queue = []                       # a fresh window every step
         empty = entry[:0]
-        tokens, mask = self.P.bank([entry] + [empty] * (self.bank - 1), self.rows)
-        return tokens, mask, 1.0
+        packed, mask = tokens.bank([entry] + [empty] * (self.bank - 1), self.rows)
+        return packed, mask, 1.0

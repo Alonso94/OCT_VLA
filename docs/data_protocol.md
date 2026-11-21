@@ -509,7 +509,7 @@ All siblings of one layout family (a seed under both rules and its swapped twin)
 one split. Every attempted seed is used once; a discarded seed is not retried.
 
 **Canary.** `submit_bpfn.sh stage1-canary` collects 2 seeds per rule, one swapped twin and one
-3+1 support; `scripts/bpfn_canary_report.py` checks colour, rendering (contact sheet),
+3+1 support; `scripts/bpfn/stage1_canary_report.py` checks colour, rendering (contact sheet),
 codec round trip, distractor stillness and command alignment, and writes `CANARY_PASSED`,
 which the pilot stage requires.
 

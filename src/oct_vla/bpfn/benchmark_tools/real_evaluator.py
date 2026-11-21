@@ -3,7 +3,7 @@
 A query is a recorded run of rule r at a decision time t; the support is one *other*
 recorded run, of rule r (``same``), of the other rule (``other``), or absent (``none``).
 
-**Decision times** come from observation only (``data.effects`` timelines): the first
+**Decision times** come from observation only (``timelines.let_go``): the first
 row, and each object's let-go (the mover is clear of a placed object; the next approach
 starts). **What counts as correct** is decided by an independent eligible-set scorer,
 never by the recorded future, which is ground truth only for the rule actually executed:
@@ -31,6 +31,7 @@ import numpy as np
 
 from oct_vla.bpfn.benchmark_tools import metrics
 from oct_vla.bpfn.benchmark_tools.evaluator import predict
+from oct_vla.bpfn.benchmark_tools.timelines import let_go
 from oct_vla.bpfn.data import batches
 from oct_vla.bpfn.data.real import RealData
 from oct_vla.bpfn.schema import (MOVABLE, Episode, colour_id, empty_support, query_table,
@@ -63,17 +64,15 @@ def expected(ep: Episode, t: int, rule: str) -> set[str]:
 def decision_times(ep: Episode, horizon: int = batches.HORIZON) -> list[int]:
     """The approach onset after row 0 and after every object's let-go (observation-only
     timelines for the anchors)."""
-    from oct_vla.data import effects
-
-    movable = [j for j in range(len(ep.track_ids)) if ep.kind[j] == MOVABLE]
-    lower_top = LOWER_Z
-    upper = ep.objects[:, movable, 2] > lower_top
-    tracks = effects.Tracks(tuple(ep.track_ids[j] for j in movable), ep.objects[:, movable, :3],
-                      ep.objects[:, movable, 3:], ep.size[movable], ep.wrist[..., :3],
-                      ep.aperture, upper)
-    lines = effects.timelines(tracks)
-    lets = sorted(v["let_go"] for v in lines.values() if v.get("let_go") is not None)
-    anchors = [0] + [int(t) for t in lets if t < ep.T - 1]
+    lets = []
+    for j in range(len(ep.track_ids)):
+        if ep.kind[j] != MOVABLE:
+            continue
+        upper = ep.objects[:, j, 2] > LOWER_Z
+        row = let_go(ep.objects[:, j, :3], ep.wrist[..., :3], ep.aperture, upper)
+        if row is not None:
+            lets.append(row)
+    anchors = [0] + [int(t) for t in sorted(lets) if t < ep.T - 1]
     return [t for t in (approach_onset(ep, a, horizon) for a in anchors) if t is not None]
 
 

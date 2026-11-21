@@ -2,6 +2,13 @@
 
 The paper is `paper/BimanualPFN.tex`. The package follows the layout of TRB (`src/trb/`).
 
+**Standalone.** `oct_vla.bpfn` imports nothing else from `oct_vla`; `tests/bpfn/test_standalone.py` enforces that. Where it keeps its own copy of something the rest of the repository also defines, a test outside the package holds the two equal:
+- the recording format (`data/real_data/robotwin.py` against `oct_vla.data.store`);
+- the shelf decks (`SHELF_DECKS` against the task spec);
+- the let-go rule (`benchmark_tools/timelines.py` against `oct_vla.data.effects`).
+
+The executor-side code (the token embedding, residual actions, ACT/GR00T) lives with the policies and imports `bpfn`, never the reverse. The stage runners in `scripts/bpfn/` connect the package to the rest: the evaluation server client, LeRobot views, the collectors.
+
 ```
 bpfn/
   schema.py, quat.py        the pose-window table contract and quaternion helpers
@@ -26,6 +33,7 @@ bpfn/
     metrics.py              pose errors, the first-pick decision rule, paired both-correct
     atlas.py, render.py     the marker scan and figures
     checker.py              independent geometric checker of episodes
+    timelines.py            let-go rows in a recorded run (decision times)
     fixtures.py             the first-slice acceptance fixtures
   envs/
     controllers.py          PFNController, HoldController: read an Episode, return [2, 7] poses
@@ -36,6 +44,7 @@ bpfn/
       rollout.py            run_episode against the evaluation server
       future_source.py      PoseTokenFutureSource: the executor's pose tokens (stage 3)
   downstream/
+    tokens.py               the pose-token format (window_tokens, support_tokens, bank)
     views.py                choose_supports, PoseTokenBuilder: per-frame pose tokens for executor views
 ```
 
@@ -60,7 +69,7 @@ Recorded demonstrations from it enter as a new `data/real_data/<name>.py` reader
 
 On the cluster, `slurm/submit_bpfn.sh <step>` submits each stage, with steps named `stage1-canary`, `stage1-probe`, `stage1-collect`, `stage1-generate`, `stage1-train`, `stage2-evaluate`, `stage2-online`, `stage3-views`, `stage3-act`, `stage3-groot` and `stage3-camera-check`. `DRY_RUN=1` prints the sbatch lines without submitting.
 
-`stage1_generate_data.py --fixtures OUT` runs the first-slice acceptance fixtures.
+`stage1_generate_data.py --fixtures OUT` runs the first-slice acceptance fixtures. Stage tools: `stage1_canary_report.py` (gates the collection), `stage1_calibrate_tool.py` (tool offset and timing from recordings), `stage3_check_camera_routes.py` (camera wiring through each executor).
 
 ## Items (`data/batches.py`)
 

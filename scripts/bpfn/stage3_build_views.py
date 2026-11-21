@@ -49,16 +49,16 @@ def main() -> int:
     import pandas as pd
 
     from add_future_keyframe import _stats
-    from oct_vla.data.store import read_states
-    from oct_vla.policies.conditioning import pose_tokens as P
+    from oct_vla.bpfn.downstream import tokens
     from oct_vla.policies.conditioning.future import FUTURE_KEYFRAME, FUTURE_MASK
     from oct_vla.bpfn.data.real import RealData
+    from oct_vla.bpfn.data.real_data.robotwin import recorded_metadata
     from oct_vla.bpfn.downstream.views import SUPPORT_ROWS, PoseTokenBuilder, choose_supports
     from project_dataset_view import link_tree
 
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--source", type=Path, required=True)
-    ap.add_argument("--kind", choices=P.POSE_KINDS, required=True)
+    ap.add_argument("--kind", choices=tokens.POSE_KINDS, required=True)
     ap.add_argument("--run", type=Path, help="PFN run (pose_window)")
     ap.add_argument("--supports", action="append", required=True, help="RULE=ROOT support pool")
     ap.add_argument("--bank", type=int, default=4)
@@ -108,7 +108,7 @@ def main() -> int:
             part = table.loc[idx].sort_values("frame_index")
             entry = by_index[int(episode_index)]
             own = Path(entry["source_path"])
-            rule = read_states(own).metadata.get("rule")
+            rule = recorded_metadata(own).get("rule")
             chosen = choose_supports(pool.get(rule, []), own, args.bank, args.seed, int(episode_index))
             supports_used[int(episode_index)] = [str(p) for p in chosen]
             query = recordings.episode(own)
@@ -118,7 +118,7 @@ def main() -> int:
             per_frame = builder.frame_entries(query, supports)
             order = part["frame_index"].to_numpy()
             for position, index in enumerate(part.index):
-                toks, mask = P.bank(per_frame[order[position]], rows)
+                toks, mask = tokens.bank(per_frame[order[position]], rows)
                 at = table.index.get_loc(index)
                 col_t[at], col_m[at] = toks.tolist(), mask.tolist()
                 real_rows.append(toks[mask > 0.5])
@@ -132,12 +132,12 @@ def main() -> int:
         table.to_parquet(target, index=False)
 
     info = json.loads((output / "meta" / "info.json").read_text())
-    info["features"][FUTURE_KEYFRAME] = {"dtype": "float32", "shape": [args.bank * rows, P.POSE_TOKEN_DIM], "names": None}
+    info["features"][FUTURE_KEYFRAME] = {"dtype": "float32", "shape": [args.bank * rows, tokens.POSE_TOKEN_DIM], "names": None}
     info["features"][FUTURE_MASK] = {"dtype": "float32", "shape": [args.bank * rows], "names": None}
     info["derived_from"] = source.name
     info["future_keyframe"] = {
         "kind": args.kind, "source": "bimanual_pfn" if model is not None else "support_table",
-        "bank": args.bank, "rows": rows, "dim": P.POSE_TOKEN_DIM, "horizon": horizon,
+        "bank": args.bank, "rows": rows, "dim": tokens.POSE_TOKEN_DIM, "horizon": horizon,
         "run": str(args.run) if args.run else None, "checkpoint_sha256_16": ckpt,
         "support_rows": None if model is not None else SUPPORT_ROWS,
         "support_pool": {r: len(v) for r, v in pool.items()}, "seed": args.seed,
@@ -152,7 +152,7 @@ def main() -> int:
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
     item = LeRobotDataset(f"local/{output.name}", root=output).hf_dataset[0]
-    if np.asarray(item[FUTURE_KEYFRAME]).size != args.bank * rows * P.POSE_TOKEN_DIM:
+    if np.asarray(item[FUTURE_KEYFRAME]).size != args.bank * rows * tokens.POSE_TOKEN_DIM:
         raise SystemExit(f"{output}: loaded {FUTURE_KEYFRAME} has the wrong size")
     print(f"\nwrote {output}: {len(supports_used)} episodes, {frames} frames, {linked} videos linked")
     return 0

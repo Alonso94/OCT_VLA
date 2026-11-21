@@ -16,6 +16,7 @@ import numpy as np
 
 from oct_vla.bpfn.benchmark_tools.evaluator import predict
 from oct_vla.bpfn.data import batches
+from oct_vla.bpfn.downstream import tokens
 from oct_vla.bpfn.schema import Episode, query_table, support_table
 
 SUPPORT_ROWS = 32          # rows of a support_table entry
@@ -58,17 +59,15 @@ class PoseTokenBuilder:
 
     def frame_entries(self, query: Episode, supports: list[Episode]) -> list[list[np.ndarray]]:
         """``entries[t][k]``: the token entry of frame ``t`` under support ``k``."""
-        from oct_vla.policies.conditioning import pose_tokens
-
         entries = [[None] * len(supports) for _ in range(query.T)]
         for k, support in enumerate(supports):
             if self.kind == "support_table":
-                tokens = pose_tokens.support_tokens(support, SUPPORT_ROWS)
+                table = tokens.support_tokens(support, SUPPORT_ROWS)
                 for t in range(query.T):
-                    entries[t][k] = tokens
+                    entries[t][k] = table
                 continue
             for t, window in enumerate(self._windows(query, support)):
-                entries[t][k] = pose_tokens.window_tokens(window)
+                entries[t][k] = tokens.window_tokens(window)
         return entries
 
     def _windows(self, query: Episode, support: Episode) -> list[np.ndarray]:

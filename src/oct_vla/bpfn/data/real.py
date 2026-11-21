@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from pathlib import Path
 
-from oct_vla.bpfn.data.real_data.robotwin import read_recording
+from oct_vla.bpfn.data.real_data.robotwin import read_recording, recorded_metadata
 from oct_vla.bpfn.schema import Episode
 
 
@@ -40,10 +40,8 @@ class RealData:
 
     @staticmethod
     def _check_rule(rule: str, runs: list[Path]) -> None:
-        from oct_vla.data.store import read_states
-
         for path in runs:
-            recorded = read_states(path).metadata.get("rule")
+            recorded = recorded_metadata(path).get("rule")
             if recorded != rule:
                 raise SystemExit(f"{path} was collected under rule {recorded!r}, not {rule!r}")
 

@@ -22,7 +22,7 @@ from oct_vla.bpfn.schema import DT, HZ, Episode
 #: local x**, and a grasped object's centre sits ``TOOL_OFFSET`` along it: measured on the
 #: v4 recordings at 18 grasp onsets, 0.1432 m (std 3 mm), with local x = (0, 0, -1) and
 #: local y = (-1, 0, 0) in world for a yaw-0 top-down grasp. (The shelf adapter's 0.128 m
-#: along world z was a different quantity.) ``scripts/bpfn_calibrate_tool.py`` re-measures it.
+#: along world z was a different quantity.) ``scripts/bpfn/stage1_calibrate_tool.py`` re-measures it.
 TOOL_AXIS = np.array([1.0, 0.0, 0.0])
 TOOL_OFFSET = 0.143
 OPEN, CLOSED = 1.0, 0.0

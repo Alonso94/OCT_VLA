@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from oct_vla.bpfn import quat
+from oct_vla.bpfn.data.real_data.robotwin import SHELF_DECKS
 from oct_vla.bpfn.schema import FIXTURE, MOVABLE, Episode, category_id, colour_id
 
 
@@ -30,16 +31,12 @@ class History:
         if not self.tracks:
             objs = obs.scene.objects
             self.tracks = tuple(o.track_id for o in objs)
-            from oct_vla.data.entity_tokens import shelf_support_entities
-            from oct_vla.tasks.shelf_restock.spec import DEFAULT_SPEC
-
-            decks = shelf_support_entities(DEFAULT_SPEC)
             self.header = {
-                "kind": [MOVABLE] * len(objs) + [FIXTURE] * len(decks),
-                "colour": [colour_id(o.colour) for o in objs] + [0] * len(decks),
-                "category": [category_id(_category(o.category)) for o in objs] + [0] * len(decks),
-                "size": [tuple(o.size_xyz) for o in objs] + [tuple(d.size_xyz) for d in decks],
-                "decks": [_pose7(d.pose) for d in decks],
+                "kind": [MOVABLE] * len(objs) + [FIXTURE] * len(SHELF_DECKS),
+                "colour": [colour_id(o.colour) for o in objs] + [0] * len(SHELF_DECKS),
+                "category": [category_id(_category(o.category)) for o in objs] + [0] * len(SHELF_DECKS),
+                "size": [tuple(o.size_xyz) for o in objs] + [size for _, _, size in SHELF_DECKS],
+                "decks": [np.array([*centre, 0.0, 0.0, 0.0, 1.0]) for _, centre, _ in SHELF_DECKS],
             }
         by_id = {o.track_id: o for o in obs.scene.objects}
         row = [(_pose7(by_id[t].pose) if t in by_id else self.objects[-1][i])
@@ -58,7 +55,7 @@ class History:
         return Episode(np.asarray(self.times), wr, np.asarray(self.apertures, float), ob,
                        np.asarray(h["kind"], np.int8), np.asarray(h["colour"], np.int8),
                        np.asarray(h["category"], np.int8), np.asarray(h["size"], float),
-                       self.tracks + ("lower_deck", "upper_deck"), {"source": "live"})
+                       self.tracks + tuple(name for name, _, _ in SHELF_DECKS), {"source": "live"})
 
 
 def _category(asset: str | None) -> str | None:

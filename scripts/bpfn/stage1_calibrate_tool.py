@@ -10,7 +10,7 @@
   let-go), compaction push (push start -> end); median and IQR. The same quantities are
   measured on generated episodes for comparison.
 
-    bpfn_calibrate_tool.py --runs ROOT [--limit 40] --out configs/bimanual_pfn/calibration.json
+    stage1_calibrate_tool.py --runs ROOT [--limit 40] --out configs/bimanual_pfn/calibration.json
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
 PHASES = ("approach", "lift", "carry", "release", "push")

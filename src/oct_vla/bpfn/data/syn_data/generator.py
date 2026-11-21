@@ -70,7 +70,7 @@ LIFT = 0.10
 CROSS_BODY = 0.30        # an arm may not work more than this past the midline
 #: Arm speed scale per draw, so duration never identifies a rule.
 SPEED = (0.7, 1.5)
-#: Timing calibrated on the recorded v4 runs (scripts/bpfn_calibrate_tool.py, medians over
+#: Timing calibrated on the recorded v4 runs (scripts/bpfn/stage1_calibrate_tool.py, medians over
 #: 40 runs): a compaction push takes ~1.6 s for a few centimetres (the expert pushes
 #: slowly so the object slides instead of bouncing), and lift -> let-go totals ~2.5 s.
 #: (The recorded carry / release split is not comparable: the expert carries at constant

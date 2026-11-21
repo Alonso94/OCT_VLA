@@ -18,7 +18,7 @@ For every collected run under ``--root`` (``*/full_run/*/seed_*/episode_*``):
 Writes ``<root>/canary_report.json``, ``<root>/canary_contact_sheet.png`` and, only if
 every run passes every check, ``<root>/CANARY_PASSED`` (``submit_bpfn.sh stage1-collect`` needs it).
 
-    bpfn_canary_report.py --root $HPCVAULT/octvla-collection-bpfn/canary
+    stage1_canary_report.py --root $HPCVAULT/octvla-collection-bpfn/canary
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 
 DISTRACTOR_TOL = 0.02

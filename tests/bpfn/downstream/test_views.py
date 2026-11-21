@@ -13,7 +13,7 @@ from oct_vla.bpfn.data.syn_data import generator  # noqa: E402
 from oct_vla.bpfn.downstream.views import PoseTokenBuilder, choose_supports  # noqa: E402
 from oct_vla.bpfn.models.pose_window_pfn import PoseWindowPFN  # noqa: E402
 from oct_vla.bpfn.schema import query_table, support_table  # noqa: E402
-from oct_vla.policies.conditioning import pose_tokens  # noqa: E402
+from oct_vla.bpfn.downstream import tokens  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -49,7 +49,7 @@ def test_pose_window_entries_are_the_pfn_windows(episodes):
             "target": np.zeros((model.horizon, 2, 7), np.float32),
             "target_valid": np.zeros(model.horizon, bool), "meta": {}}
     window = predict(model, [item], batches.S_ROWS)[0]
-    np.testing.assert_allclose(entries[t][0], pose_tokens.window_tokens(window), atol=1e-6)
+    np.testing.assert_allclose(entries[t][0], tokens.window_tokens(window), atol=1e-6)
     assert entries[t][0].shape[0] == PoseTokenBuilder("pose_window", model).rows
 
 
