@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# BimanualPFN prior training: one (arm, seed) per array element (slurm/submit_bpfn.sh).
+# BimanualPFN stage 1, prior training: one (arm, seed) per array element (slurm/submit_bpfn.sh).
 # BPFN_BANK: draw items from a pre-generated bank (bpfn_bank.sbatch) instead of
 # generating episodes on the fly; it is loaded into RAM once and shared by the workers.
 #SBATCH --nodes=1
@@ -16,7 +16,7 @@ RUN="$BPFN_ROOT/${BPFN_RUNS_DIR:-runs}/${ARM}_s${SEED}${BPFN_RUN_SUFFIX:-}"
 if [ -f "$RUN/DONE" ]; then echo "$RUN already complete; skipping"; exit 0; fi
 if [ -e "$RUN" ]; then echo "$RUN exists without DONE: resolve by hand" >&2; exit 2; fi
 export PYTHONPATH="$OCTVLA_REPO/src${PYTHONPATH:+:$PYTHONPATH}" PYTHONUNBUFFERED=1
-srun "$OCTVLA_POLICY_PYTHON" -u "$OCTVLA_REPO/scripts/bimanual_pfn.py" train \
+srun "$OCTVLA_POLICY_PYTHON" -u "$OCTVLA_REPO/scripts/bpfn/stage1_train_prior.py" \
   --out "$RUN" --arm "$ARM" --seed "$SEED" --steps "${BPFN_STEPS:-80000}" \
   --batch "${BPFN_BATCH:-64}" --workers "$(( ${SLURM_CPUS_PER_TASK:-16} - 2 ))" \
   ${BPFN_REUSE:+--reuse "$BPFN_REUSE"} ${BPFN_PAIR_EXTRA:+--pair-extra "$BPFN_PAIR_EXTRA"} \

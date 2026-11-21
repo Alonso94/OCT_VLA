@@ -1,13 +1,9 @@
 #!/usr/bin/env python
-"""BimanualPFN entry point (plan: stage 0). One subcommand per stage; more are added as
-they are built.
+"""BimanualPFN tools not yet folded into the stage runners (scripts/bpfn/).
 
     bimanual_pfn.py fixtures --out reports/fixtures     # first-slice acceptance + figures
-    bimanual_pfn.py generate --out PACKS --packs dev heldout_handover_colour --items 512
-    bimanual_pfn.py overfit  --out reports/overfit.json  # CPU memorisation gate
-    bimanual_pfn.py bank     --out BANK                 # pre-generated training episodes
-    bimanual_pfn.py train    --out RUN --arm full --seed 0 --dev PACKS/dev.pkl
     bimanual_pfn.py eval     --run RUN --pack PACKS/dev.pkl --out RUN/eval_dev.json
+    bimanual_pfn.py scan     --run RUN --out reports/scan
 """
 
 from __future__ import annotations
@@ -46,82 +42,20 @@ def cmd_fixtures(args) -> int:
     return 0 if passed else 1
 
 
-def cmd_generate(args) -> int:
-    from oct_vla.bpfn.data import packs
-    for name in args.packs:
-        path = packs.build(name, args.out, args.items, s_rows=args.s_rows)
-        print(path, (path.with_suffix(".json")).read_text())
-    return 0
-
-
-def cmd_overfit(args) -> int:
-    import torch
-
-    from oct_vla.prior.pose_window import train as Tr
-
-    torch.set_num_threads(args.threads)
-    items = Tr.conflict_items(args.pairs, seed=args.seed, s_rows=args.s_rows)
-    base = Tr.baselines(items)
-    _, res = Tr.overfit(items, steps=args.steps, s_rows=args.s_rows, seed=args.seed)
-    gate = (res["both_correct"] >= 0.9 and base["hold"]["both_correct"] < 0.5
-            and base["replay"]["both_correct"] < 0.5)
-    report = {"pairs": args.pairs, "model": res, "baselines": base, "gate_passed": gate}
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(report, indent=1) + "\n")
-    print(json.dumps({"model_both_correct": res["both_correct"],
-                      "hold": base["hold"]["both_correct"],
-                      "replay": base["replay"]["both_correct"], "gate_passed": gate}))
-    return 0 if gate else 1
-
-
-def cmd_train(args) -> int:
-    from oct_vla.prior.pose_window import packs, train as Tr
-
-    dev = packs.load(args.dev) if args.dev else None
-    Tr.train(args.out, arm=args.arm, steps=args.steps, batch=args.batch, width=args.width,
-             layers=args.layers, lr=args.lr, workers=args.workers, seed=args.seed,
-             s_rows=args.s_rows, dev_items=dev, eval_every=args.eval_every, device=args.device,
-             reuse=args.reuse, pair_extra=args.pair_extra,
-             conflict_fraction=args.conflict_fraction, bank=args.bank)
-    return 0
-
-
-def cmd_bank(args) -> int:
-    from oct_vla.bpfn.data import bank
-    spec = bank.BankSpec(name=args.name, pool=args.pool, conflict=args.conflict,
-                       handover=args.handover, shards=args.shards)
-    man = bank.build(args.out, spec, shards=args.shard_ids, workers=args.workers)
-    done = sum(bank.shard_path(args.out, k).exists() for k in range(spec.shards))
-    print(json.dumps({"units": man["units"], "shards_done": done, "shards": spec.shards}))
-    return 0
-
-
 def cmd_eval(args) -> int:
-    import numpy as np
-
-    from oct_vla.prior.pose_window import packs, train as Tr
-    from oct_vla.bpfn.schema import empty_support
+    from oct_vla.bpfn.benchmark_tools.evaluator import Evaluator
+    from oct_vla.bpfn.data import packs
+    from oct_vla.bpfn.models.pose_window_pfn import PoseWindowPFN
 
     if args.out.exists():
         raise SystemExit(f"Refusing to overwrite {args.out}")
     items = packs.load(args.pack)
-    model = Tr.load(args.run, args.device)
+    model = PoseWindowPFN.from_run(args.run, args.device)
     if items[0]["target"].shape[0] != model.horizon:
         raise SystemExit(f"{args.pack} has {items[0]['target'].shape[0]}-step targets but the "
                          f"checkpoint predicts {model.horizon}; regenerate the pack")
-    rng = np.random.default_rng(0)
     results = {"run": str(args.run), "pack": str(args.pack), "items": len(items)}
-    for cond in ("correct", "shuffled", "none"):
-        if cond == "correct":
-            use = items
-        elif cond == "shuffled":
-            perm = rng.permutation(len(items))
-            use = [dict(it, support=items[perm[k]]["support"]) for k, it in enumerate(items)]
-        else:
-            use = [dict(it, support=empty_support(it["support"])) for it in items]
-        s_rows = max(1, max(len(i["support"].time) for i in items))
-        results[cond] = Tr.evaluate(Tr.predict(model, use, s_rows, args.device), use)
-    results["baselines"] = Tr.baselines(items)
+    results.update(Evaluator(items, args.device).run(model))
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(results, indent=1) + "\n")
     print(json.dumps({k: (v.get("both_correct"), v.get("trans_mm")) for k, v in results.items()
@@ -131,14 +65,15 @@ def cmd_eval(args) -> int:
 
 def cmd_scan(args) -> int:
     from oct_vla.prior.pose_window import atlas as A
-    from oct_vla.prior.pose_window import train as Tr
+    from oct_vla.bpfn.benchmark_tools.evaluator import predict as predict_windows
+    from oct_vla.bpfn.models.pose_window_pfn import PoseWindowPFN
 
     if args.run is None:
         predict, title = A.expert_predict, "Marker scan: analytic expert windows (scorer check)"
     else:
-        model = Tr.load(args.run, args.device)
-        predict = lambda items: Tr.predict(model, items, max(len(i["support"].time) for i in items),  # noqa: E731
-                                           args.device)
+        model = PoseWindowPFN.from_run(args.run, args.device)
+        predict = lambda items: predict_windows(model, items, max(len(i["support"].time) for i in items),  # noqa: E731
+                                                args.device)
         title = f"Marker scan: {args.run.name}"
     rows = A.marker_scan(predict)
     args.out.mkdir(parents=True, exist_ok=True)
@@ -157,50 +92,6 @@ def main() -> int:
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--seed", type=int, default=0)
     p.set_defaults(func=cmd_fixtures)
-    p = sub.add_parser("generate", help="fixed evaluation packs")
-    p.add_argument("--out", type=Path, required=True)
-    p.add_argument("--packs", nargs="+", default=["dev"])
-    p.add_argument("--items", type=int, default=512)
-    p.add_argument("--s-rows", type=int, default=128)
-    p.set_defaults(func=cmd_generate)
-    p = sub.add_parser("overfit", help="the CPU memorisation gate on fixed conflict pairs")
-    p.add_argument("--out", type=Path, required=True)
-    p.add_argument("--pairs", type=int, default=32)
-    p.add_argument("--steps", type=int, default=1500)
-    p.add_argument("--s-rows", type=int, default=64)
-    p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--threads", type=int, default=8)
-    p.set_defaults(func=cmd_overfit)
-    p = sub.add_parser("train", help="train one arm x seed")
-    p.add_argument("--out", type=Path, required=True)
-    p.add_argument("--arm", default="full")
-    p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--steps", type=int, default=80000)
-    p.add_argument("--reuse", type=int, default=None,
-                   help="items per support/query pair (default 8 on the fly, 1 from a bank)")
-    p.add_argument("--bank", type=Path, help="pre-generated episode bank (bimanual_pfn.py bank)")
-    p.add_argument("--pair-extra", type=int, default=None, help="extra items per conflict member")
-    p.add_argument("--conflict-fraction", type=float, default=None)
-    p.add_argument("--batch", type=int, default=64)
-    p.add_argument("--width", type=int, default=128)
-    p.add_argument("--layers", type=int, default=4)
-    p.add_argument("--lr", type=float, default=3e-4)
-    p.add_argument("--workers", type=int, default=8)
-    p.add_argument("--s-rows", type=int, default=128)
-    p.add_argument("--dev", type=Path)
-    p.add_argument("--eval-every", type=int, default=5000)
-    p.add_argument("--device", default="cuda")
-    p.set_defaults(func=cmd_train)
-    p = sub.add_parser("bank", help="pre-generate the training episode bank (CPU, parallel)")
-    p.add_argument("--out", type=Path, required=True)
-    p.add_argument("--name", default="v1")
-    p.add_argument("--pool", type=int, default=24)
-    p.add_argument("--conflict", type=int, default=24)
-    p.add_argument("--handover", type=int, default=48)
-    p.add_argument("--shards", type=int, default=32)
-    p.add_argument("--shard-ids", type=int, nargs="+", help="build only these (default all)")
-    p.add_argument("--workers", type=int, help="processes (default: the CPUs this job owns)")
-    p.set_defaults(func=cmd_bank)
     p = sub.add_parser("eval", help="score a checkpoint on a pack (correct / shuffled / none)")
     p.add_argument("--run", type=Path, required=True)
     p.add_argument("--pack", type=Path, required=True)

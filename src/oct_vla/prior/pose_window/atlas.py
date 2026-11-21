@@ -16,7 +16,7 @@ from __future__ import annotations
 import numpy as np
 
 from oct_vla.bpfn import quat
-from . import metrics as Me
+from oct_vla.bpfn.benchmark_tools import metrics
 from oct_vla.bpfn.schema import FIXTURE, MOVABLE, colour_id, category_id, query_table, support_table, target_window
 from oct_vla.bpfn.data.syn_data.trajectory import CLOSED, OPEN, TOP_DOWN, Builder, wrist_for_grip
 
@@ -80,8 +80,8 @@ def marker_scan(predict, horizon: int = 16) -> list[dict]:
     for (m, name, want, item), w in zip(keys, windows):
         tie = abs(abs(m - X_OBJ[0]) - abs(m - X_OBJ[1])) < 1e-9
         cands = {"obj_0", "obj_1"}
-        decided = Me.decision(w, item["query"], cands)
-        err = Me.errors(w[None], item["target"][None], item["target_valid"][None])
+        decided = metrics.decision(w, item["query"], cands)
+        err = metrics.errors(w[None], item["target"][None], item["target_valid"][None])
         rows.append({"marker_x": m, "support": name, "analytic": None if tie else want,
                      "decided": decided, "tie": tie,
                      "correct": None if tie else decided == want,

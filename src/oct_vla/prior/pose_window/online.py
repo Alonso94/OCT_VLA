@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from oct_vla.bpfn import quat
-from .metrics import LOWER_Z
+from oct_vla.bpfn.benchmark_tools.metrics import LOWER_Z
 from oct_vla.bpfn.schema import (FIXTURE, MOVABLE, Episode, category_id, colour_id, query_table,
                      support_table)
 from oct_vla.bpfn.data.syn_data.trajectory import grip_point
@@ -174,7 +174,7 @@ class PFNController:
         import torch
 
         from oct_vla.bpfn.data import batches
-        from .model import to_torch
+        from oct_vla.bpfn.models.pose_window_pfn import to_torch
 
         if not self._queue:
             item = {"support": self.support_tab, "query": query_table(ep, ep.T - 1, self.history),
@@ -289,13 +289,13 @@ class PoseTokenFutureSource:
         self.support = read_recording(support)
         self.model = self.controller = None
         if self.kind == "pose_window":
-            from . import train as Tr
+            from oct_vla.bpfn.models.pose_window_pfn import PoseWindowPFN
 
             run = Path(provenance["run"])
             sha = hashlib.sha256((run / "model.pt").read_bytes()).hexdigest()[:16]
             if sha != provenance["checkpoint_sha256_16"]:
                 raise ValueError(f"{run} is not the PFN checkpoint the view was built with")
-            self.model = Tr.load(run, device)
+            self.model = PoseWindowPFN.from_run(run, device)
             self.controller = PFNController(self.model, self.support, k=1, device=device)
         elif self.kind == "support_table":
             self.static = P.support_tokens(self.support, int(provenance["support_rows"]))

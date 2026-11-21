@@ -26,6 +26,7 @@ The ``scene_only`` arm sets ``use_support=False``: step 3 is skipped, everything
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import torch
 from torch import nn
@@ -245,31 +246,14 @@ class PoseWindowPFN(nn.Module):
         memory = self.encode_support(b) if self.use_support else None
         return self.predict(memory, b)
 
-
-#: Rotation weight. 1 - <q_hat, q>^2 is ~0.005 at 8 degrees against a translation term
-#: near 1, so with weight 1 rotation got almost no gradient (stuck at ~8 deg, recipe 1).
-LAMBDA_ROT = 10.0
-
-
-def window_loss(pred: torch.Tensor, target: torch.Tensor, valid: torch.Tensor,
-                length: float = 0.05, lambda_rot: float = LAMBDA_ROT) -> tuple[torch.Tensor, dict]:
-    """Huber on translation / ``length`` + lambda (1 - <q_hat, q>^2), mean over valid
-    (arm, horizon) pairs; ``valid`` is ``[B, H]`` (both arms share a horizon's validity)."""
-    v = valid[..., None].expand(pred.shape[:-1]).float()             # [B, H, 2]
-    n = v.sum().clamp(min=1)
-    trans = F.huber_loss(pred[..., :3] / length, target[..., :3] / length, reduction="none",
-                         delta=1.0).sum(-1)
-    dot = (pred[..., 3:] * target[..., 3:]).sum(-1)
-    rot = 1 - dot**2
-    loss_trans = (trans * v).sum() / n
-    loss_rot = (rot * v).sum() / n
-    loss = loss_trans + lambda_rot * loss_rot
-    err = (pred[..., :3] - target[..., :3]).norm(dim=-1)
-    ang = 2 * torch.acos(dot.abs().clamp(0, 1))
-    loss_value = loss.detach()
-    return loss, {"loss": float(loss_value), "loss_trans": float(loss_trans.detach()),
-                  "loss_rot": float(loss_rot.detach()), "trans_mm": float((err * v).sum().detach() / n * 1000),
-                  "rot_deg": float((ang * v).sum().detach() / n * 180 / math.pi)}
+    @classmethod
+    def from_run(cls, run_dir: Path, device: str = "cpu") -> "PoseWindowPFN":
+        """The checkpoint of a training run (``run_dir/model.pt``), in eval mode."""
+        checkpoint = torch.load(Path(run_dir) / "model.pt", map_location=device, weights_only=False)
+        model = cls(**checkpoint["config"]).to(device)
+        model.load_state_dict(checkpoint["state"])
+        model.eval()
+        return model
 
 
 def to_torch(batch: dict, device="cpu") -> dict:

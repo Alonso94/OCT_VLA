@@ -3,7 +3,7 @@
 import numpy as np
 
 from oct_vla.prior.pose_window import atlas as A
-from oct_vla.prior.pose_window import metrics as Me
+from oct_vla.bpfn.benchmark_tools import metrics
 
 
 def test_expert_windows_score_perfectly_and_the_boundary_flips_with_the_support():
@@ -18,7 +18,7 @@ def test_expert_windows_score_perfectly_and_the_boundary_flips_with_the_support(
 
 
 def test_hold_decides_nothing():
-    rows = A.marker_scan(lambda items: [Me.hold(it["query"], 16) for it in items])
+    rows = A.marker_scan(lambda items: [metrics.hold(it["query"], 16) for it in items])
     assert all(r["decided"] is None for r in rows)
 
 

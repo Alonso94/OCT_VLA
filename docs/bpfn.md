@@ -12,15 +12,26 @@ bpfn/
     bank.py                 the pre-generated episode bank (storage and loading)
     synthetic.py            SyntheticData: builds the bank and the evaluation packs
     splits.py, packs.py     split registry, fixed evaluation packs
+  models/
+    pose_window_pfn.py      PoseWindowPFN (support encoder, query reader, joint decoder)
+  training_tools/
+    data.py                 samplers (bank / on the fly), the item stream, the data loader
+    trainer.py              TrainConfig, PFNTrainer, the overfit gate
+    validator.py            dev-pack scores during training (logged, never used to select)
+    losses/window.py        the window loss (paper Eq. loss)
+  benchmark_tools/
+    evaluator.py            Evaluator: correct / shuffled / no support, hold and replay baselines
+    metrics.py              pose errors, the first-pick decision rule, paired both-correct
 ```
 
-The remaining layers (`models/`, `training_tools/`, `benchmark_tools/`, `envs/`, `downstream/`) are described below as they are added.
+The remaining layers (`envs/`, `downstream/`) are described below as they are added.
 
 ## Stage runners
 
 | Paper stage | Runner (`scripts/bpfn/`) |
 |---|---|
 | 1, prior data | `stage1_generate_data.py`: the episode bank and the evaluation packs |
+| 1, prior training | `stage1_train_prior.py`: one arm x seed; `--overfit` runs the CPU memorisation gate |
 
 ## Items (`data/batches.py`)
 

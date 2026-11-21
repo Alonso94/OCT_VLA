@@ -1,0 +1,181 @@
+"""Training data: item samplers (from the episode bank or generated on the fly), the
+item stream that packs them into batches, and the data loader."""
+
+from __future__ import annotations
+
+import numpy as np
+import torch
+
+from oct_vla.bpfn.data import batches
+from oct_vla.bpfn.data.bank import CONFLICT, HANDOVER, POOL, Bank
+from oct_vla.bpfn.data.syn_data import generator
+from oct_vla.bpfn.schema import semantic_relabeling
+
+
+class OnTheFlySampler:
+    """Items whose episodes are generated at every draw (``batches.sample_items``)."""
+
+    def __init__(self, cfg: batches.ItemConfig) -> None:
+        self.cfg = cfg
+
+    def sample_items(self, rng: np.random.Generator, n: int) -> list[dict]:
+        return batches.sample_items(rng, self.cfg, n)
+
+
+class BankSampler:
+    """Items for one arm, drawn from a pre-generated episode bank.
+
+    The mixture is that of ``batches.sample_items``: a conflict pair with probability
+    ``cfg.conflict_fraction``, else an ordinary item, whose query comes from a handover
+    family with probability ``cfg.branch_fraction``.
+
+    Args:
+        bank: the loaded bank.
+        cfg: the arm's item configuration; only its programs and counts are used.
+    """
+
+    def __init__(self, bank: Bank, cfg: batches.ItemConfig) -> None:
+        self.bank = bank
+        self.cfg = cfg
+        allowed = {program.key for program in cfg.programs}
+        missing = allowed - set(bank.programs)
+        if missing:
+            raise SystemExit(f"{len(missing)} of this arm's programs are not in the bank")
+        self.programs = {key: generator.Program(*key.split("|")) for key in bank.programs}
+        self.allowed = np.array([key in allowed for key in bank.programs])
+
+        self.pool: dict[tuple[int, int], np.ndarray] = {}      # (program, count) -> episode ids
+        self.handover: dict[tuple[int, int], np.ndarray] = {}  # (program, count) -> family records
+        self._index_pool_and_handover()
+        self.conflict: dict[int, np.ndarray] = {}              # count -> family records
+        self._index_conflicts()
+        self.arm_programs = sorted({program for program, _ in self.pool})
+
+    def _index_pool_and_handover(self) -> None:
+        records = self.bank.records
+        for kind, store in ((POOL, self.pool), (HANDOVER, self.handover)):
+            rows = records[(records[:, 0] == kind) & self.allowed[records[:, 1]]]
+            for program, count in {(int(a), int(b)) for a, b in rows[:, [1, 3]]}:
+                selected = rows[(rows[:, 1] == program) & (rows[:, 3] == count)]
+                store[(program, count)] = selected[:, 4] if kind == POOL else selected
+
+    def _index_conflicts(self) -> None:
+        records = self.bank.records
+        rows = records[(records[:, 0] == CONFLICT) & self.allowed[records[:, 1]] & (records[:, 2] >= 0)]
+        rows = rows[self.allowed[rows[:, 2]]]          # the partner program must be allowed too
+        for count in self.cfg.counts.counts:
+            self.conflict[count] = rows[rows[:, 3] == count]
+            if not len(self.conflict[count]):
+                raise SystemExit(f"bank has no conflict family at count {count} for this arm")
+
+    def _support(self, rng: np.random.Generator, program: int, count: int, avoid: int = -1) -> int:
+        """A pool episode id of ``program`` at ``count``; never ``avoid`` when another exists
+        (a support and its query are independent scenes)."""
+        ids = self.pool[(program, count)]
+        if avoid >= 0 and len(ids) > 1:
+            ids = ids[ids != avoid]
+        return int(ids[int(rng.integers(len(ids)))])
+
+    def single(self, rng: np.random.Generator) -> list[dict]:
+        """One support and one query of the same program (``cfg.reuse`` items at other times)."""
+        cfg = self.cfg
+        p = self.arm_programs[int(rng.integers(len(self.arm_programs)))]
+        program = self.programs[self.bank.programs[p]]
+        s_count, q_count = cfg.counts.draw(rng)
+        support_id = self._support(rng, p, s_count)
+
+        cue, branch = None, "nominal"
+        families = self.handover.get((p, q_count))
+        if (program.manipulation == "handover" and families is not None and len(families)
+                and rng.random() < cfg.branch_fraction):
+            family = families[int(rng.integers(len(families)))]
+            cue = int(family[6])
+            branch = "delayed" if rng.random() < 0.5 else "nominal"
+            query = self.bank.episode(int(family[5] if branch == "delayed" else family[4]))
+        else:
+            query = self.bank.episode(self._support(rng, p, q_count, avoid=support_id))
+        support = self.bank.episode(support_id)
+
+        items = []
+        for _ in range(max(1, cfg.reuse)):
+            t, stratum = batches.query_time(query, rng)
+            mapping = semantic_relabeling(rng) if cfg.relabel else None
+            meta = {"program": program.key, "family": program.family, "branch": branch, "pair": None}
+            items.append(batches._item(rng, cfg, support, query, t, stratum, cue, meta, mapping))
+        return items
+
+    def pair(self, rng: np.random.Generator) -> list[dict]:
+        """A conflict pair: one query scene under two programs, each with its own support."""
+        cfg = self.cfg
+        s_count, q_count = cfg.counts.draw(rng)
+        families = self.conflict[q_count]
+        family = families[int(rng.integers(len(families)))]
+        query_a = self.bank.episode(int(family[4]))
+        query_b = self.bank.episode(int(family[5]))
+        split = int(family[6])
+        t, stratum = batches.query_time(query_a, rng, before=split)
+        mapping = semantic_relabeling(rng) if cfg.relabel else None
+        pair = int(rng.integers(1 << 62))
+
+        items, extra = [], []
+        for p, query in ((int(family[1]), query_a), (int(family[2]), query_b)):
+            program = self.programs[self.bank.programs[p]]
+            support = self.bank.episode(self._support(rng, p, s_count))
+            meta = {"program": program.key, "family": program.family, "branch": "nominal",
+                    "pair": pair, "first_pick": query.annotations["selected"][0], "diverge": split}
+            items.append(batches._item(rng, cfg, support, query, t, stratum, None, meta, mapping))
+            for _ in range(cfg.pair_extra):
+                other_t, other_stratum = batches.query_time(query, rng)
+                meta = {"program": program.key, "family": program.family, "branch": "nominal",
+                        "pair": None}
+                extra.append(batches._item(rng, cfg, support, query, other_t, other_stratum, None,
+                                           meta, None))
+        return items + extra
+
+    def sample_items(self, rng: np.random.Generator, n: int) -> list[dict]:
+        items = []
+        while len(items) < n:
+            if rng.random() < self.cfg.conflict_fraction:
+                items += self.pair(rng)
+            else:
+                items += self.single(rng)
+        return items
+
+
+class ItemStream(torch.utils.data.IterableDataset):
+    """An endless stream of packed batches; each loader worker has its own random stream.
+
+    Args:
+        sampler: an ``OnTheFlySampler`` or a ``BankSampler``.
+        batch: items per batch.
+        seed: the run's seed (worker k draws from ``[seed, k]``).
+        s_rows: support row budget of the packed batch.
+    """
+
+    def __init__(self, sampler, batch: int, seed: int, s_rows: int) -> None:
+        self.sampler = sampler
+        self.batch = batch
+        self.seed = seed
+        self.s_rows = s_rows
+
+    def __iter__(self):
+        info = torch.utils.data.get_worker_info()
+        worker = 0 if info is None else info.id
+        rng = np.random.default_rng([self.seed, worker])
+        pending: list[dict] = []
+        while True:
+            # A sampler may return more than asked (a pair, reused items): the rest starts
+            # the next batch.
+            if len(pending) < self.batch:
+                pending += self.sampler.sample_items(rng, self.batch - len(pending))
+            items, pending = pending[:self.batch], pending[self.batch:]
+            packed = batches.pack(items, s_rows=self.s_rows)
+            yield {key: torch.as_tensor(value) for key, value in packed.items()}
+
+
+def build_dataloader(sampler, batch: int, seed: int, s_rows: int,
+                     workers: int) -> torch.utils.data.DataLoader:
+    """Batches come packed from the stream (``batch_size=None``)."""
+    stream = ItemStream(sampler, batch, seed, s_rows)
+    return torch.utils.data.DataLoader(stream, batch_size=None, num_workers=workers,
+                                       persistent_workers=workers > 0)

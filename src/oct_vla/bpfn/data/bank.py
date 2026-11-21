@@ -18,10 +18,9 @@ from pathlib import Path
 
 import numpy as np
 
-from oct_vla.bpfn.data import batches
+from oct_vla.bpfn.data import batches, splits
 from oct_vla.bpfn.data.syn_data import generator
-from oct_vla.bpfn.data import splits
-from oct_vla.bpfn.schema import Episode, semantic_relabeling
+from oct_vla.bpfn.schema import Episode
 
 BANK_VERSION = 1
 POOL, CONFLICT, HANDOVER = 0, 1, 2
@@ -263,98 +262,3 @@ class Bank:
         k = int(np.searchsorted(self.base, g, side="right")) - 1
         return unpack_episode(self.shards[k], int(g - self.base[k]))
 
-
-class BankSampler:
-    """Items for one arm's ``ItemConfig`` from a bank, with ``batches.sample_items``'
-    mixture: a conflict pair with probability ``conflict_fraction``, else an ordinary
-    item (from a handover family with probability ``branch_fraction``)."""
-
-    def __init__(self, bank: Bank, cfg: batches.ItemConfig):
-        self.bank, self.cfg = bank, cfg
-        allowed = {p.key for p in cfg.programs}
-        missing = allowed - set(bank.programs)
-        if missing:
-            raise SystemExit(f"{len(missing)} of this arm's programs are not in the bank")
-        self.programs = {k: generator.Program(*k.split("|")) for k in bank.programs}
-        ok = np.array([k in allowed for k in bank.programs])
-        R = bank.records
-        self.pool: dict[tuple[int, int], np.ndarray] = {}
-        self.handover: dict[tuple[int, int], np.ndarray] = {}
-        for kind, store, col in ((POOL, self.pool, 4), (HANDOVER, self.handover, None)):
-            rows = R[(R[:, 0] == kind) & ok[R[:, 1]]]
-            for (p, n) in {(int(a), int(b)) for a, b in rows[:, [1, 3]]}:
-                sel = rows[(rows[:, 1] == p) & (rows[:, 3] == n)]
-                store[(p, n)] = sel[:, col] if col is not None else sel
-        conf = R[(R[:, 0] == CONFLICT) & ok[R[:, 1]] & (R[:, 2] >= 0)]
-        conf = conf[ok[conf[:, 2]]]
-        self.conflict = {n: conf[conf[:, 3] == n] for n in cfg.counts.counts}
-        self.arm_programs = sorted({p for p, _ in self.pool})
-        for n in cfg.counts.counts:
-            if not len(self.conflict[n]):
-                raise SystemExit(f"bank has no conflict family at count {n} for this arm")
-
-    def _support(self, rng, p: int, n: int, avoid: int = -1) -> int:
-        """A pool episode id of program ``p`` at count ``n`` (never ``avoid`` if another
-        exists: a support and its query are independent scenes)."""
-        ids = self.pool[(p, n)]
-        if avoid >= 0 and len(ids) > 1:
-            ids = ids[ids != avoid]
-        return int(ids[int(rng.integers(len(ids)))])
-
-    def single(self, rng) -> list[dict]:
-        cfg = self.cfg
-        p = self.arm_programs[int(rng.integers(len(self.arm_programs)))]
-        program = self.programs[self.bank.programs[p]]
-        s_n, q_n = cfg.counts.draw(rng)
-        s_id = self._support(rng, p, s_n)
-        cue, branch = None, "nominal"
-        fams = self.handover.get((p, q_n))
-        if (program.manipulation == "handover" and fams is not None and len(fams)
-                and rng.random() < cfg.branch_fraction):
-            fam = fams[int(rng.integers(len(fams)))]
-            cue = int(fam[6])
-            branch = "delayed" if rng.random() < 0.5 else "nominal"
-            query = self.bank.episode(int(fam[5] if branch == "delayed" else fam[4]))
-        else:
-            query = self.bank.episode(self._support(rng, p, q_n, avoid=s_id))
-        support = self.bank.episode(s_id)
-        out = []
-        for _ in range(max(1, cfg.reuse)):
-            t, stratum = batches.query_time(query, rng)
-            mapping = semantic_relabeling(rng) if cfg.relabel else None
-            out.append(batches._item(rng, cfg, support, query, t, stratum, cue,
-                                {"program": program.key, "family": program.family,
-                                 "branch": branch, "pair": None}, mapping))
-        return out
-
-    def pair(self, rng) -> list[dict]:
-        cfg = self.cfg
-        s_n, q_n = cfg.counts.draw(rng)
-        fams = self.conflict[q_n]
-        fam = fams[int(rng.integers(len(fams)))]
-        qa, qb = self.bank.episode(int(fam[4])), self.bank.episode(int(fam[5]))
-        split = int(fam[6])
-        t, stratum = batches.query_time(qa, rng, before=split)
-        mapping = semantic_relabeling(rng) if cfg.relabel else None
-        pair = int(rng.integers(1 << 62))
-        items, extra = [], []
-        for p, q in ((int(fam[1]), qa), (int(fam[2]), qb)):
-            prog = self.programs[self.bank.programs[p]]
-            sup = self.bank.episode(self._support(rng, p, s_n))
-            items.append(batches._item(rng, cfg, sup, q, t, stratum, None,
-                                  {"program": prog.key, "family": prog.family,
-                                   "branch": "nominal", "pair": pair,
-                                   "first_pick": q.annotations["selected"][0],
-                                   "diverge": split}, mapping))
-            for _ in range(cfg.pair_extra):
-                tt, st = batches.query_time(q, rng)
-                extra.append(batches._item(rng, cfg, sup, q, tt, st, None,
-                                      {"program": prog.key, "family": prog.family,
-                                       "branch": "nominal", "pair": None}, None))
-        return items + extra
-
-    def sample_items(self, rng, n: int) -> list[dict]:
-        out = []
-        while len(out) < n:
-            out += self.pair(rng) if rng.random() < self.cfg.conflict_fraction else self.single(rng)
-        return out

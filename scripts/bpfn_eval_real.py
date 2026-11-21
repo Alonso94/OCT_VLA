@@ -32,7 +32,7 @@ def _pairs(values):
 def main() -> int:
     from oct_vla.data.store import read_states
     from oct_vla.prior.pose_window import real_eval as RE
-    from oct_vla.prior.pose_window import train as Tr
+    from oct_vla.bpfn.models.pose_window_pfn import PoseWindowPFN
 
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--run", type=Path, required=True)
@@ -59,7 +59,7 @@ def main() -> int:
 
     corpora = {r: RE.Corpus(r, runs) for r, runs in runs_for(_pairs(args.corpus)).items()}
     pool = runs_for(_pairs(args.support)) if args.support else None
-    model = Tr.load(args.run, args.device)
+    model = PoseWindowPFN.from_run(args.run, args.device)
     result = RE.evaluate(model, corpora, queries_per_rule=args.queries, seed=args.seed,
                          device=args.device, support_pool=pool)
     result.update(run=str(args.run), corpora={r: len(c.runs) for r, c in corpora.items()},

@@ -32,7 +32,7 @@ from pathlib import Path
 import numpy as np
 
 from oct_vla.bpfn.data import batches
-from . import metrics as Me
+from oct_vla.bpfn.benchmark_tools import metrics
 from .real import read_recording
 from oct_vla.bpfn.schema import (MOVABLE, Episode, colour_id, empty_support, query_table, support_table,
                      target_window)
@@ -128,7 +128,7 @@ def evaluate(model, corpora: dict[str, Corpus], *, conditions=("same", "other", 
     """Score ``model`` on ``corpora`` (rule -> runs used as queries). ``support_pool``
     (rule -> runs) supplies supports; default: the corpora themselves, never the query's
     own run."""
-    from .train import predict
+    from oct_vla.bpfn.benchmark_tools.evaluator import predict
 
     rules = list(corpora)
     pool = support_pool or {r: c.runs for r, c in corpora.items()}
@@ -170,14 +170,14 @@ def evaluate(model, corpora: dict[str, Corpus], *, conditions=("same", "other", 
                             "query": str(qpath), "rule": rule, "condition": cond,
                             "support": None if spath is None else str(spath),
                             "support_rule": srule, "t": int(t),
-                            "decision": Me.decision(w, it["query"], set(remaining(query, t))),
+                            "decision": metrics.decision(w, it["query"], set(remaining(query, t))),
                             "expected": sorted(want),
-                            "expert_decision": Me.decision(it["target"], it["query"],
+                            "expert_decision": metrics.decision(it["target"], it["query"],
                                                            set(remaining(query, t))),
                             "window": w, "target": it["target"], "valid": it["target_valid"],
-                            "hold": Me.hold(it["query"], horizon),
+                            "hold": metrics.hold(it["query"], horizon),
                             "replay": (None if support is None else
-                                       Me.replay(it["support"], it["query"], horizon)),
+                                       metrics.replay(it["support"], it["query"], horizon)),
                         })
     return summarise(records)
 
@@ -202,11 +202,11 @@ def summarise(records: list[dict]) -> dict:
             W = np.stack([r["window"] for r in rs])
             T = np.stack([r["target"] for r in rs])
             V = np.stack([r["valid"] for r in rs])
-            cell["pose"] = Me.errors(W, T, V)
-            cell["hold"] = Me.errors(np.stack([r["hold"] for r in rs]), T, V)
+            cell["pose"] = metrics.errors(W, T, V)
+            cell["hold"] = metrics.errors(np.stack([r["hold"] for r in rs]), T, V)
             reps = [r for r in rs if r["replay"] is not None]
             if reps:
-                cell["replay"] = Me.errors(np.stack([r["replay"] for r in reps]),
+                cell["replay"] = metrics.errors(np.stack([r["replay"] for r in reps]),
                                            np.stack([r["target"] for r in reps]),
                                            np.stack([r["valid"] for r in reps]))
         out[f"{rule}/{cond}"] = cell

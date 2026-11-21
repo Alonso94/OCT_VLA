@@ -11,6 +11,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from oct_vla.bpfn.data import bank  # noqa: E402
+from oct_vla.bpfn.training_tools.data import BankSampler  # noqa: E402
 from oct_vla.bpfn.data import batches  # noqa: E402
 from oct_vla.bpfn.data import splits  # noqa: E402
 
@@ -99,7 +100,7 @@ def test_refuses_an_incomplete_bank(tmp_path, bank_dir):
 
 
 def test_conflict_pairs_share_inputs_and_split_on_the_support(episode_bank):
-    s = bank.BankSampler(episode_bank, _cfg("full", conflict_fraction=1.0))
+    s = BankSampler(episode_bank, _cfg("full", conflict_fraction=1.0))
     items = s.sample_items(np.random.default_rng(0), 40)
     assert all(i["meta"]["pair"] is not None for i in items)
     for a, b in zip(items[::2], items[1::2]):
@@ -114,7 +115,7 @@ def test_conflict_pairs_share_inputs_and_split_on_the_support(episode_bank):
 @pytest.mark.parametrize("arm", ["full", "equal_count", "no_handover", "nominal_only"])
 def test_arm_semantics(episode_bank, arm):
     cfg = _cfg(arm, conflict_fraction=0.3)
-    items = bank.BankSampler(episode_bank, cfg).sample_items(np.random.default_rng(1), 300)
+    items = BankSampler(episode_bank, cfg).sample_items(np.random.default_rng(1), 300)
     meta = [i["meta"] for i in items]
     allowed = {p.key for p in cfg.programs}
     assert {m["program"] for m in meta} <= allowed
@@ -138,7 +139,7 @@ def test_arm_semantics(episode_bank, arm):
 
 
 def test_support_and_query_are_different_episodes(episode_bank):
-    s = bank.BankSampler(episode_bank, _cfg("equal_count"))
+    s = BankSampler(episode_bank, _cfg("equal_count"))
     rng = np.random.default_rng(2)
     for (p, n), ids in s.pool.items():
         assert len(ids) >= 2
@@ -147,13 +148,14 @@ def test_support_and_query_are_different_episodes(episode_bank):
 
 
 def test_train_from_bank_smoke(tmp_path, bank_dir, monkeypatch):
-    from oct_vla.prior.pose_window import train as Tr
+    from oct_vla.bpfn.training_tools.trainer import PFNTrainer, TrainConfig
 
     orig = splits.programs_for
     monkeypatch.setattr(splits, "programs_for",
                         lambda arm="full": tuple(p for p in PROGRAMS if p in orig(arm)))
-    cfg = Tr.train(tmp_path / "run", arm="full", steps=3, batch=4, width=16, layers=1,
-                   workers=0, s_rows=32, device="cpu", eval_every=10, bank=bank_dir)
+    cfg = PFNTrainer(TrainConfig(out=tmp_path / "run", arm="full", steps=3, batch=4, width=16,
+                                 layers=1, workers=0, s_rows=32, device="cpu", eval_every=10,
+                                 bank=bank_dir)).train()
     assert cfg["reuse"] == 1 and cfg["pair_extra"] == 0 and cfg["bank"]["episodes"] > 0
     assert (tmp_path / "run" / "DONE").exists()
     stored = json.loads((tmp_path / "run" / "config.json").read_text())

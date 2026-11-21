@@ -86,9 +86,10 @@ def main() -> int:
     if args.kind == "pose_window":
         if args.run is None:
             raise SystemExit("--kind pose_window needs --run")
-        from oct_vla.prior.pose_window import train as Tr
+        from oct_vla.bpfn.benchmark_tools.evaluator import predict
+        from oct_vla.bpfn.models.pose_window_pfn import PoseWindowPFN
 
-        model = Tr.load(args.run, args.device)
+        model = PoseWindowPFN.from_run(args.run, args.device)
         horizon = model.horizon
         rows = 2 * horizon
         ckpt = hashlib.sha256((args.run / "model.pt").read_bytes()).hexdigest()[:16]
@@ -143,7 +144,7 @@ def main() -> int:
                           "target": np.zeros((horizon, 2, 7), np.float32),
                           "target_valid": np.zeros(horizon, bool), "meta": {}}
                          for t in range(query.T)]
-                for t, w in enumerate(Tr.predict(model, items, batches.S_ROWS, args.device)):
+                for t, w in enumerate(predict(model, items, batches.S_ROWS, args.device)):
                     per_frame[t][k] = P.window_tokens(w)
             order = part["frame_index"].to_numpy()
             for position, index in enumerate(part.index):
