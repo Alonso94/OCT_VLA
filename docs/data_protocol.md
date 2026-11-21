@@ -508,7 +508,7 @@ their measured capture rate (`hz` = 250 / 17).
 All siblings of one layout family (a seed under both rules and its swapped twin) stay in
 one split. Every attempted seed is used once; a discarded seed is not retried.
 
-**Canary.** `submit_bpfn.sh canary` collects 2 seeds per rule, one swapped twin and one
+**Canary.** `submit_bpfn.sh stage1-canary` collects 2 seeds per rule, one swapped twin and one
 3+1 support; `scripts/bpfn_canary_report.py` checks colour, rendering (contact sheet),
 codec round trip, distractor stillness and command alignment, and writes `CANARY_PASSED`,
 which the pilot stage requires.
@@ -517,7 +517,7 @@ which the pilot stage requires.
 ascending seed), `slurm/bpfn_views.sbatch` builds `bpfn_colour_rN_unified`, its eeabs
 view, and two bank views under `$HPCVAULT/octvla-bpfn/datasets`:
 - `_pw4`: per frame, four PFN windows (2H pose tokens each) from four supports drawn
-  from *other* runs of the same rule (`scripts/add_pose_window.py --kind pose_window`);
+  from *other* runs of the same rule (`scripts/bpfn/stage3_build_views.py --kind pose_window`);
 - `_st4`: the same four supports as raw tables (both wrists over time, every object's
   start and end), the direct-demonstration baseline (`--kind support_table`).
 

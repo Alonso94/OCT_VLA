@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""A dataset view whose future set holds BimanualPFN pose tokens (stage 3).
+"""Stage 3, executor views: a dataset view whose future set holds BimanualPFN pose tokens.
 
 Writes ``<source>_<kind>K`` from an eeabs view: the source parquet plus
 ``observation.future_keyframe`` ``[K * R, 19]`` and ``observation.future_keyframe_mask``
@@ -14,9 +14,10 @@ recorded runs of the same rule (never the episode's own parent run):
 The executor takes one entry per training sample and entry 0 at evaluation, so training
 pairings change across epochs (conditioning/pose_tokens.py). ``info["future_keyframe"]``
 records the kind, bank, rows, horizon, PFN run and checkpoint hash, and every episode's
-supports.
+supports. The tokens come from ``oct_vla.bpfn.downstream.views``; this script handles the
+LeRobot view (parquet, meta, linked videos, stats).
 
-    add_pose_window.py --source $V/colour_eeabs --kind pose_window --run RUN \\
+    stage3_build_views.py --source $V/colour_eeabs --kind pose_window --run RUN \\
         --supports restock_red=ROOT --supports restock_blue=ROOT --bank 4 --device cuda
 """
 
@@ -31,11 +32,9 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
-
-SUPPORT_ROWS = 32
 
 
 def _pairs(values):
@@ -53,10 +52,8 @@ def main() -> int:
     from oct_vla.data.store import read_states
     from oct_vla.policies.conditioning import pose_tokens as P
     from oct_vla.policies.conditioning.future import FUTURE_KEYFRAME, FUTURE_MASK
-    from oct_vla.bpfn.data import batches
-    from oct_vla.bpfn.data.real_data.robotwin import read_recording
-    from oct_vla.bpfn.data.real import find_runs
-    from oct_vla.bpfn.schema import query_table, support_table
+    from oct_vla.bpfn.data.real import RealData
+    from oct_vla.bpfn.downstream.views import SUPPORT_ROWS, PoseTokenBuilder, choose_supports
     from project_dataset_view import link_tree
 
     ap = argparse.ArgumentParser(description=__doc__)
@@ -81,21 +78,20 @@ def main() -> int:
     by_index = {int(e["lerobot_episode_index"]): e for e in manifest["episodes"]}
     if any("source_path" not in e for e in by_index.values()):
         raise SystemExit(f"{source}: the manifest records no source_path; re-export")
-    pool = {rule: [p for root in roots for p in find_runs(root)]
-            for rule, roots in _pairs(args.supports).items()}
+    recordings = RealData(_pairs(args.supports), check=0, cache_size=32)
+    pool = recordings.runs
     if args.kind == "pose_window":
         if args.run is None:
             raise SystemExit("--kind pose_window needs --run")
-        from oct_vla.bpfn.benchmark_tools.evaluator import predict
         from oct_vla.bpfn.models.pose_window_pfn import PoseWindowPFN
 
         model = PoseWindowPFN.from_run(args.run, args.device)
         horizon = model.horizon
-        rows = 2 * horizon
         ckpt = hashlib.sha256((args.run / "model.pt").read_bytes()).hexdigest()[:16]
     else:
         model, horizon, ckpt = None, None, None
-        rows = 2 * SUPPORT_ROWS + 2 * 12          # wrists over time + up to 12 objects/fixtures
+    builder = PoseTokenBuilder(args.kind, model, args.device)
+    rows = builder.rows
 
     output.mkdir(parents=True)
     linked = link_tree(source / "videos", output / "videos")
@@ -104,14 +100,6 @@ def main() -> int:
         shutil.copy2(source / name, output / name)
 
     supports_used, real_rows, frames = {}, [], 0
-    cache = {}
-
-    def load(path):
-        if path not in cache:
-            if len(cache) > 32:
-                cache.clear()
-            cache[path] = read_recording(path)
-        return cache[path]
 
     for path in sorted((source / "data").rglob("*.parquet")):
         table = pd.read_parquet(path)
@@ -121,31 +109,13 @@ def main() -> int:
             entry = by_index[int(episode_index)]
             own = Path(entry["source_path"])
             rule = read_states(own).metadata.get("rule")
-            cands = [p for p in pool.get(rule, []) if p.resolve() != own.resolve()]
-            if len(cands) < args.bank:
-                raise SystemExit(f"episode {episode_index} ({rule}): {len(cands)} supports in "
-                                 f"the pool, need {args.bank}")
-            rng = np.random.default_rng([args.seed, int(episode_index)])
-            chosen = [cands[i] for i in rng.choice(len(cands), args.bank, replace=False)]
+            chosen = choose_supports(pool.get(rule, []), own, args.bank, args.seed, int(episode_index))
             supports_used[int(episode_index)] = [str(p) for p in chosen]
-            query = load(own)
+            query = recordings.episode(own)
             if len(part) != query.T:
                 raise SystemExit(f"episode {episode_index}: {len(part)} rows, {query.T} recorded")
-            per_frame = [[None] * args.bank for _ in range(query.T)]
-            for k, spath in enumerate(chosen):
-                sup = load(spath)
-                if args.kind == "support_table":
-                    toks = P.support_tokens(sup, SUPPORT_ROWS)
-                    for t in range(query.T):
-                        per_frame[t][k] = toks
-                    continue
-                s_tab = support_table(sup, batches.support_rows(sup, batches.S_ROWS))
-                items = [{"support": s_tab, "query": query_table(query, t, batches.HISTORY),
-                          "target": np.zeros((horizon, 2, 7), np.float32),
-                          "target_valid": np.zeros(horizon, bool), "meta": {}}
-                         for t in range(query.T)]
-                for t, w in enumerate(predict(model, items, batches.S_ROWS, args.device)):
-                    per_frame[t][k] = P.window_tokens(w)
+            supports = [recordings.episode(p) for p in chosen]
+            per_frame = builder.frame_entries(query, supports)
             order = part["frame_index"].to_numpy()
             for position, index in enumerate(part.index):
                 toks, mask = P.bank(per_frame[order[position]], rows)

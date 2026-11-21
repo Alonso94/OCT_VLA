@@ -35,9 +35,9 @@ bpfn/
       oracle.py             ExpertWindowController (privileged bridge check)
       rollout.py            run_episode against the evaluation server
       future_source.py      PoseTokenFutureSource: the executor's pose tokens (stage 3)
+  downstream/
+    views.py                choose_supports, PoseTokenBuilder: per-frame pose tokens for executor views
 ```
-
-The remaining layer (`downstream/`) is described below as it is added.
 
 **Adding an environment.** Controllers read only an `Episode`, so they carry over to any environment. A new environment gets its own `envs/<name>/`, with:
 - a history adapter (its observations to `Episode` rows);
@@ -55,6 +55,10 @@ Recorded demonstrations from it enter as a new `data/real_data/<name>.py` reader
 | 1, prior training | `stage1_train_prior.py`: one arm x seed; `--overfit` runs the CPU memorisation gate |
 | 2, offline evaluation | `stage2_evaluate.py --data synthetic` (a pack), `--data real` (recordings), `--data atlas` (marker scan) |
 | 2, online pilot | `stage2_online_pilot.py`: the frozen PFN (or the expert / hold) drives the wrists on the server |
+| 3, executor views | `stage3_build_views.py`: pose-window (PFN) and support-table (direct demo) views |
+| 3, executor training and evaluation | the existing `train_*` / `eval_shelf_restock` sbatches |
+
+On the cluster, `slurm/submit_bpfn.sh <step>` submits each stage, with steps named `stage1-canary`, `stage1-probe`, `stage1-collect`, `stage1-generate`, `stage1-train`, `stage2-evaluate`, `stage2-online`, `stage3-views`, `stage3-act`, `stage3-groot` and `stage3-camera-check`. `DRY_RUN=1` prints the sbatch lines without submitting.
 
 `stage1_generate_data.py --fixtures OUT` runs the first-slice acceptance fixtures.
 

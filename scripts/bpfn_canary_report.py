@@ -16,7 +16,7 @@ For every collected run under ``--root`` (``*/full_run/*/seed_*/episode_*``):
   commanded joints at each frame track the next frame's measured joints.
 
 Writes ``<root>/canary_report.json``, ``<root>/canary_contact_sheet.png`` and, only if
-every run passes every check, ``<root>/CANARY_PASSED`` (``submit_bpfn.sh pilot`` needs it).
+every run passes every check, ``<root>/CANARY_PASSED`` (``submit_bpfn.sh stage1-collect`` needs it).
 
     bpfn_canary_report.py --root $HPCVAULT/octvla-collection-bpfn/canary
 """

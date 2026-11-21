@@ -1,26 +1,28 @@
 #!/usr/bin/env bash
-# BimanualPFN stages (plan: stage 1). Every stage prints its sbatch lines; DRY_RUN=1
+# BimanualPFN, one step per paper stage. Every step prints its sbatch lines; DRY_RUN=1
 # prints without submitting. Nothing here deletes or overwrites: train/eval skip runs
 # with a DONE receipt / existing output, and collection writes only new seed dirs.
 #
-#   DRY_RUN=1 slurm/submit_bpfn.sh canary     # colour canary: 2 seeds x 2 rules + 1 swap
-#   DRY_RUN=1 slurm/submit_bpfn.sh probe      # built-in coverage probes (10 seeds each)
-#   DRY_RUN=1 slurm/submit_bpfn.sh bank       # pre-generate the training episode bank
-#   DRY_RUN=1 slurm/submit_bpfn.sh train      # 5 arms x 3 seeds (BPFN_BANK: from the bank)
-#   DRY_RUN=1 slurm/submit_bpfn.sh eval       # synthetic packs, bound to train receipts
-#   DRY_RUN=1 slurm/submit_bpfn.sh pilot      # wave 2, only after the canary passes
-#   DRY_RUN=1 BPFN_RUN=... SUPPORT_RED=... SUPPORT_BLUE=... slurm/submit_bpfn.sh online
-#   Stage 3 (after the stage-2 gate):
-#   DRY_RUN=1 BPFN_PFN_RUN=... slurm/submit_bpfn.sh views          # per budget 4 / 8 / 16
-#   DRY_RUN=1 SUPPORT_RED=... SUPPORT_BLUE=... slurm/submit_bpfn.sh act   # 3 budgets x 3 seeds
-#   DRY_RUN=1 slurm/submit_bpfn.sh groot                            # budget 16, 3 seeds
-#   DRY_RUN=1 BPFN_CHECKPOINT=... BPFN_VIEW=... slurm/submit_bpfn.sh camera_check
+#   Stage 1, data and prior:
+#   DRY_RUN=1 slurm/submit_bpfn.sh stage1-canary    # colour canary: 2 seeds x 2 rules + 1 swap
+#   DRY_RUN=1 slurm/submit_bpfn.sh stage1-probe     # built-in coverage probes (10 seeds each)
+#   DRY_RUN=1 slurm/submit_bpfn.sh stage1-collect   # wave 2, only after the canary passes
+#   DRY_RUN=1 slurm/submit_bpfn.sh stage1-generate  # the training episode bank
+#   DRY_RUN=1 slurm/submit_bpfn.sh stage1-train     # 5 arms x 3 seeds (BPFN_BANK: from the bank)
+#   Stage 2, the frozen PFN alone:
+#   DRY_RUN=1 slurm/submit_bpfn.sh stage2-evaluate  # synthetic packs, bound to train receipts
+#   DRY_RUN=1 BPFN_RUN=... SUPPORT_RED=... SUPPORT_BLUE=... slurm/submit_bpfn.sh stage2-online
+#   Stage 3, executors (after the stage-2 gate):
+#   DRY_RUN=1 BPFN_PFN_RUN=... slurm/submit_bpfn.sh stage3-views          # budgets 4 / 8 / 16
+#   DRY_RUN=1 SUPPORT_RED=... SUPPORT_BLUE=... slurm/submit_bpfn.sh stage3-act   # 3 budgets x 3 seeds
+#   DRY_RUN=1 slurm/submit_bpfn.sh stage3-groot                           # budget 16, 3 seeds
+#   DRY_RUN=1 BPFN_CHECKPOINT=... BPFN_VIEW=... slurm/submit_bpfn.sh stage3-camera-check
 #
 # Seeds of the new corpus (docs/data_protocol.md): colour source 2000-2199, colour
 # dev 2200-2249, support banks 2250-2299, count queries 2300-2399. Evaluation scenes
 # 800-819 and every v4 block stay untouched.
 set -euo pipefail
-STAGE="${1:?stage: canary | probe | train | eval | pilot}"
+STAGE="${1:?step: stage1-canary, -probe, -collect, -generate, -train; stage2-evaluate, -online; stage3-views, -act, -groot, -camera-check}"
 source "${OCTVLA_ENV:-$HOME/octvla/env-v4.sh}"
 export OCTVLA_REPO="${OCTVLA_REPO:-$HOME/OCT_VLA}"
 export BPFN_ROOT="${BPFN_ROOT:-$HPCVAULT/octvla-bpfn}"
@@ -61,27 +63,27 @@ collect() {  # collect RULE PROFILE SEEDS ROOT [SWAP] [COUNTS]
 }
 
 case "$STAGE" in
-  canary)
+  stage1-canary)
     collect restock_red  four_object 2000-2001 "$COLLECT_ROOT/canary/restock_red"
     collect restock_blue four_object 2000-2001 "$COLLECT_ROOT/canary/restock_blue"
     collect restock_red  four_object 2000       "$COLLECT_ROOT/canary/restock_red_swap" 1
     collect restock_red  four_object 2002       "$COLLECT_ROOT/canary/restock_red_support" 0 3,1
     ;;
-  probe)
+  stage1-probe)
     for task in handover_mic place_cans_plasticbox; do
       submit BUILTIN_TASK="$task" BUILTIN_COLLECTION_ROOT="$COLLECT_ROOT/builtin_probe" -- \
         "${SB[@]}" --array=0-9 --job-name="bpfn-probe-$task" \
         --output="$LOGS/probe-$task-%A_%a.out" --export=ALL slurm/collect_robotwin_builtin_array.sbatch
     done
     ;;
-  bank)
+  stage1-generate)
     submit BPFN_BANK="${BPFN_BANK:-$BANK_DEFAULT}" -- \
       "${SB[@]}" --job-name=bpfn-bank --output="$LOGS/bank-%j.out" --export=ALL \
       slurm/bpfn_bank.sbatch
     ;;
-  train)
+  stage1-train)
     if [ -n "${BPFN_BANK:-}" ] && [ ! -f "$BPFN_BANK/bank.json" ] && [ -z "${AFTER_BANK:-}" ]; then
-      echo "BPFN_BANK=$BPFN_BANK has no bank.json (build it: submit_bpfn.sh bank, or set AFTER_BANK)" >&2
+      echo "BPFN_BANK=$BPFN_BANK has no bank.json (build it: submit_bpfn.sh stage1-generate, or set AFTER_BANK)" >&2
       exit 2
     fi
     DEP=""; [ -n "${AFTER_BANK:-}" ] && DEP="--dependency=afterok:$AFTER_BANK"
@@ -89,13 +91,13 @@ case "$STAGE" in
       "${SB[@]}" --array="0-$((N - 1))${BPFN_CONCURRENCY:+%$BPFN_CONCURRENCY}" $DEP --job-name=bpfn-train \
       --output="$LOGS/train-%A_%a.out" --export=ALL slurm/bpfn_train.sbatch
     ;;
-  eval)
+  stage2-evaluate)
     DEP=""; [ -n "${AFTER_TRAIN:-}" ] && DEP="--dependency=aftercorr:$AFTER_TRAIN"
     submit BPFN_ROOT="$BPFN_ROOT" BPFN_ARMS="$BPFN_ARMS" BPFN_SEEDS="$BPFN_SEEDS" -- \
       "${SB[@]}" --array="0-$((N - 1))${BPFN_CONCURRENCY:+%$BPFN_CONCURRENCY}" $DEP --job-name=bpfn-eval \
       --output="$LOGS/eval-%A_%a.out" --export=ALL slurm/bpfn_eval.sbatch
     ;;
-  pilot)
+  stage1-collect)
     # Wave 2 (plan 1c): only after the canary report passes.
     [ -f "$COLLECT_ROOT/canary/CANARY_PASSED" ] || [ "${DRY_RUN:-0}" = 1 ] || {
       echo "canary has not passed ($COLLECT_ROOT/canary/CANARY_PASSED missing)" >&2; exit 2; }
@@ -110,7 +112,7 @@ case "$STAGE" in
       "${SB[@]}" --array=2000-2029 --job-name=bpfn-handover \
       --output="$LOGS/handover-%A_%a.out" --export=ALL slurm/collect_robotwin_builtin_array.sbatch
     ;;
-  online)
+  stage2-online)
     # Stage 2b pilot on 10 evaluation resets (800-809), every condition on the same
     # resets and the same palette: bridge checks (expert windows, oracle / observable
     # gripper), then the frozen PFN with the correct and the swapped support. The paired
@@ -136,7 +138,7 @@ case "$STAGE" in
       done
     done
     ;;
-  views)
+  stage3-views)
     # Stage 3 data, one job per budget: corpus -> eeabs -> pose-window and support banks.
     : "${BPFN_PFN_RUN:?the selected PFN run (stage 2 gate)}"
     for n in ${BPFN_BUDGETS:-4 8 16}; do
@@ -146,7 +148,7 @@ case "$STAGE" in
         --export=ALL slurm/bpfn_views.sbatch
     done
     ;;
-  act)
+  stage3-act)
     # Stage 3 ACT: per budget and seed, stage-1 RGB, then four conditioned arms from it
     # (scene-only kv; direct-demo support table; PFN window full actions; PFN window
     # residual), then the paired rollouts (support red / server red, support blue /
@@ -189,7 +191,7 @@ case "$STAGE" in
       done
     done
     ;;
-  groot)
+  stage3-groot)
     # Stage 3 GR00T at one budget (BPFN_GROOT_BUDGET, default 16), 3 seeds: stage 1 on the
     # eeabs base, then kv / kv_residual on the pose-window view and kv on the support view.
     n="${BPFN_GROOT_BUDGET:-16}"
@@ -203,7 +205,7 @@ case "$STAGE" in
       SEEDS="${BPFN_EXEC_SEEDS:-1000 1001 1002}" ARMS="kv" ROLLOUTS=" " \
       bash slurm/submit_vla_experiments.sh
     ;;
-  camera_check)
+  stage3-camera-check)
     : "${BPFN_CHECKPOINT:?a trained executor checkpoint}"; : "${BPFN_VIEW:?its dataset view}"
     submit BPFN_CHECKPOINT="$BPFN_CHECKPOINT" BPFN_VIEW="$BPFN_VIEW" \
            BPFN_OUT="$BPFN_ROOT/camera_check/$(basename "$(dirname "$(dirname "$(dirname "$BPFN_CHECKPOINT")")")")" -- \

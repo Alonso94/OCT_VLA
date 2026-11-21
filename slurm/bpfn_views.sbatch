@@ -26,9 +26,9 @@ fi
   --output "$V" --control-space cartesian_absolute
 SUP=(--supports "restock_red=$C/restock_red/full_run/four_object"
      --supports "restock_blue=$C/restock_blue/full_run/four_object")
-[ -d "${V}_pw4" ] || srun "$OCTVLA_POLICY_PYTHON" -u scripts/add_pose_window.py --source "$V" \
+[ -d "${V}_pw4" ] || srun "$OCTVLA_POLICY_PYTHON" -u scripts/bpfn/stage3_build_views.py --source "$V" \
   --kind pose_window --run "$BPFN_PFN_RUN" "${SUP[@]}" --bank 4 --device cuda
-[ -d "${V}_st4" ] || srun "$OCTVLA_POLICY_PYTHON" -u scripts/add_pose_window.py --source "$V" \
+[ -d "${V}_st4" ] || srun "$OCTVLA_POLICY_PYTHON" -u scripts/bpfn/stage3_build_views.py --source "$V" \
   --kind support_table "${SUP[@]}" --bank 4
 for v in "$V" "${V}_pw4" "${V}_st4"; do
   "$OCTVLA_POLICY_PYTHON" scripts/entity_training_args.py "$v" > /dev/null

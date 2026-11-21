@@ -73,7 +73,7 @@ def entity_training_args(dataset: Path) -> list[str]:
             raise ValueError(f"observation.future_keyframe is {shape}; a keyframe view must "
                              f"be one of {[[len(r), d] for d, r in FUTURE_LAYOUTS.items()]}")
         if kind in ("pose_window", "support_table"):
-            # BimanualPFN pose tokens (add_pose_window.py): a bank of K entries of R rows.
+            # BimanualPFN pose tokens (bpfn/stage3_build_views.py): a bank of K entries of R rows.
             fk = info["future_keyframe"]
             bank, rows = int(fk["bank"]), int(fk["rows"])
             if shape != [bank * rows, fk["dim"]]:

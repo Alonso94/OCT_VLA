@@ -13,7 +13,7 @@ A recorded episode stores *measured* states at 15 Hz. The commands that produced
   observes the state after k ticks; the command driving its next interval is index k.
 
 Written beside ``episode.json`` as ``episode.commands.npz`` (``COMMANDS_VERSION``).
-Commanded wrist poses come from these by forward kinematics (``pose_window/real.py``).
+Commanded wrist poses come from these by forward kinematics (``bpfn/data/real_data/robotwin.py``).
 """
 
 from __future__ import annotations
