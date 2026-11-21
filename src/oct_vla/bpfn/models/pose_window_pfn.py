@@ -13,7 +13,9 @@ Blocks (per layer):
    rows) of the same layer. Object information reaches those cells through step 1.
 
 The support path never reads the query, so ``encode_support`` runs it once per reset and
-``predict`` reuses its per-layer states (``test_model`` checks cached == uncached).
+``predict`` reuses its per-layer states (``test_model`` checks cached == uncached). In
+training a batch may hold fewer supports than queries (``support_index``); support
+encoding is ~87 % of the forward cost (128 support rows against 16 query rows).
 
 Decoder. ``2H`` learned (arm, horizon) queries self-attend and read the query's last
 row; each emits a translation offset in workcell axes and a 6D rotation increment in
@@ -243,8 +245,29 @@ class PoseWindowPFN(nn.Module):
                 "delta": out[..., :3] * DELTA_SCALE}
 
     def forward(self, b: dict) -> dict:
-        memory = self.encode_support(b) if self.use_support else None
+        """With ``support_index`` in the batch, G supports are encoded once and read by
+        B >= G queries (query i reads support ``support_index[i]``)."""
+        memory = None
+        if self.use_support:
+            memory = self.encode_support(b)
+            n_queries = b["q_pose"].shape[0]
+            if "support_index" in b:
+                memory = self.share(memory, b["support_index"].long(), n_queries)
+            elif b["s_pose"].shape[0] != n_queries:
+                raise ValueError("supports and queries differ in number: pass support_index")
         return self.predict(memory, b)
+
+    @staticmethod
+    def share(memory: dict, index: torch.Tensor, n_queries: int) -> dict:
+        """Each query's per-layer support memory, taken from the G encoded supports."""
+        n_supports = memory["mem"][0].shape[0]
+        if index.shape != (n_queries,) or int(index.min()) < 0 or int(index.max()) >= n_supports:
+            raise ValueError(f"support_index {tuple(index.shape)} does not map {n_queries} "
+                             f"queries onto {n_supports} supports")
+        shared = {}
+        for key, per_layer in memory.items():
+            shared[key] = [m.index_select(0, index) for m in per_layer]
+        return shared
 
     @classmethod
     def from_run(cls, run_dir: Path, device: str = "cpu") -> "PoseWindowPFN":

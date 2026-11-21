@@ -176,3 +176,91 @@ def test_synthetic_data_builds_bank_and_keeps_existing_packs(tmp_path):
     data.bank_root = None
     data.generate_data()
     assert pack.stat().st_mtime_ns == before
+
+
+# ---- grouped batches: one support encoded once, read by several queries ------------------
+
+def test_grouped_forward_equals_one_support_per_item(episode_bank):
+    from oct_vla.bpfn.models.pose_window_pfn import PoseWindowPFN, to_torch
+
+    torch.manual_seed(0)
+    model = PoseWindowPFN(width=32, heads=4, layers=2).eval()
+    # The output layer starts at zero (window = current wrist, whatever the support), which
+    # would make any comparison of supports vacuous: randomise it.
+    torch.nn.init.normal_(model.head[1].weight, std=0.5)
+    groups = BankSampler(episode_bank, _cfg("full", conflict_fraction=0.5, s_rows=48)).sample_groups(
+        np.random.default_rng(3), 6, 3)
+    grouped = to_torch(batches.pack_groups(groups, s_rows=48))
+    flat = to_torch(batches.pack(batches.ungroup(groups), s_rows=48))
+    assert grouped["s_pose"].shape[0] == len(groups) < flat["s_pose"].shape[0]
+    with torch.no_grad():
+        a, b = model(grouped)["window"], model(flat)["window"]
+    torch.testing.assert_close(a, b, atol=1e-5, rtol=1e-5)
+    # A wrong mapping changes the answer (the index is not silently ignored).
+    shifted = dict(grouped, support_index=(grouped["support_index"] + 1) % len(groups))
+    with torch.no_grad():
+        assert not torch.allclose(model(shifted)["window"], a, atol=1e-4)
+
+
+def test_grouped_batch_refuses_a_bad_index(episode_bank):
+    from oct_vla.bpfn.models.pose_window_pfn import PoseWindowPFN, to_torch
+
+    model = PoseWindowPFN(width=16, heads=2, layers=1).eval()
+    groups = BankSampler(episode_bank, _cfg("full", s_rows=32)).sample_groups(np.random.default_rng(4), 2, 2)
+    b = to_torch(batches.pack_groups(groups, s_rows=32))
+    with pytest.raises(ValueError, match="does not map"):
+        model(dict(b, support_index=b["support_index"] + len(groups)))
+    no_index = {k: v for k, v in b.items() if k != "support_index"}
+    with pytest.raises(ValueError, match="pass support_index"):
+        model(no_index)
+
+
+def test_conflict_groups_are_fully_paired(episode_bank):
+    s = BankSampler(episode_bank, _cfg("full", conflict_fraction=1.0))
+    rng = np.random.default_rng(5)
+    for _ in range(5):
+        ga, gb = s.group_pair(rng, 4)
+        assert len(ga["items"]) == len(gb["items"]) == 4
+        progs = {ga["items"][0]["meta"]["program"], gb["items"][0]["meta"]["program"]}
+        assert len(progs) == 2
+        key = lambda q: np.sort(q.pose.reshape(len(q.time), -1), axis=1)  # noqa: E731
+        for x, y in zip(ga["items"], gb["items"]):
+            assert x["meta"]["pair"] == y["meta"]["pair"] is not None
+            assert x["meta"]["first_pick"] != y["meta"]["first_pick"]
+            assert x["meta"]["t"] == y["meta"]["t"]
+            assert x["meta"]["t"] < x["meta"]["diverge"] or x["meta"]["diverge"] == 0
+            np.testing.assert_array_equal(key(x["query"]), key(y["query"]))
+        # each group's queries all belong to its support's program
+        for g in (ga, gb):
+            assert len({it["meta"]["program"] for it in g["items"]}) == 1
+
+
+@pytest.mark.parametrize("arm", ["full", "equal_count", "no_handover", "nominal_only"])
+def test_group_arm_semantics(episode_bank, arm):
+    groups = BankSampler(episode_bank, _cfg(arm, conflict_fraction=0.5)).sample_groups(
+        np.random.default_rng(6), 60, 4)
+    meta = [it["meta"] for g in groups for it in g["items"]]
+    assert {m["program"] for m in meta} <= {p.key for p in _cfg(arm).programs}
+    if arm == "no_handover":
+        assert not any(m["program"].startswith("handover") for m in meta)
+    if arm == "nominal_only":
+        assert not any(m["branch"] == "delayed" for m in meta)
+    same = [m["eligible_support"] == m["eligible_query"] for m in meta]
+    assert all(same) if arm == "equal_count" else not all(same)
+    share = np.mean([m["pair"] is not None for m in meta])
+    assert 0.45 < share < 0.85          # 2f / (1 + f) = 0.67 at f = 0.5
+
+
+def test_train_grouped_smoke(tmp_path, bank_dir, monkeypatch):
+    from oct_vla.bpfn.training_tools.trainer import PFNTrainer, TrainConfig
+
+    orig = splits.programs_for
+    monkeypatch.setattr(splits, "programs_for",
+                        lambda arm="full": tuple(p for p in PROGRAMS if p in orig(arm)))
+    cfg = PFNTrainer(TrainConfig(out=tmp_path / "run", arm="full", steps=3, batch=8, width=16,
+                                 layers=1, workers=0, s_rows=32, device="cpu", eval_every=10,
+                                 bank=bank_dir, per_support=4)).train()
+    assert cfg["per_support"] == 4 and (tmp_path / "run" / "DONE").exists()
+    with pytest.raises(SystemExit, match="per_support"):
+        PFNTrainer(TrainConfig(out=tmp_path / "run2", steps=1, batch=6, per_support=4,
+                               bank=bank_dir, device="cpu"))

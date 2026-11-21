@@ -100,3 +100,17 @@ Synthetic and recorded supports go through the same function. A privileged phase
 - **Writes are atomic** (temporary name, then rename). A killed job never leaves half a shard, and a rerun builds only the missing ones.
 - **Loading:** training loads every shard into RAM before the data-loader workers fork, so the workers share one copy (`gc.freeze` keeps the garbage collector off those pages).
 - **Size:** the default spec holds 145 k episodes in 8.7 GiB. A 16-CPU job gets 60 GB, and `Bank` refuses to load a bank larger than half the job's memory.
+
+## Grouped batches (`--per-support K`)
+
+**Why.** Encoding the support is about 87 % of a forward pass: 128 support rows against 16 query rows. With `K > 1`, a batch of B queries holds B / K supports. Each support is encoded once and read by its K queries (`support_index`), and the backward pass sums their gradients into it. The idea follows TRB's batched ConTextTab, where one context serves many query rows. Here the encoder trains rather than staying frozen.
+
+**What a group holds.**
+- An ordinary group is one support and K queries of the same program, drawn from independent scenes.
+- A conflict draw gives two groups, with supports of programs a and b, over K conflict families of the pair (a, b). Query j of each group shares a scene and a query time, so every item in those groups is a paired item.
+- The pair-item share is the same as with single items: 2f / (1 + f) at conflict fraction f.
+
+**Checks.** The tests check three things:
+- a grouped batch predicts exactly what the same items predict with one support copy each;
+- a wrong `support_index` changes the answer, so the index cannot be silently ignored;
+- an index out of range is refused.

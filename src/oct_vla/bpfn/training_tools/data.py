@@ -48,6 +48,7 @@ class BankSampler:
         self.handover: dict[tuple[int, int], np.ndarray] = {}  # (program, count) -> family records
         self._index_pool_and_handover()
         self.conflict: dict[int, np.ndarray] = {}              # count -> family records
+        self.by_pair: dict[tuple[int, int], np.ndarray] = {}   # program pair -> family records
         self._index_conflicts()
         self.arm_programs = sorted({program for program, _ in self.pool})
 
@@ -63,6 +64,11 @@ class BankSampler:
         records = self.bank.records
         rows = records[(records[:, 0] == CONFLICT) & self.allowed[records[:, 1]] & (records[:, 2] >= 0)]
         rows = rows[self.allowed[rows[:, 2]]]          # the partner program must be allowed too
+        # A family of (a, b) also serves as one of (b, a) with its queries swapped.
+        low = np.minimum(rows[:, 1], rows[:, 2])
+        high = np.maximum(rows[:, 1], rows[:, 2])
+        for a, b in {(int(x), int(y)) for x, y in zip(low, high)}:
+            self.by_pair[(a, b)] = rows[(low == a) & (high == b)]
         for count in self.cfg.counts.counts:
             self.conflict[count] = rows[rows[:, 3] == count]
             if not len(self.conflict[count]):
@@ -141,6 +147,87 @@ class BankSampler:
                 items += self.single(rng)
         return items
 
+    # ---- groups: one support and k queries (``batches.group``) ----------------------------
+
+    def _query_count(self, rng: np.random.Generator, s_count: int) -> int:
+        if self.cfg.counts.kind == "equal":
+            return s_count
+        return self.cfg.counts.draw(rng)[1]
+
+    def group_single(self, rng: np.random.Generator, k: int) -> list[dict]:
+        """One support of a program and ``k`` independent queries of the same program."""
+        cfg = self.cfg
+        p = self.arm_programs[int(rng.integers(len(self.arm_programs)))]
+        program = self.programs[self.bank.programs[p]]
+        s_count = cfg.counts.draw(rng)[0]
+        support_id = self._support(rng, p, s_count)
+        entries = []
+        for _ in range(k):
+            q_count = self._query_count(rng, s_count)
+            cue, branch = None, "nominal"
+            families = self.handover.get((p, q_count))
+            if (program.manipulation == "handover" and families is not None and len(families)
+                    and rng.random() < cfg.branch_fraction):
+                family = families[int(rng.integers(len(families)))]
+                cue = int(family[6])
+                branch = "delayed" if rng.random() < 0.5 else "nominal"
+                query = self.bank.episode(int(family[5] if branch == "delayed" else family[4]))
+            else:
+                query = self.bank.episode(self._support(rng, p, q_count, avoid=support_id))
+            t, stratum = batches.query_time(query, rng)
+            meta = {"program": program.key, "family": program.family, "branch": branch, "pair": None}
+            entries.append((query, t, stratum, cue, meta))
+        mapping = semantic_relabeling(rng) if cfg.relabel else None
+        return [batches.group(rng, cfg, self.bank.episode(support_id), entries, mapping)]
+
+    def group_pair(self, rng: np.random.Generator, k: int) -> list[dict]:
+        """Two groups (supports of programs a and b) over ``k`` conflict families of the
+        pair (a, b): query j of each group shares a scene and a query time before the two
+        executions diverge, so every item is a paired item."""
+        cfg = self.cfg
+        s_count, q_count = cfg.counts.draw(rng)
+        first = self.conflict[q_count][int(rng.integers(len(self.conflict[q_count])))]
+        a, b = int(first[1]), int(first[2])
+        families = self.by_pair[(min(a, b), max(a, b))]
+        if cfg.counts.kind == "equal":
+            families = families[families[:, 3] == q_count]
+        picks = [first]
+        for _ in range(k - 1):
+            picks.append(families[int(rng.integers(len(families)))])
+
+        entries = {a: [], b: []}
+        for family in picks:
+            if int(family[1]) == a:
+                id_a, id_b = int(family[4]), int(family[5])
+            else:
+                id_a, id_b = int(family[5]), int(family[4])
+            query_a, query_b = self.bank.episode(id_a), self.bank.episode(id_b)
+            split = int(family[6])
+            t, stratum = batches.query_time(query_a, rng, before=split)
+            pair = int(rng.integers(1 << 62))
+            for p, query in ((a, query_a), (b, query_b)):
+                program = self.programs[self.bank.programs[p]]
+                meta = {"program": program.key, "family": program.family, "branch": "nominal",
+                        "pair": pair, "first_pick": query.annotations["selected"][0],
+                        "diverge": split}
+                entries[p].append((query, t, stratum, None, meta))
+        mapping = semantic_relabeling(rng) if cfg.relabel else None
+        groups = []
+        for p in (a, b):
+            support = self.bank.episode(self._support(rng, p, s_count))
+            groups.append(batches.group(rng, cfg, support, entries[p], mapping))
+        return groups
+
+    def sample_groups(self, rng: np.random.Generator, n: int, k: int) -> list[dict]:
+        """At least ``n`` groups of ``k`` queries (a conflict draw adds two groups)."""
+        groups = []
+        while len(groups) < n:
+            if rng.random() < self.cfg.conflict_fraction:
+                groups += self.group_pair(rng, k)
+            else:
+                groups += self.group_single(rng, k)
+        return groups
+
 
 class ItemStream(torch.utils.data.IterableDataset):
     """An endless stream of packed batches; each loader worker has its own random stream.
@@ -173,9 +260,37 @@ class ItemStream(torch.utils.data.IterableDataset):
             yield {key: torch.as_tensor(value) for key, value in packed.items()}
 
 
-def build_dataloader(sampler, batch: int, seed: int, s_rows: int,
-                     workers: int) -> torch.utils.data.DataLoader:
+class GroupStream(ItemStream):
+    """Like ``ItemStream``, but a batch is ``batch / per_support`` groups of one support
+    and ``per_support`` queries (``BankSampler.sample_groups``), packed with
+    ``support_index`` so each support is encoded once."""
+
+    def __init__(self, sampler: BankSampler, batch: int, seed: int, s_rows: int,
+                 per_support: int) -> None:
+        super().__init__(sampler, batch, seed, s_rows)
+        self.per_support = per_support
+
+    def __iter__(self):
+        info = torch.utils.data.get_worker_info()
+        worker = 0 if info is None else info.id
+        rng = np.random.default_rng([self.seed, worker])
+        n_groups = self.batch // self.per_support
+        pending: list[dict] = []
+        while True:
+            # A conflict draw adds two groups: the extra one starts the next batch.
+            if len(pending) < n_groups:
+                pending += self.sampler.sample_groups(rng, n_groups - len(pending), self.per_support)
+            groups, pending = pending[:n_groups], pending[n_groups:]
+            packed = batches.pack_groups(groups, s_rows=self.s_rows)
+            yield {key: torch.as_tensor(value) for key, value in packed.items()}
+
+
+def build_dataloader(sampler, batch: int, seed: int, s_rows: int, workers: int,
+                     per_support: int = 1) -> torch.utils.data.DataLoader:
     """Batches come packed from the stream (``batch_size=None``)."""
-    stream = ItemStream(sampler, batch, seed, s_rows)
+    if per_support > 1:
+        stream = GroupStream(sampler, batch, seed, s_rows, per_support)
+    else:
+        stream = ItemStream(sampler, batch, seed, s_rows)
     return torch.utils.data.DataLoader(stream, batch_size=None, num_workers=workers,
                                        persistent_workers=workers > 0)

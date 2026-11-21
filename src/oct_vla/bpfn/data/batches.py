@@ -308,5 +308,67 @@ def pack(items: list[dict], s_rows: int = S_ROWS, cols: int = C_MAX) -> dict[str
     return out
 
 
-__all__ = ["C_MAX", "HISTORY", "HORIZON", "ItemConfig", "KINDS", "S_ROWS", "pack",
-           "sample_item", "sample_items", "sample_pair", "support_rows"]
+
+# ---- groups: one support, several queries (the support is encoded once per batch) -------
+
+def group(rng, cfg: ItemConfig, support: Episode, entries: list[tuple], mapping=None) -> dict:
+    """One support table shared by several query items.
+
+    ``entries``: (query episode, t, stratum, cue, meta) per query. The support is sampled
+    and column-shuffled once; each query gets its own observation draw and shuffle; one
+    relabeling (``mapping``) covers the support and every query, as for a single pair.
+    """
+    s_tab = support_table(support, support_rows(support, cfg.s_rows))
+    s_tab, _ = shuffle_columns(s_tab, rng)
+    if mapping is not None:
+        s_tab = relabel(s_tab, mapping)
+    items = []
+    for query, t, stratum, cue, meta in entries:
+        q_tab = query_table(query, t, cfg.history, obs=observe(query, rng, cfg.faults))
+        q_tab, _ = shuffle_columns(q_tab, rng)
+        if mapping is not None:
+            q_tab = relabel(q_tab, mapping)
+        window, valid = target_window(query, t, cfg.horizon, cue=cue)
+        meta = {**meta, "t": t, "stratum": stratum, "cue": cue,
+                "physical_support": support.annotations["physical"],
+                "eligible_support": support.annotations["eligible_count"],
+                "physical_query": query.annotations["physical"],
+                "eligible_query": query.annotations["eligible_count"],
+                "remaining_query": _remaining(query, t)}
+        items.append({"query": q_tab, "target": window, "target_valid": valid, "meta": meta})
+    return {"support": s_tab, "items": items}
+
+
+def ungroup(groups: list[dict]) -> list[dict]:
+    """The same items, each with its group's support attached."""
+    items = []
+    for g in groups:
+        for item in g["items"]:
+            items.append({"support": g["support"], **item})
+    return items
+
+
+def pack_groups(groups: list[dict], s_rows: int = S_ROWS, cols: int = C_MAX) -> dict[str, np.ndarray]:
+    """Like ``pack``, but ``s_*`` has one entry per group and ``q_*`` / ``target`` one per
+    query; ``support_index`` maps each query to its group's support."""
+    batch: dict[str, list] = {}
+    support_index = []
+    for g_index, g in enumerate(groups):
+        if not g["items"]:
+            raise AssertionError("a group without queries: its support would be encoded for nothing")
+        for key, value in _pad_table(g["support"], s_rows, cols).items():
+            batch.setdefault("s_" + key, []).append(value)
+        for item in g["items"]:
+            for key, value in _pad_table(item["query"], HISTORY, cols).items():
+                batch.setdefault("q_" + key, []).append(value)
+            batch.setdefault("target", []).append(item["target"])
+            batch.setdefault("target_valid", []).append(item["target_valid"])
+            support_index.append(g_index)
+    out = {key: np.stack(values) for key, values in batch.items()}
+    out["support_index"] = np.asarray(support_index, np.int64)
+    if out["q_goal_valid"].any():
+        raise AssertionError("a query table carries a valid goal: future leaked into the input")
+    return out
+
+__all__ = ["C_MAX", "HISTORY", "HORIZON", "ItemConfig", "KINDS", "S_ROWS", "group", "pack",
+           "pack_groups", "sample_item", "sample_items", "sample_pair", "support_rows", "ungroup"]

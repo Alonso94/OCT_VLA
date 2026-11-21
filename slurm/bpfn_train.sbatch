@@ -21,5 +21,6 @@ srun "$OCTVLA_POLICY_PYTHON" -u "$OCTVLA_REPO/scripts/bpfn/stage1_train_prior.py
   --batch "${BPFN_BATCH:-64}" --workers "$(( ${SLURM_CPUS_PER_TASK:-16} - 2 ))" \
   ${BPFN_REUSE:+--reuse "$BPFN_REUSE"} ${BPFN_PAIR_EXTRA:+--pair-extra "$BPFN_PAIR_EXTRA"} \
   ${BPFN_BANK:+--bank "$BPFN_BANK"} \
+  ${BPFN_PER_SUPPORT:+--per-support "$BPFN_PER_SUPPORT"} ${BPFN_TF32:+--tf32} \
   ${BPFN_CONFLICT:+--conflict-fraction "$BPFN_CONFLICT"} \
   --dev "$BPFN_ROOT/packs/dev.pkl" --device cuda

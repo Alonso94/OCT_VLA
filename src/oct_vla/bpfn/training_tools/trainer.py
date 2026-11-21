@@ -57,6 +57,8 @@ class TrainConfig:
     reuse: int | None = None
     pair_extra: int | None = None
     conflict_fraction: float | None = None
+    per_support: int = 1        # queries per support in a batch (bank only)
+    tf32: bool = False          # TF32 matmuls on CUDA
 
 
 class PFNTrainer:
@@ -72,6 +74,11 @@ class PFNTrainer:
         self.out = Path(cfg.out)
         if self.out.exists():
             raise SystemExit(f"Refusing to overwrite {self.out}")
+        if cfg.per_support > 1 and (cfg.bank is None or cfg.batch % cfg.per_support):
+            raise SystemExit("per_support > 1 needs a bank and a batch divisible by it")
+        if cfg.tf32 and cfg.device != "cpu":
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
 
         # Data. The bank is loaded before the loader workers fork, so they share it.
         self.bank = Bank(cfg.bank) if cfg.bank is not None else None
@@ -93,7 +100,8 @@ class PFNTrainer:
         (self.out / "config.json").write_text(json.dumps(self.config, indent=1) + "\n")
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=cfg.lr, weight_decay=0.01)
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, self._lr_factor)
-        self.dataloader = build_dataloader(sampler, cfg.batch, cfg.seed, cfg.s_rows, cfg.workers)
+        self.dataloader = build_dataloader(sampler, cfg.batch, cfg.seed, cfg.s_rows, cfg.workers,
+                                           cfg.per_support)
 
         # Validation (logged only; never used to pick a checkpoint).
         self.validator = TrainingValidator(dev_items, cfg.device) if dev_items else None
@@ -127,7 +135,7 @@ class PFNTrainer:
                 "counts": item_cfg.counts.kind, "branch_fraction": item_cfg.branch_fraction,
                 "schema": "pose-window-v1", "reuse": item_cfg.reuse,
                 "pair_extra": item_cfg.pair_extra, "conflict_fraction": item_cfg.conflict_fraction,
-                "workers": cfg.workers, "bank": bank, "lambda_rot": self.loss_fn.lambda_rot,
+                "workers": cfg.workers, "bank": bank, "per_support": cfg.per_support, "lambda_rot": self.loss_fn.lambda_rot,
                 "run": {k: str(v) if isinstance(v, Path) else v for k, v in asdict(cfg).items()}}
 
     def _lr_factor(self, step: int) -> float:
