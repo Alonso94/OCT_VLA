@@ -28,7 +28,6 @@ The ``scene_only`` arm sets ``use_support=False``: step 3 is skipped, everything
 from __future__ import annotations
 
 import math
-from pathlib import Path
 
 import torch
 from torch import nn
@@ -276,15 +275,6 @@ class PoseWindowPFN(nn.Module):
         for key, per_layer in memory.items():
             shared[key] = [m.index_select(0, index) for m in per_layer]
         return shared
-
-    @classmethod
-    def from_run(cls, run_dir: Path, device: str = "cpu") -> "PoseWindowPFN":
-        """The checkpoint of a training run (``run_dir/model.pt``), in eval mode."""
-        checkpoint = torch.load(Path(run_dir) / "model.pt", map_location=device, weights_only=False)
-        model = cls(**checkpoint["config"]).to(device)
-        model.load_state_dict(checkpoint["state"])
-        model.eval()
-        return model
 
 
 def to_torch(batch: dict, device="cpu") -> dict:

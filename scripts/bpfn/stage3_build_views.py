@@ -83,9 +83,9 @@ def main() -> int:
     if args.kind == "pose_window":
         if args.run is None:
             raise SystemExit("--kind pose_window needs --run")
-        from oct_vla.bpfn.models.pose_window_pfn import PoseWindowPFN
+        from oct_vla.bpfn import models
 
-        model = PoseWindowPFN.from_run(args.run, args.device)
+        model = models.load(args.run, args.device)
         horizon = model.horizon
         ckpt = hashlib.sha256((args.run / "model.pt").read_bytes()).hexdigest()[:16]
     else:

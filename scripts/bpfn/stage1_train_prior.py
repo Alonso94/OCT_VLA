@@ -47,7 +47,8 @@ def run_training(args) -> int:
                       pair_extra=args.pair_extra, conflict_fraction=args.conflict_fraction,
                       per_support=args.per_support, tf32=args.tf32,
                       fresh_supports=args.fresh_supports, compile=args.compile,
-                      lr_floor=args.lr_floor, warmup=args.warmup)
+                      lr_floor=args.lr_floor, warmup=args.warmup, arch=args.arch,
+                      task_read=args.task_read, output=args.output, task_tokens=args.task_tokens)
     val_packs = {}
     if args.dev:
         val_packs["dev"] = packs.load(args.dev)
@@ -71,6 +72,11 @@ def main() -> int:
     parser.add_argument("--lr-floor", type=float, default=0.0, help="final lr as a fraction of --lr")
     parser.add_argument("--warmup", type=int, default=1000)
     parser.add_argument("--compile", action="store_true", help="torch.compile the training forward")
+    parser.add_argument("--arch", choices=("axial", "table"), default="axial")
+    parser.add_argument("--task-read", choices=("cell", "film", "cross"), default="cell",
+                        help="table: how the query reads the demonstration")
+    parser.add_argument("--output", choices=("head", "rows"), default="head", help="table: output")
+    parser.add_argument("--task-tokens", type=int, default=1, help="table: pooled demonstration tokens")
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--s-rows", type=int, default=128)
     parser.add_argument("--eval-every", type=int, default=5000)

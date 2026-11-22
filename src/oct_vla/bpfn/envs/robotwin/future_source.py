@@ -28,13 +28,13 @@ class PoseTokenFutureSource:
         self.support = read_recording(support)
         self.model = self.controller = None
         if self.kind == "pose_window":
-            from oct_vla.bpfn.models.pose_window_pfn import PoseWindowPFN
+            from oct_vla.bpfn import models
 
             run = Path(provenance["run"])
             sha = hashlib.sha256((run / "model.pt").read_bytes()).hexdigest()[:16]
             if sha != provenance["checkpoint_sha256_16"]:
                 raise ValueError(f"{run} is not the PFN checkpoint the view was built with")
-            self.model = PoseWindowPFN.from_run(run, device)
+            self.model = models.load(run, device)
             self.controller = PFNController(self.model, self.support, k=1, device=device)
         elif self.kind == "support_table":
             self.static = tokens.support_tokens(self.support, int(provenance["support_rows"]))

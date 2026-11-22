@@ -54,3 +54,17 @@ def test_the_compiled_forward_matches_the_eager_one():
     out_e.sum().backward()
     for gc, ge in zip(grads_c, [p.grad for p in model.parameters()]):
         torch.testing.assert_close(gc, ge, atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.parametrize("task_read,output", [("cell", "head"), ("cross", "rows")])
+def test_the_table_model_trains_and_reloads(tmp_path, task_read, output):
+    from oct_vla.bpfn import models
+
+    cfg = TrainConfig(out=tmp_path / "run", steps=2, batch=4, width=16, layers=1, workers=0,
+                      s_rows=32, device="cpu", arch="table", task_read=task_read, output=output)
+    trainer = PFNTrainer(cfg)
+    trainer.train()
+    reloaded = models.load(tmp_path / "run")
+    assert reloaded.config == trainer.model.config and reloaded.config["arch"] == "table"
+    for key, value in trainer.model.state_dict().items():
+        assert torch.equal(value, reloaded.state_dict()[key]), key

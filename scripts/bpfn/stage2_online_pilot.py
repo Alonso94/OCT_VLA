@@ -62,10 +62,10 @@ def main() -> int:
     if args.controller == "pfn":
         if args.run is None or args.support is None:
             raise SystemExit("--controller pfn needs --run and --support")
-        from oct_vla.bpfn.models.pose_window_pfn import PoseWindowPFN
+        from oct_vla.bpfn import models
         from oct_vla.bpfn.data.real_data.robotwin import read_recording
 
-        model = PoseWindowPFN.from_run(args.run, args.device)
+        model = models.load(args.run, args.device)
         controller = PFNController(model, read_recording(args.support), k=args.k,
                                       device=args.device)
     elif args.controller == "expert_window":

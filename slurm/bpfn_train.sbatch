@@ -25,6 +25,8 @@ srun "$OCTVLA_POLICY_PYTHON" -u "$OCTVLA_REPO/scripts/bpfn/stage1_train_prior.py
   ${BPFN_FRESH_SUPPORTS:+--fresh-supports} ${BPFN_EVAL_EVERY:+--eval-every "$BPFN_EVAL_EVERY"} \
   ${BPFN_LR:+--lr "$BPFN_LR"} ${BPFN_LR_FLOOR:+--lr-floor "$BPFN_LR_FLOOR"} ${BPFN_WARMUP:+--warmup "$BPFN_WARMUP"} \
   ${BPFN_WIDTH:+--width "$BPFN_WIDTH"} ${BPFN_LAYERS:+--layers "$BPFN_LAYERS"} ${BPFN_COMPILE:+--compile} \
+  ${BPFN_ARCH:+--arch "$BPFN_ARCH"} ${BPFN_TASK_READ:+--task-read "$BPFN_TASK_READ"} \
+  ${BPFN_OUTPUT:+--output "$BPFN_OUTPUT"} ${BPFN_TASK_TOKENS:+--task-tokens "$BPFN_TASK_TOKENS"} \
   --val "heldout_handover_colour=$BPFN_ROOT/packs/heldout_handover_colour.pkl" \
   --val "count_eval=$BPFN_ROOT/packs/count_eval.pkl" \
   ${BPFN_CONFLICT:+--conflict-fraction "$BPFN_CONFLICT"} \

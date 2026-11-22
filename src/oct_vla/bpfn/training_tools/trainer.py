@@ -22,6 +22,7 @@ from oct_vla.bpfn.data import batches, splits
 from oct_vla.bpfn.data.bank import Bank
 from oct_vla.bpfn.data.syn_data import generator
 from oct_vla.bpfn.data.syn_data.observation import CLEAN
+from oct_vla.bpfn import models
 from oct_vla.bpfn.models.pose_window_pfn import PoseWindowPFN, to_torch
 from oct_vla.bpfn.training_tools.data import BankSampler, OnTheFlySampler, build_dataloader
 from oct_vla.bpfn.training_tools.losses.window import WindowLoss
@@ -61,6 +62,10 @@ class TrainConfig:
     fresh_supports: bool = False  # bank queries, but every support generated anew
     tf32: bool = False          # TF32 matmuls on CUDA
     compile: bool = False       # torch.compile the training forward (fuses small kernels)
+    arch: str = "axial"         # "axial" (PoseWindowPFN) or "table" (TablePFN)
+    task_read: str = "cell"     # table: how the query reads the demonstration (cell / film / cross)
+    output: str = "head"        # table: "head" or "rows"
+    task_tokens: int = 1        # table: pooled demonstration tokens
     lr_floor: float = 0.0       # the cosine decays to lr * lr_floor, not to zero
 
 
@@ -98,9 +103,7 @@ class PFNTrainer:
         # Model, loss, optimisation. Seeded first: torch's own start-up seed is random, so
         # without this the initial weights would differ on every launch of the same seed.
         torch.manual_seed(cfg.seed)
-        self.model = PoseWindowPFN(width=cfg.width, heads=cfg.heads, layers=cfg.layers,
-                                   horizon=batches.HORIZON,
-                                   use_support=cfg.arm != "scene_only").to(cfg.device)
+        self.model = models.build(self._model_config()).to(cfg.device)
         self.loss_fn = WindowLoss()
         self.config = self._config_record()
         (self.out / "config.json").write_text(json.dumps(self.config, indent=1) + "\n")
@@ -118,6 +121,16 @@ class PFNTrainer:
         self.validators = {}
         for name, items in (val_packs or {}).items():
             self.validators[name] = TrainingValidator(items, cfg.device, shuffled=name == "dev")
+
+    def _model_config(self) -> dict:
+        cfg = self.cfg
+        use_support = cfg.arm != "scene_only"
+        if cfg.arch == "axial":
+            return dict(arch="axial", width=cfg.width, heads=cfg.heads, layers=cfg.layers,
+                        horizon=batches.HORIZON, use_support=use_support)
+        return dict(arch="table", width=cfg.width, heads=cfg.heads, support_layers=cfg.layers,
+                    query_layers=cfg.layers, horizon=batches.HORIZON, task_read=cfg.task_read,
+                    output=cfg.output, task_tokens=cfg.task_tokens, use_support=use_support)
 
     def _item_config(self) -> batches.ItemConfig:
         cfg = self.cfg

@@ -21,7 +21,9 @@ bpfn/
     synthetic.py            SyntheticData: builds the bank and the evaluation packs
     splits.py, packs.py     split registry, fixed evaluation packs
   models/
-    pose_window_pfn.py      PoseWindowPFN (support encoder, query reader, joint decoder)
+    __init__.py             build(config) / load(run_dir) for either architecture
+    pose_window_pfn.py      "axial": PoseWindowPFN, the first model
+    table_pfn.py            "table": TablePFN, cells of pose + header (TabPFN / ConTextTab style)
   training_tools/
     data.py                 samplers (bank / on the fly), the item stream, the data loader
     trainer.py              TrainConfig, PFNTrainer, the overfit gate
@@ -148,3 +150,21 @@ The likely cause is support memorisation. With 72 support episodes per program, 
 `scripts/bpfn/plot_runs.py` draws these curves for several runs. They are for judging runs, never for picking a checkpoint.
 
 **Speed.** A training step runs about 17,000 small tensor operations, so launch overhead, not arithmetic, bounds it. `--compile` fuses the training forward with `torch.compile` into one graph: the data-dependent checks run only when the model is not being compiled, so they still guard validation, evaluation and tests. AdamW runs fused on CUDA. The loss statistics stay on the GPU until each logging window, so the CPU waits for the GPU only there. `--lr-floor` ends the cosine decay at a fraction of the peak learning rate instead of zero.
+
+## The table model (`--arch table`)
+
+`models/table_pfn.py` follows TabPFN and ConTextTab. A cell is a value plus a column identity, and nothing else:
+- an entity cell is its pose plus its header (kind, colour, category, size);
+- time is its own column, as in the tabular time-series PFNs: one cell per row holding the seconds since that table's first row. A query therefore starts at t = 0 wherever it was cut from its episode;
+- each row also has a CLS cell.
+
+There is no support/query marker, observation flag or measurement age. The blocks alternate attention across a row's cells and along each column. A table may have up to 11 entity columns; padded columns are masked.
+
+The demonstration's row CLS cells are pooled by attention (learned seeds) into task tokens. The query reads them in one of three ways (`--task-read`):
+- `cell`: as extra cells of every query row;
+- `film`: scaling and shifting every query cell;
+- `cross`: its row CLS cells attend to the demonstration's rows and task tokens before each block.
+
+There are two outputs (`--output`):
+- `head`: learned (arm, horizon) queries read the last query row;
+- `rows`: future rows are appended to the query, time known and every value masked, and their wrist cells are read out, as TabPFN fills a test row's target.

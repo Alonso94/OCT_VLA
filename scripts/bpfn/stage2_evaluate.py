@@ -93,7 +93,7 @@ def main() -> int:
     parser.add_argument("--device", default="cpu")
     args = parser.parse_args()
 
-    from oct_vla.bpfn.models.pose_window_pfn import PoseWindowPFN
+    from oct_vla.bpfn import models
 
     if args.data != "atlas" and args.run is None:
         parser.error("--run is required")
@@ -101,7 +101,7 @@ def main() -> int:
         parser.error("--data synthetic needs --pack")
     if args.data == "real" and not args.corpus:
         parser.error("--data real needs --corpus")
-    model = PoseWindowPFN.from_run(args.run, args.device) if args.run is not None else None
+    model = models.load(args.run, args.device) if args.run is not None else None
 
     if args.data == "atlas":
         scan_atlas(args, model)
