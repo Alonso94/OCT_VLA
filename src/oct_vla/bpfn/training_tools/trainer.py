@@ -67,6 +67,7 @@ class TrainConfig:
     output: str = "head"        # table: "head" or "rows"
     task_tokens: int = 1        # table: pooled demonstration tokens
     lr_floor: float = 0.0       # the cosine decays to lr * lr_floor, not to zero
+    clip: float = 1.0           # gradient-norm clip
 
 
 class PFNTrainer:
@@ -220,11 +221,11 @@ class PFNTrainer:
                                        batch["target_valid"])
             self.optimizer.zero_grad()
             loss.backward()
-            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), cfg.clip)
             self.optimizer.step()
             self.scheduler.step()
             stats["grad_norm"] = grad_norm.detach()
-            stats["clipped_sum"] = (grad_norm > 1.0).float()
+            stats["clipped_sum"] = (grad_norm > cfg.clip).float()
             for key, value in stats.items():
                 sums[key] = sums.get(key, 0.0) + value
             mark = time.time()

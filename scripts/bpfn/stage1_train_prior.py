@@ -48,7 +48,8 @@ def run_training(args) -> int:
                       per_support=args.per_support, tf32=args.tf32,
                       fresh_supports=args.fresh_supports, compile=args.compile,
                       lr_floor=args.lr_floor, warmup=args.warmup, arch=args.arch,
-                      task_read=args.task_read, output=args.output, task_tokens=args.task_tokens)
+                      task_read=args.task_read, output=args.output, task_tokens=args.task_tokens,
+                      clip=args.clip)
     val_packs = {}
     if args.dev:
         val_packs["dev"] = packs.load(args.dev)
@@ -73,7 +74,8 @@ def main() -> int:
     parser.add_argument("--warmup", type=int, default=1000)
     parser.add_argument("--compile", action="store_true", help="torch.compile the training forward")
     parser.add_argument("--arch", choices=("axial", "table"), default="axial")
-    parser.add_argument("--task-read", choices=("cell", "film", "cross"), default="cell",
+    parser.add_argument("--clip", type=float, default=1.0, help="gradient-norm clip")
+    parser.add_argument("--task-read", choices=("cell", "film", "cross", "cross_all"), default="cell",
                         help="table: how the query reads the demonstration")
     parser.add_argument("--output", choices=("head", "rows"), default="head", help="table: output")
     parser.add_argument("--task-tokens", type=int, default=1, help="table: pooled demonstration tokens")

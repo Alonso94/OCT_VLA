@@ -17,7 +17,8 @@ Blocks alternate attention across the cells of a row and along each column over 
    - ``cell``: the task tokens are extra cells of every query row (read by row attention);
    - ``film``: each block scales and shifts every query cell by the task;
    - ``cross``: before each block, the query row CLS cells attend to the support's row CLS
-     cells and the task tokens (a row-level connection).
+     cells and the task tokens (a row-level connection);
+   - ``cross_all``: the same, for every query cell rather than the CLS cells only.
 3. Output, the next ``horizon`` poses of both wrists as offsets from the current wrist:
    - ``head``: learned (arm, horizon) queries read the last query row's cells;
    - ``rows``: ``horizon`` future rows are appended to the query (time known, every value
@@ -42,7 +43,7 @@ from oct_vla.bpfn.models.pose_window_pfn import (DELTA_SCALE, LOGVOL_CENTRE, LOG
 from oct_vla.bpfn.schema import CATEGORIES, COLOURS, KINDS, LEFT_WRIST, PAD, RIGHT_WRIST, DT
 
 ARCH = "table"
-TASK_READS = ("cell", "film", "cross")
+TASK_READS = ("cell", "film", "cross", "cross_all")
 OUTPUTS = ("head", "rows")
 #: Column kinds beyond the schema's: goal left / right, time, row CLS, task.
 GOAL_LEFT, GOAL_RIGHT, TIME, ROW_CLS, TASK = range(len(KINDS), len(KINDS) + 5)
@@ -140,7 +141,7 @@ class TablePFN(nn.Module):
             for layer in self.film:                       # starts as the identity
                 nn.init.zeros_(layer.weight)
                 nn.init.zeros_(layer.bias)
-        if task_read == "cross":
+        if task_read in ("cross", "cross_all"):
             self.cross = nn.ModuleList(_Attention(width, heads) for _ in range(query_layers))
 
         # Output.
@@ -268,14 +269,19 @@ class TablePFN(nn.Module):
             if read and self.task_read == "film":
                 gamma, beta = self.film[k](task.mean(1)).chunk(2, -1)
                 cells = cells * (1 + gamma[:, None, None]) + beta[:, None, None]
-            if read and self.task_read == "cross":
+            if read and self.task_read in ("cross", "cross_all"):
                 # Before the block, so the row's other cells read the update in its row
                 # attention (after the last block nothing would read it).
                 keys = torch.cat([memory["rows"], task], 1)
                 keys_pad = torch.cat([memory["rows_pad"], torch.zeros(B, task.shape[1], dtype=torch.bool,
                                                                       device=cells.device)], 1)
-                row_cls = self.cross[k](cells[:, :, 0], kv=keys, key_pad=keys_pad)
-                cells = torch.cat([row_cls[:, :, None], cells[:, :, 1:]], 2)
+                if self.task_read == "cross":
+                    row_cls = self.cross[k](cells[:, :, 0], kv=keys, key_pad=keys_pad)
+                    cells = torch.cat([row_cls[:, :, None], cells[:, :, 1:]], 2)
+                else:
+                    flat = self.cross[k](cells.reshape(B, R * cells.shape[2], -1), kv=keys,
+                                         key_pad=keys_pad)
+                    cells = flat.reshape(cells.shape)
             cells = block(cells, cell_pad, row_pad)
 
         history = b["q_row_valid"]

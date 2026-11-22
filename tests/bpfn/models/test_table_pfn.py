@@ -12,11 +12,12 @@ from oct_vla.bpfn import schema
 from oct_vla.bpfn.benchmark_tools import metrics
 from oct_vla.bpfn.data import batches, splits
 from oct_vla.bpfn.models import build
+from oct_vla.bpfn.models.table_pfn import OUTPUTS, TASK_READS
 from oct_vla.bpfn.models.pose_window_pfn import to_torch
 from oct_vla.bpfn.training_tools.losses.window import WindowLoss
 from oct_vla.bpfn.training_tools.trainer import conflict_items
 
-VARIANTS = list(itertools.product(("cell", "film", "cross"), ("head", "rows")))
+VARIANTS = list(itertools.product(TASK_READS, OUTPUTS))
 
 
 @pytest.fixture(scope="module")
