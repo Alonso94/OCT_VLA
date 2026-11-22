@@ -49,7 +49,9 @@ def run_training(args) -> int:
                       fresh_supports=args.fresh_supports, compile=args.compile,
                       lr_floor=args.lr_floor, warmup=args.warmup, arch=args.arch,
                       task_read=args.task_read, output=args.output, task_tokens=args.task_tokens,
-                      clip=args.clip)
+                      clip=args.clip, frame=args.frame, hypotheses=args.hypotheses,
+                      support_patch=args.support_patch, bf16_trunk=args.bf16_trunk,
+                      aux_factors=args.aux_factors, ema=args.ema)
     val_packs = {}
     if args.dev:
         val_packs["dev"] = packs.load(args.dev)
@@ -75,6 +77,13 @@ def main() -> int:
     parser.add_argument("--compile", action="store_true", help="torch.compile the training forward")
     parser.add_argument("--arch", choices=("axial", "table"), default="axial")
     parser.add_argument("--clip", type=float, default=1.0, help="gradient-norm clip")
+    parser.add_argument("--frame", choices=("workcell", "relative"), default="workcell",
+                        help="table: positions around the workcell or each table's object centroid")
+    parser.add_argument("--hypotheses", type=int, default=1, help="table rows: futures predicted")
+    parser.add_argument("--support-patch", type=int, default=1, help="table: demonstration rows per token")
+    parser.add_argument("--bf16-trunk", action="store_true", help="table: axial blocks in bfloat16")
+    parser.add_argument("--aux-factors", type=float, default=0.0, help="table: rule-factor loss weight")
+    parser.add_argument("--ema", type=float, default=0.0, help="EMA decay of the weights (0: off)")
     parser.add_argument("--task-read", choices=("cell", "film", "cross", "cross_all"), default="cell",
                         help="table: how the query reads the demonstration")
     parser.add_argument("--output", choices=("head", "rows"), default="head", help="table: output")

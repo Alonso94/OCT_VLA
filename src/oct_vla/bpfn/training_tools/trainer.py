@@ -25,7 +25,7 @@ from oct_vla.bpfn.data.syn_data.observation import CLEAN
 from oct_vla.bpfn import models
 from oct_vla.bpfn.models.pose_window_pfn import PoseWindowPFN, to_torch
 from oct_vla.bpfn.training_tools.data import BankSampler, OnTheFlySampler, build_dataloader
-from oct_vla.bpfn.training_tools.losses.window import WindowLoss
+from oct_vla.bpfn.training_tools.losses.window import HypothesisLoss, WindowLoss, factor_loss
 from oct_vla.bpfn.training_tools.validator import TrainingValidator
 
 
@@ -66,6 +66,13 @@ class TrainConfig:
     task_read: str = "cell"     # table: how the query reads the demonstration (cell / film / cross)
     output: str = "head"        # table: "head" or "rows"
     task_tokens: int = 1        # table: pooled demonstration tokens
+    frame: str = "workcell"     # table: "workcell" or "relative" (per-table object centroid)
+    hypotheses: int = 1         # table, rows output: futures predicted
+    support_patch: int = 1      # table: demonstration rows merged per token
+    bf16_trunk: bool = False    # table: axial blocks in bfloat16 on CUDA
+    aux_factors: float = 0.0    # table: weight of the rule-factor loss on the task vector (0: off)
+    ema: float = 0.0            # decay of an exponential moving average of the weights (0: off);
+                                # validation and the checkpoint then use the average
     lr_floor: float = 0.0       # the cosine decays to lr * lr_floor, not to zero
     clip: float = 1.0           # gradient-norm clip
 
@@ -106,6 +113,7 @@ class PFNTrainer:
         torch.manual_seed(cfg.seed)
         self.model = models.build(self._model_config()).to(cfg.device)
         self.loss_fn = WindowLoss()
+        self.hypothesis_loss = HypothesisLoss(self.loss_fn)
         self.config = self._config_record()
         (self.out / "config.json").write_text(json.dumps(self.config, indent=1) + "\n")
         # The training forward may be compiled; validation and checkpoints use self.model
@@ -115,6 +123,10 @@ class PFNTrainer:
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=cfg.lr, weight_decay=0.01,
                                            fused=fused)
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, self._lr_factor)
+        self.ema_model = None
+        if cfg.ema > 0:
+            average = torch.optim.swa_utils.get_ema_multi_avg_fn(cfg.ema)
+            self.ema_model = torch.optim.swa_utils.AveragedModel(self.model, multi_avg_fn=average)
         self.dataloader = build_dataloader(sampler, cfg.batch, cfg.seed, cfg.s_rows, cfg.workers,
                                            cfg.per_support)
 
@@ -131,7 +143,9 @@ class PFNTrainer:
                         horizon=batches.HORIZON, use_support=use_support)
         return dict(arch="table", width=cfg.width, heads=cfg.heads, support_layers=cfg.layers,
                     query_layers=cfg.layers, horizon=batches.HORIZON, task_read=cfg.task_read,
-                    output=cfg.output, task_tokens=cfg.task_tokens, use_support=use_support)
+                    output=cfg.output, task_tokens=cfg.task_tokens, use_support=use_support,
+                    frame=cfg.frame, hypotheses=cfg.hypotheses, support_patch=cfg.support_patch,
+                    bf16_trunk=cfg.bf16_trunk, aux_factors=cfg.aux_factors > 0)
 
     def _item_config(self) -> batches.ItemConfig:
         cfg = self.cfg
@@ -164,7 +178,8 @@ class PFNTrainer:
                 "pair_extra": item_cfg.pair_extra, "conflict_fraction": item_cfg.conflict_fraction,
                 "workers": cfg.workers, "bank": bank, "per_support": cfg.per_support,
                 "fresh_supports": cfg.fresh_supports, "lambda_rot": self.loss_fn.lambda_rot,
-                "parameters": sum(p.numel() for p in self.model.parameters()),
+                "parameters": sum(p.numel() for p in self.model.parameters()), "ema": cfg.ema,
+                "aux_factors": cfg.aux_factors,
                 "run": {k: str(v) if isinstance(v, Path) else v for k, v in asdict(cfg).items()}}
 
     def _lr_factor(self, step: int) -> float:
@@ -174,9 +189,28 @@ class PFNTrainer:
         floor = self.cfg.lr_floor
         return warmup * (floor + (1 - floor) * cosine)
 
+    def _evaluated_model(self):
+        """The weights that are validated and saved: the moving average when ``ema`` is on."""
+        return self.model if self.ema_model is None else self.ema_model.module
+
     def _save_checkpoint(self, step: int) -> None:
-        torch.save({"config": self.model.config, "state": self.model.state_dict(), "steps": step,
+        model = self._evaluated_model()
+        torch.save({"config": model.config, "state": model.state_dict(), "steps": step,
                     "train_config": self.config}, self.out / "model.pt")
+
+    def _loss(self, out: dict, batch: dict) -> tuple[torch.Tensor, dict]:
+        """The window loss (or the hypothesis loss), plus the rule-factor loss when on."""
+        if "windows" in out:
+            loss, stats = self.hypothesis_loss(out["windows"], out["confidence"], batch["target"],
+                                               batch["target_valid"])
+        else:
+            loss, stats = self.loss_fn(out["window"], batch["target"], batch["target_valid"])
+        if "factor_logits" in out:
+            aux = factor_loss(out["factor_logits"], batch["s_factors"].long())
+            loss = loss + self.cfg.aux_factors * aux
+            stats["factor_loss"] = aux.detach()
+            stats["loss"] = loss.detach()
+        return loss, stats
 
     def _log(self, record: dict) -> None:
         self.history.write(json.dumps(record) + "\n")
@@ -217,13 +251,14 @@ class PFNTrainer:
             batch = self._to_device(batch)
 
             self.train_model.train()
-            loss, stats = self.loss_fn(self.train_model(batch)["window"], batch["target"],
-                                       batch["target_valid"])
+            loss, stats = self._loss(self.train_model(batch), batch)
             self.optimizer.zero_grad()
             loss.backward()
             grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), cfg.clip)
             self.optimizer.step()
             self.scheduler.step()
+            if self.ema_model is not None:
+                self.ema_model.update_parameters(self.model)
             stats["grad_norm"] = grad_norm.detach()
             stats["clipped_sum"] = (grad_norm > cfg.clip).float()
             for key, value in stats.items():
@@ -240,7 +275,7 @@ class PFNTrainer:
             if self.validators and (step % cfg.eval_every == 0 or step == cfg.steps):
                 record = {"step": step}
                 for name, validator in self.validators.items():
-                    record[name] = validator.run_validation(self.model)
+                    record[name] = validator.run_validation(self._evaluated_model())
                 self._log(record)
                 window_start = mark = time.time()       # validation is not training time
             if step % cfg.eval_every == 0 and step < cfg.steps:

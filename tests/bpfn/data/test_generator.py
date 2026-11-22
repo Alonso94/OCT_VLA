@@ -133,9 +133,14 @@ def test_packed_inputs_ignore_prohibited_fields():
     cfg = batches.ItemConfig(programs=splits.programs_for("full"), conflict_fraction=0.0)
     item = batches.sample_item(np.random.default_rng(0), cfg)
     packed = batches.pack([item])
-    tampered = dict(item, meta={k: "scrambled" for k in item["meta"]})
-    again = batches.pack([tampered])
-    assert all(np.array_equal(packed[k], again[k]) for k in packed)
+    # Every meta field scrambled, and the program swapped for another valid one.
+    other = next(p.key for p in splits.programs_for("full") if p.key != item["meta"]["program"])
+    meta = {k: "scrambled" for k in item["meta"]}
+    meta["program"] = other
+    again = batches.pack([dict(item, meta=meta)])
+    labels = ("s_factors",)          # training labels for an auxiliary loss, never inputs
+    assert all(np.array_equal(packed[k], again[k]) for k in packed if k not in labels)
+    assert not np.array_equal(packed["s_factors"], again["s_factors"])
     assert not any(k.startswith(("meta", "program", "rule", "phase", "selected")) for k in packed)
 
 

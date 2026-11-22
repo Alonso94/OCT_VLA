@@ -292,6 +292,25 @@ def _pad_table(tab: Table, rows: int, cols: int) -> dict[str, np.ndarray]:
     return out
 
 
+#: The rule's factors, each a small vocabulary (``s_factors`` in a packed batch).
+FACTORS = (("manipulation", generator.MANIPULATIONS), ("eligibility", generator.ELIGIBILITY_KINDS),
+           ("order", generator.ORDERS), ("repeat", generator.REPEATS),
+           ("compaction", generator.COMPACTIONS))
+
+
+def rule_factors(meta: dict) -> np.ndarray:
+    """The demonstrated program's factor ids, or -1 where unknown (a recording has none).
+    Training labels for an auxiliary loss only; never a model input."""
+    out = np.full(len(FACTORS), -1, np.int64)
+    program = meta.get("program")
+    if program:
+        manipulation, eligibility, order, repeat, compaction = program.split("|")
+        values = (manipulation, eligibility.split(":")[0], order, repeat, compaction)
+        for k, ((_, vocab), value) in enumerate(zip(FACTORS, values)):
+            out[k] = vocab.index(value)
+    return out
+
+
 def pack(items: list[dict], s_rows: int = S_ROWS, cols: int = C_MAX) -> dict[str, np.ndarray]:
     """Stack items into a batch; keys ``s_*``, ``q_*``, ``target``, ``target_valid``."""
     batch: dict[str, list] = {}
@@ -301,6 +320,7 @@ def pack(items: list[dict], s_rows: int = S_ROWS, cols: int = C_MAX) -> dict[str
                 batch.setdefault(prefix + k, []).append(v)
         batch.setdefault("target", []).append(it["target"])
         batch.setdefault("target_valid", []).append(it["target_valid"])
+        batch.setdefault("s_factors", []).append(rule_factors(it.get("meta", {})))
     out = {k: np.stack(v) for k, v in batch.items()}
     # The query's goal columns are masked placeholders by construction.
     if out["q_goal_valid"].any():
@@ -358,6 +378,7 @@ def pack_groups(groups: list[dict], s_rows: int = S_ROWS, cols: int = C_MAX) -> 
             raise AssertionError("a group without queries: its support would be encoded for nothing")
         for key, value in _pad_table(g["support"], s_rows, cols).items():
             batch.setdefault("s_" + key, []).append(value)
+        batch.setdefault("s_factors", []).append(rule_factors(g["items"][0].get("meta", {})))
         for item in g["items"]:
             for key, value in _pad_table(item["query"], HISTORY, cols).items():
                 batch.setdefault("q_" + key, []).append(value)

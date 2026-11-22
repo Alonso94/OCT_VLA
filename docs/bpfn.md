@@ -168,3 +168,16 @@ The demonstration's row CLS cells are pooled by attention (learned seeds) into t
 There are two outputs (`--output`):
 - `head`: learned (arm, horizon) queries read the last query row;
 - `rows`: future rows are appended to the query, time known and every value masked, and their wrist cells are read out, as TabPFN fills a test row's target.
+
+### Table-model options (each off by default; A/B against FiLM + rows)
+
+| Option | What it does | Why |
+|---|---|---|
+| `--frame relative` | each table's positions are taken around its own movable objects' centroid at its first row | a layout shifted as a whole looks the same (instance normalisation, as RevIN in forecasting) |
+| `--hypotheses K` | K futures per query plus confidence logits; winner-takes-all loss with a small share of the mean, and cross-entropy on the winner | errors plateau after h8 and the 90th percentile is 3–4× the median: one prediction averages plausible futures |
+| `--aux-factors W` | heads on the task vector predict the rule's factors (manipulation, eligibility, order, repeat, compaction), weight W | supervising factors, never the program identity, should speed learning the task vector and favour composition |
+| `--support-patch P` | P consecutive demonstration rows become one token | the demonstration costs 62 % of the forward pass for one task vector |
+| `--bf16-trunk` | axial blocks in bfloat16 on CUDA; embeddings, pooling and output in float32 | speed, with positions kept in full precision |
+| `--ema D` | an exponential moving average of the weights (decay D) is validated and saved | smoother evaluation, often better generalisation |
+
+The rule factors are packed as `s_factors` (−1 where unknown). They are labels: the model never reads them, and a test holds the model inputs bit-identical when the metadata changes.
