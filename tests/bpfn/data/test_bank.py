@@ -304,10 +304,20 @@ def test_training_logs_every_validation_pack(tmp_path, bank_dir, monkeypatch):
                        _cfg("full", conflict_fraction=1.0, s_rows=32)).sample_items(
         np.random.default_rng(0), 8)
     cfg = TrainConfig(out=tmp_path / "run", steps=2, batch=8, width=16, layers=1, workers=0,
-                      s_rows=32, device="cpu", eval_every=1, bank=bank_dir, per_support=4,
-                      fresh_supports=True)
+                      s_rows=32, device="cpu", eval_every=1, log_every=1, bank=bank_dir,
+                      per_support=4, fresh_supports=True)
     PFNTrainer(cfg, {"dev": pack, "heldout": pack[:4]}).train()
     rows = [json.loads(line) for line in (tmp_path / "run" / "history.jsonl").read_text().splitlines()]
     scored = [r for r in rows if "dev" in r]
     assert len(scored) == 2 and all("heldout" in r and "both_correct" in r["dev"] for r in scored)
+    for name in ("dev", "heldout"):
+        for key in ("h1_mm", "h8_mm", "h16_mm", "moving_p90_mm", "family_accuracy"):
+            assert key in scored[-1][name], (name, key)
+    assert "shuffled_both_correct" in scored[-1]["dev"]
+    assert "shuffled_both_correct" not in scored[-1]["heldout"]
+    train = [r for r in rows if "dev" not in r]
+    assert train, "no training log"
+    for key in ("loss", "grad_norm", "clipped", "items_per_s", "data_wait_s", "compute_s"):
+        assert key in train[-1], key
+    assert 0.0 <= train[-1]["clipped"] <= 1.0
     assert json.loads((tmp_path / "run" / "config.json").read_text())["fresh_supports"] is True

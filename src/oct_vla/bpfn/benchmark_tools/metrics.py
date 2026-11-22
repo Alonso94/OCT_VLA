@@ -46,6 +46,8 @@ def errors(pred: np.ndarray, target: np.ndarray, valid: np.ndarray) -> dict:
             "rot_deg": float(ang[v].mean()) if v.any() else None,
             "trans_mm_per_h": per_h,
             "moving_mm": float(trans[moving].mean() * 1000) if moving.any() else None,
+            "moving_median_mm": float(np.median(trans[moving]) * 1000) if moving.any() else None,
+            "moving_p90_mm": float(np.percentile(trans[moving], 90) * 1000) if moving.any() else None,
             "idle_drift_mm": float(pred_move[idle].mean() * 1000) if idle.any() else None,
             "n": int(v[..., 0].any(-1).sum())}
 

@@ -60,6 +60,8 @@ class TrainConfig:
     per_support: int = 1        # queries per support in a batch (bank only)
     fresh_supports: bool = False  # bank queries, but every support generated anew
     tf32: bool = False          # TF32 matmuls on CUDA
+    compile: bool = False       # torch.compile the training forward (fuses small kernels)
+    lr_floor: float = 0.0       # the cosine decays to lr * lr_floor, not to zero
 
 
 class PFNTrainer:
@@ -102,7 +104,12 @@ class PFNTrainer:
         self.loss_fn = WindowLoss()
         self.config = self._config_record()
         (self.out / "config.json").write_text(json.dumps(self.config, indent=1) + "\n")
-        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=cfg.lr, weight_decay=0.01)
+        # The training forward may be compiled; validation and checkpoints use self.model
+        # (the same parameters).
+        self.train_model = torch.compile(self.model) if cfg.compile else self.model
+        fused = cfg.device != "cpu"          # one fused kernel for the whole update
+        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=cfg.lr, weight_decay=0.01,
+                                           fused=fused)
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, self._lr_factor)
         self.dataloader = build_dataloader(sampler, cfg.batch, cfg.seed, cfg.s_rows, cfg.workers,
                                            cfg.per_support)
@@ -110,7 +117,7 @@ class PFNTrainer:
         # Validation (logged only; never used to pick a checkpoint).
         self.validators = {}
         for name, items in (val_packs or {}).items():
-            self.validators[name] = TrainingValidator(items, cfg.device)
+            self.validators[name] = TrainingValidator(items, cfg.device, shuffled=name == "dev")
 
     def _item_config(self) -> batches.ItemConfig:
         cfg = self.cfg
@@ -143,13 +150,15 @@ class PFNTrainer:
                 "pair_extra": item_cfg.pair_extra, "conflict_fraction": item_cfg.conflict_fraction,
                 "workers": cfg.workers, "bank": bank, "per_support": cfg.per_support,
                 "fresh_supports": cfg.fresh_supports, "lambda_rot": self.loss_fn.lambda_rot,
+                "parameters": sum(p.numel() for p in self.model.parameters()),
                 "run": {k: str(v) if isinstance(v, Path) else v for k, v in asdict(cfg).items()}}
 
     def _lr_factor(self, step: int) -> float:
-        """Linear warmup, then cosine decay to zero at ``steps``."""
+        """Linear warmup, then cosine decay to ``lr_floor`` (a fraction of lr) at ``steps``."""
         warmup = min(1.0, (step + 1) / self.cfg.warmup)
         cosine = 0.5 * (1 + math.cos(math.pi * min(1.0, step / self.cfg.steps)))
-        return warmup * cosine
+        floor = self.cfg.lr_floor
+        return warmup * (floor + (1 - floor) * cosine)
 
     def _save_checkpoint(self, step: int) -> None:
         torch.save({"config": self.model.config, "state": self.model.state_dict(), "steps": step,
@@ -166,41 +175,60 @@ class PFNTrainer:
             moved[key] = value.to(self.cfg.device, dtype)
         return moved
 
+    def _log_window(self, step: int, sums: dict, steps: int, waited: float, elapsed: float,
+                    start: float) -> None:
+        """Means over the last ``steps`` training steps (one GPU sync per window)."""
+        record = {"step": step}
+        for key, total in sums.items():
+            record[key] = round(float(total) / steps, 5)
+        record["clipped"] = record.pop("clipped_sum")          # share of steps clipped
+        record["lr"] = self.scheduler.get_last_lr()[0]
+        record["elapsed_s"] = round(time.time() - start, 1)
+        record["data_wait_s"] = round(waited / steps, 4)
+        record["compute_s"] = round((elapsed - waited) / steps, 4)
+        record["items_per_s"] = round(steps * self.cfg.batch / elapsed, 1)
+        if self.cfg.device != "cpu":
+            record["gpu_mem_gb"] = round(torch.cuda.max_memory_allocated() / 2 ** 30, 2)
+        self._log(record)
+
     def train(self) -> dict:
         cfg = self.cfg
         self.history = (self.out / "history.jsonl").open("a")
         start = time.time()
-        waited = computed = 0.0          # seconds blocked on the loader / spent on the step
-        mark = time.time()
+        sums: dict = {}                  # per-window sums of the step statistics (tensors)
+        waited = 0.0                     # seconds blocked on the loader in this window
+        window_start = mark = time.time()
         for step, batch in enumerate(self.dataloader, start=1):
-            got = time.time()
-            waited += got - mark
+            waited += time.time() - mark
             batch = self._to_device(batch)
 
-            self.model.train()
-            loss, stats = self.loss_fn(self.model(batch)["window"], batch["target"],
+            self.train_model.train()
+            loss, stats = self.loss_fn(self.train_model(batch)["window"], batch["target"],
                                        batch["target_valid"])
             self.optimizer.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
             self.optimizer.step()
             self.scheduler.step()
-            if cfg.device != "cpu":
-                torch.cuda.synchronize()
+            stats["grad_norm"] = grad_norm.detach()
+            stats["clipped_sum"] = (grad_norm > 1.0).float()
+            for key, value in stats.items():
+                sums[key] = sums.get(key, 0.0) + value
             mark = time.time()
-            computed += mark - got
 
             if step % cfg.log_every == 0:
-                self._log({"step": step, **stats, "lr": self.scheduler.get_last_lr()[0],
-                           "elapsed_s": round(time.time() - start, 1),
-                           "data_wait_s": round(waited / cfg.log_every, 4),
-                           "compute_s": round(computed / cfg.log_every, 4)})
-                waited = computed = 0.0
+                if cfg.device != "cpu":
+                    torch.cuda.synchronize()
+                elapsed = time.time() - window_start
+                self._log_window(step, sums, cfg.log_every, waited, elapsed, start)
+                sums, waited = {}, 0.0
+                window_start = mark = time.time()
             if self.validators and (step % cfg.eval_every == 0 or step == cfg.steps):
                 record = {"step": step}
                 for name, validator in self.validators.items():
                     record[name] = validator.run_validation(self.model)
                 self._log(record)
+                window_start = mark = time.time()       # validation is not training time
             if step % cfg.eval_every == 0 and step < cfg.steps:
                 self._save_checkpoint(step)        # one file, overwritten: a timeout keeps the latest
             if step >= cfg.steps:
@@ -243,7 +271,7 @@ def overfit(items: list[dict], *, steps: int = 1500, width: int = 64, layers: in
         optimizer.step()
         if step % 100 == 0 or step == steps:
             scores = evaluate(predict(model, items, s_rows), items)
-            log(f"step {step}: loss {stats['loss']:.4f} trans {scores['trans_mm']:.1f} mm "
+            log(f"step {step}: loss {float(stats['loss']):.4f} trans {scores['trans_mm']:.1f} mm "
                 f"rot {scores['rot_deg']:.2f} deg both-correct {scores['both_correct']:.3f}")
             if scores["both_correct"] >= 0.95 and scores["trans_mm"] < 5:
                 break

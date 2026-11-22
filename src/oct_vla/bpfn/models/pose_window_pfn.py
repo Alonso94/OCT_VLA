@@ -76,11 +76,13 @@ class _Attn(nn.Module):
     def forward(self, x, kv=None, key_pad=None):
         h = self.norm(x)
         kv = h if kv is None else kv
-        if key_pad is not None and key_pad.all(1).any():
-            # A sequence with no valid key (an empty support): attend to its first entry
-            # so the result is defined; its outputs are never read (memory stays padded).
-            key_pad = key_pad.clone()
-            key_pad[key_pad.all(1), 0] = False
+        if key_pad is not None:
+            # A sequence with no valid key (an empty support) attends to its first entry,
+            # so the result is defined; its outputs are never read. Written without a
+            # data-dependent branch so torch.compile keeps one graph.
+            first = torch.zeros_like(key_pad)
+            first[:, 0] = True
+            key_pad = key_pad & ~(first & key_pad.all(1, keepdim=True))
         out, _ = self.attn(h, kv, kv, key_padding_mask=key_pad, need_weights=False)
         return x + out
 
@@ -202,8 +204,11 @@ class PoseWindowPFN(nn.Module):
         C = kind.shape[1]
         left = (kind == LEFT_WRIST).float().argmax(1)
         right = (kind == RIGHT_WRIST).float().argmax(1)
-        if not ((kind == LEFT_WRIST).sum(1) == 1).all() or not ((kind == RIGHT_WRIST).sum(1) == 1).all():
-            raise ValueError("every table needs exactly one left and one right wrist column")
+        # Checked whenever the model is not being compiled (validation, evaluation, tests);
+        # a data-dependent check would split the compiled training graph.
+        if not torch.compiler.is_compiling():
+            if not ((kind == LEFT_WRIST).sum(1) == 1).all() or not ((kind == RIGHT_WRIST).sum(1) == 1).all():
+                raise ValueError("every table needs exactly one left and one right wrist column")
         return torch.stack([left, right, torch.full_like(left, C), torch.full_like(left, C + 1)], 1)
 
     # --- support / query ---------------------------------------------------------------
@@ -261,9 +266,12 @@ class PoseWindowPFN(nn.Module):
     def share(memory: dict, index: torch.Tensor, n_queries: int) -> dict:
         """Each query's per-layer support memory, taken from the G encoded supports."""
         n_supports = memory["mem"][0].shape[0]
-        if index.shape != (n_queries,) or int(index.min()) < 0 or int(index.max()) >= n_supports:
-            raise ValueError(f"support_index {tuple(index.shape)} does not map {n_queries} "
-                             f"queries onto {n_supports} supports")
+        if index.shape != (n_queries,):
+            raise ValueError(f"support_index {tuple(index.shape)} does not map {n_queries} queries")
+        if not torch.compiler.is_compiling():        # data-dependent: eager only (see _role_idx)
+            if int(index.min()) < 0 or int(index.max()) >= n_supports:
+                raise ValueError(f"support_index {tuple(index.shape)} does not map {n_queries} "
+                                 f"queries onto {n_supports} supports")
         shared = {}
         for key, per_layer in memory.items():
             shared[key] = [m.index_select(0, index) for m in per_layer]

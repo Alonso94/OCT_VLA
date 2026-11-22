@@ -131,3 +131,20 @@ Two pilots, C and D, trained from the bank and scored 0.87 and 0.84 on dev, but 
 The likely cause is support memorisation. With 72 support episodes per program, a model can recognise the support and recall its program's behaviour, instead of reading the rule from what the demonstration does.
 
 `--fresh-supports` keeps the bank's queries and conflict families but generates every support anew. Grouping makes this affordable: one new support per K queries. Training logs the held-out and count packs beside dev (`--val`), so a recipe that loses composition shows up during training. These scores are logged only and never used to select a checkpoint.
+
+## Training diagnostics and speed
+
+**Training log.** `history.jsonl` holds window means over `log_every` steps:
+- the loss and its translation and rotation terms;
+- the gradient norm before clipping, and the share of clipped steps;
+- data wait and compute seconds per step, items per second, and peak GPU memory.
+
+**Validation records**, every `eval_every` steps for each pack:
+- the pose errors (overall, at h1 / h4 / h8 / h16, and the median and 90th percentile while an arm moves);
+- paired both-correct and decision accuracy per (manipulation, selection) family;
+- the right-colour rate for colour rules;
+- on dev, both-correct under shuffled supports.
+
+`scripts/bpfn/plot_runs.py` draws these curves for several runs. They are for judging runs, never for picking a checkpoint.
+
+**Speed.** A training step runs about 17,000 small tensor operations, so launch overhead, not arithmetic, bounds it. `--compile` fuses the training forward with `torch.compile` into one graph: the data-dependent checks run only when the model is not being compiled, so they still guard validation, evaluation and tests. AdamW runs fused on CUDA. The loss statistics stay on the GPU until each logging window, so the CPU waits for the GPU only there. `--lr-floor` ends the cosine decay at a fraction of the peak learning rate instead of zero.

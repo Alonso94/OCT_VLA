@@ -30,7 +30,7 @@ class WindowLoss(nn.Module):
     def forward(self, pred: torch.Tensor, target: torch.Tensor,
                 valid: torch.Tensor) -> tuple[torch.Tensor, dict]:
         """pred, target [B, H, 2, 7]; valid [B, H] (both arms share a horizon's validity).
-        Returns the loss and scalar statistics for logging."""
+        Returns the loss and 0-d tensor statistics for logging."""
         v = valid[..., None].expand(pred.shape[:-1]).float()             # [B, H, 2]
         n = v.sum().clamp(min=1)
 
@@ -45,9 +45,11 @@ class WindowLoss(nn.Module):
         with torch.no_grad():
             err_m = (pred[..., :3] - target[..., :3]).norm(dim=-1)
             angle = 2 * torch.acos(dot.abs().clamp(0, 1))
-            stats = {"loss": float(loss),
-                     "loss_trans": float(loss_trans),
-                     "loss_rot": float(loss_rot),
-                     "trans_mm": float((err_m * v).sum() / n * 1000),
-                     "rot_deg": float((angle * v).sum() / n * 180 / math.pi)}
+            # Kept as tensors: converting to floats here would make the CPU wait for the GPU
+            # on every step. Callers convert when they log.
+            stats = {"loss": loss.detach(),
+                     "loss_trans": loss_trans.detach(),
+                     "loss_rot": loss_rot.detach(),
+                     "trans_mm": (err_m * v).sum() / n * 1000,
+                     "rot_deg": (angle * v).sum() / n * 180 / math.pi}
         return loss, stats

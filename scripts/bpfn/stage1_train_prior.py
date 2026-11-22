@@ -46,7 +46,8 @@ def run_training(args) -> int:
                       device=args.device, bank=args.bank, reuse=args.reuse,
                       pair_extra=args.pair_extra, conflict_fraction=args.conflict_fraction,
                       per_support=args.per_support, tf32=args.tf32,
-                      fresh_supports=args.fresh_supports)
+                      fresh_supports=args.fresh_supports, compile=args.compile,
+                      lr_floor=args.lr_floor, warmup=args.warmup)
     val_packs = {}
     if args.dev:
         val_packs["dev"] = packs.load(args.dev)
@@ -67,6 +68,9 @@ def main() -> int:
     parser.add_argument("--width", type=int, default=128)
     parser.add_argument("--layers", type=int, default=4)
     parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--lr-floor", type=float, default=0.0, help="final lr as a fraction of --lr")
+    parser.add_argument("--warmup", type=int, default=1000)
+    parser.add_argument("--compile", action="store_true", help="torch.compile the training forward")
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--s-rows", type=int, default=128)
     parser.add_argument("--eval-every", type=int, default=5000)
